@@ -10,7 +10,7 @@ import {
 } from './api'
 import { cacheBootstrap, outboxStats, readCachedBootstrap } from './offline'
 import type { AnalyticsData, Bootstrap, Category, Currency, Expense } from './types'
-import { amountToMinor, applyKeypad, convertExpense, isoToLocalInput, localDateKey, localInputToIso, weekdayFromDateKey } from './utils'
+import { amountToMinor, applyKeypad, convertExpense, isoToLocalInput, localDateKey, localInputToIso, swipeDirection, weekdayFromDateKey } from './utils'
 
 ChartJS.register(ArcElement, BarElement, CategoryScale, Filler, Legend, LinearScale, LineElement, PointElement, Tooltip)
 
@@ -23,11 +23,6 @@ const SWIPE_COMMIT = 64
 
 function tap(pattern = 8) {
   navigator.vibrate?.(pattern)
-}
-
-// Свайп вправо тянет карточку из прошлого, свайп влево возвращает к сегодняшнему расходу.
-function directionOf(dx: number) {
-  return dx > 0 ? 'older' as const : 'newer' as const
 }
 
 function formatEntryDate(localInput: string) {
@@ -323,7 +318,7 @@ function EntryView({ bootstrap, setBootstrap, currentId, setCurrentId, refreshPe
     refreshPending()
   }
 
-  // Слева от текущей карточки лежит более старый расход, справа — более новый (или карточка нового расхода).
+  // Справа от текущей карточки лежит более старый расход, слева — более новый (или карточка нового расхода).
   const olderNeighbour = current ? activeExpenses[currentIndex + 1] : activeExpenses[0]
   const newerNeighbour = currentIndex > 0 ? activeExpenses[currentIndex - 1] : undefined
   const canMove = (direction: 'older' | 'newer') => direction === 'older' ? Boolean(olderNeighbour) : currentIndex >= 0
@@ -338,7 +333,7 @@ function EntryView({ bootstrap, setBootstrap, currentId, setCurrentId, refreshPe
     offset.current = dx
 
     const sourcePresence = current ? 1 : 0
-    const direction = dx ? directionOf(dx) : null
+    const direction = dx ? swipeDirection(dx) : null
     const targetPresence = !direction || !canMove(direction)
       ? sourcePresence
       : direction === 'older' || Boolean(newerNeighbour) ? 1 : 0
@@ -351,7 +346,7 @@ function EntryView({ bootstrap, setBootstrap, currentId, setCurrentId, refreshPe
     const target = direction === 'older' ? olderNeighbour : newerNeighbour ?? null
     if (!current) draft.current = form
     const span = (trackRef.current?.clientWidth ?? 320) + CARD_GAP
-    const destination = direction === 'older' ? span : -span
+    const destination = direction === 'older' ? -span : span
     const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches
     // Чем ближе карточка уже подтянута пальцем, тем короче доводка — быстрый флик не должен ощущаться вязким.
     const duration = reduced ? 0 : Math.min(300, Math.max(150, Math.abs(destination - offset.current) * 0.55))
@@ -384,7 +379,7 @@ function EntryView({ bootstrap, setBootstrap, currentId, setCurrentId, refreshPe
       event.currentTarget.setPointerCapture(event.pointerId)
     }
     // В тупике (дальше расходов нет) лента почти не поддаётся — это и есть подсказка.
-    slide(canMove(directionOf(dx)) ? dx : Math.max(-26, Math.min(26, dx * 0.2)), 0)
+    slide(canMove(swipeDirection(dx)) ? dx : Math.max(-26, Math.min(26, dx * 0.2)), 0)
   }
 
   const swipeEnd = (event: React.PointerEvent) => {
@@ -394,7 +389,7 @@ function EntryView({ bootstrap, setBootstrap, currentId, setCurrentId, refreshPe
     // Освобождать захват вручную не нужно: браузер снимает его сам сразу после pointerup и pointercancel,
     // а Firefox к этому моменту уже считает pointerId недействительным и бросает NotFoundError.
     const dx = event.clientX - start.x
-    if (Math.abs(dx) > SWIPE_COMMIT && canMove(directionOf(dx))) move(directionOf(dx))
+    if (Math.abs(dx) > SWIPE_COMMIT && canMove(swipeDirection(dx))) move(swipeDirection(dx))
     else slide(0, 220)
   }
 

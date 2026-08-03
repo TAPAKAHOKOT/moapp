@@ -2,6 +2,10 @@ import type { Currency, Expense, RateSnapshot } from './types'
 
 export const APP_TIME_ZONE = 'Europe/Belgrade'
 
+export function swipeDirection(dx: number) {
+  return dx < 0 ? 'older' as const : 'newer' as const
+}
+
 export function amountToMinor(value: string, currency: string, currencies: Currency[]) {
   const decimals = currencies.find((item) => item.code === currency)?.decimals ?? 2
   return Math.round(Number(value || 0) * 10 ** decimals)

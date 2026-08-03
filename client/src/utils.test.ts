@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { amountToMinor, applyKeypad, convertExpense, isoToLocalInput, localDateKey, localInputToIso, weekdayFromDateKey } from './utils'
+import { amountToMinor, applyKeypad, convertExpense, isoToLocalInput, localDateKey, localInputToIso, swipeDirection, weekdayFromDateKey } from './utils'
 import type { Currency, Expense } from './types'
 
 const currencies: Currency[] = [
@@ -13,6 +13,13 @@ describe('money helpers', () => {
   it('converts through RSD rates', () => {
     const expense = { amountMinor: 1000, currency: 'EUR' } as Expense
     expect(convertExpense(expense, 'RSD', currencies, { base: 'RSD', date: '2026-08-03', ratesToRsd: { EUR: 117, RSD: 1 } })).toBe(1170)
+  })
+})
+
+describe('expense timeline gestures', () => {
+  it('moves left into older expenses and right into newer expenses', () => {
+    expect(swipeDirection(-80)).toBe('older')
+    expect(swipeDirection(80)).toBe('newer')
   })
 })
 
