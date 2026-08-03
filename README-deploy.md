@@ -60,12 +60,13 @@ copy and enable the dedicated site yourself.
    shorter R2 lifecycle rule. Bucket versioning/retention locks are optional and
    should be configured with their storage implications understood.
 
-4. Copy `infra/nginx/maapp.conf` to `/etc/nginx/sites-available/maapp.conf`, enable
-   it using your current Nginx convention, check with `sudo nginx -t`, and reload
-   Nginx. After DNS points to the VPS, use the already-installed Certbot to add
-   HTTPS. If the final domain is not `maapp.tapakahokot.com`, replace
-   `server_name` and `APP_ORIGIN` first. The upstream stays
-   `http://127.0.0.1:8892`.
+4. Create `/var/www/certbot/.well-known/acme-challenge`, copy
+   `infra/nginx/moapp.conf` to `/etc/nginx/sites-available/moapp.conf`, enable it
+   using your current Nginx convention, check with `sudo nginx -t`, and reload
+   Nginx. After DNS points to the VPS, use Certbot's webroot authenticator with
+   `/var/www/certbot` and its Nginx installer to add HTTPS. If the final domain
+   is not `moapp.tapakahokot.com`, replace `server_name` and `APP_ORIGIN` first.
+   The upstream stays `http://127.0.0.1:8892`.
 
 5. Add GitHub environment `production` and repository/environment secrets:
 
