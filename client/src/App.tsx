@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
   ArcElement, BarElement, CategoryScale, Chart as ChartJS, Filler, Legend,
   LinearScale, LineElement, PointElement, Tooltip,
@@ -17,6 +17,89 @@ ChartJS.register(ArcElement, BarElement, CategoryScale, Filler, Legend, LinearSc
 type Tab = 'entry' | 'history' | 'analytics' | 'settings'
 const CHART_COLOR = '#758d69'
 const EMPTY_FORM = { amount: '', currency: 'RSD', note: '', occurredAt: '' }
+
+const SWIPE_START = 14
+const SWIPE_COMMIT = 64
+
+function tap(pattern = 8) {
+  navigator.vibrate?.(pattern)
+}
+
+// Свайп вправо тянет карточку из прошлого, свайп влево возвращает к сегодняшнему расходу.
+function directionOf(dx: number) {
+  return dx > 0 ? 'older' as const : 'newer' as const
+}
+
+function formatEntryDate(localInput: string) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(localInput)
+  if (!match) return ''
+  const [, year, month, day, hour, minute] = match
+  return `${new Date(`${year}-${month}-${day}T12:00:00Z`).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' })}, ${hour}:${minute}`
+}
+
+const CARD_GAP = 18
+
+type CardFace = { title: string; date: string; amount: string; currency: string }
+
+function EntryCard({ face, onDate, onCurrency }: { face: CardFace; onDate?: () => void; onCurrency?: () => void }) {
+  const inert = onCurrency ? undefined : -1
+  return <>
+    <header className="topline">
+      <div>
+        <p className="eyebrow">{face.title}</p>
+        <button type="button" className="date-chip" onClick={onDate} tabIndex={inert}>{face.date}<span>⌄</span></button>
+      </div>
+    </header>
+    <div className="amount-row">
+      <output className={`amount-value${face.amount ? '' : ' empty'}`} aria-label="Сумма">{face.amount || '0'}</output>
+      <button type="button" onClick={onCurrency} tabIndex={inert}>{face.currency}<span>⌄</span></button>
+    </div>
+  </>
+}
+
+const TrashIcon = () => <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"/></svg>
+
+function styleDeleteButton(node: HTMLButtonElement | null, presence: number, duration: number) {
+  if (!node) return
+  const easing = 'cubic-bezier(.25,.8,.3,1)'
+  node.style.transition = duration ? `opacity ${duration}ms ${easing}, transform ${duration}ms ${easing}` : 'none'
+  node.style.opacity = String(presence)
+  node.style.transform = `scale(${0.82 + presence * 0.18})`
+}
+
+type ToastState = { text: string; action?: { label: string; run: () => void } }
+type Confirmation = { title: string; body: string; label: string; run: () => void | Promise<void> }
+
+function useToast(timeout = 2600) {
+  const [toast, setToast] = useState<ToastState | null>(null)
+  useEffect(() => {
+    if (!toast) return
+    // Тост с действием живёт дольше: на «Вернуть» нужно успеть среагировать.
+    const timer = setTimeout(() => setToast(null), toast.action ? 5600 : timeout)
+    return () => clearTimeout(timer)
+  }, [toast, timeout])
+  const notify = useCallback((text: string, action?: ToastState['action']) => setToast({ text, action }), [])
+  const dismiss = useCallback(() => setToast(null), [])
+  return { toast, notify, dismiss }
+}
+
+function Toast({ toast, onDismiss }: { toast: ToastState; onDismiss: () => void }) {
+  const action = toast.action
+  if (!action) return <button className="toast" onClick={onDismiss}>{toast.text}</button>
+  return <div className="toast toast-undo" role="status"><span>{toast.text}</span><button type="button" onClick={() => { onDismiss(); action.run() }}>{action.label}</button></div>
+}
+
+function ConfirmSheet({ confirmation, onCancel }: { confirmation: Confirmation; onCancel: () => void }) {
+  return <div className="sheet-backdrop" onMouseDown={onCancel}>
+    <section className="bottom-sheet confirm" role="dialog" aria-modal="true" aria-label={confirmation.title} onMouseDown={(event) => event.stopPropagation()}>
+      <div className="sheet-handle"/>
+      <h2>{confirmation.title}</h2>
+      <p>{confirmation.body}</p>
+      <button className="primary danger" onClick={() => { onCancel(); void confirmation.run() }}>{confirmation.label}</button>
+      <button className="sheet-cancel" onClick={onCancel}>Отмена</button>
+    </section>
+  </div>
+}
 
 function money(amountMinor: number, currency: string, currencies: Currency[]) {
   const decimals = currencies.find((item) => item.code === currency)?.decimals ?? 2
@@ -85,14 +168,42 @@ function CurrencySheet({ currencies, selected, onClose, onSelect }: { currencies
   </div>
 }
 
-function Keypad({ onKey }: { onKey: (key: string) => void }) {
-  return <div className="keypad" aria-label="Клавиатура суммы">{['1','2','3','4','5','6','7','8','9',',','0','⌫'].map((key) => <button key={key} onClick={() => onKey(key)} aria-label={key === '⌫' ? 'Удалить цифру' : key}>{key}</button>)}</div>
+function DateSheet({ value, onClose, onPick }: { value: string; onClose: () => void; onPick: (value: string) => void }) {
+  const now = () => isoToLocalInput(new Date().toISOString())
+  const [draft, setDraft] = useState(value || now())
+  const shift = (days: number) => {
+    const date = new Date()
+    date.setDate(date.getDate() - days)
+    setDraft(isoToLocalInput(date.toISOString()))
+  }
+  return <div className="sheet-backdrop" onMouseDown={onClose}>
+    <form className="bottom-sheet editor" onSubmit={(event) => { event.preventDefault(); onPick(draft) }} onMouseDown={(event) => event.stopPropagation()}>
+      <div className="sheet-handle"/>
+      <div className="sheet-title"><h2>Когда</h2><button type="button" className="icon-button" onClick={onClose} aria-label="Закрыть">×</button></div>
+      <div className="date-presets"><button type="button" onClick={() => shift(0)}>Сейчас</button><button type="button" onClick={() => shift(1)}>Вчера</button><button type="button" onClick={() => shift(2)}>Позавчера</button></div>
+      <label>Дата и время<input type="datetime-local" required value={draft} onChange={(event) => setDraft(event.target.value)}/></label>
+      <button className="primary">Готово</button>
+    </form>
+  </div>
 }
 
-function CategorySheet({ categories, onClose, onPick }: { categories: Category[]; onClose: () => void; onPick: (category: Category) => void }) {
+const Keypad = memo(function Keypad({ onKey }: { onKey: (key: string) => void }) {
+  const press = (key: string) => { tap(); onKey(key) }
+  return <div className="keypad" aria-label="Клавиатура суммы">{['1','2','3','4','5','6','7','8','9',',','0','⌫'].map((key) => <button
+    key={key}
+    type="button"
+    className={key === ',' || key === '⌫' ? 'keypad-aux' : undefined}
+    onPointerDown={(event) => event.preventDefault()}
+    onPointerUp={() => press(key)}
+    onClick={(event) => { if (event.detail === 0) press(key) }}
+    aria-label={key === '⌫' ? 'Удалить цифру' : key}
+  >{key}</button>)}</div>
+})
+
+function CategorySheet({ categories, selectedId, onClose, onPick }: { categories: Category[]; selectedId?: string; onClose: () => void; onPick: (category: Category) => void }) {
   return <div className="sheet-backdrop" onMouseDown={onClose}><section className="bottom-sheet" role="dialog" aria-modal="true" aria-label="Другие категории" onMouseDown={(e) => e.stopPropagation()}>
     <div className="sheet-handle"/><div className="sheet-title"><h2>Другое</h2><button className="icon-button" onClick={onClose} aria-label="Закрыть">×</button></div>
-    <div className="category-grid">{categories.map((category) => <button key={category.id} onClick={() => onPick(category)}><i style={{ backgroundColor: category.color }}/><span>{category.name}</span></button>)}</div>
+    <div className="category-grid">{categories.map((category) => <button key={category.id} className={category.id === selectedId ? 'selected' : undefined} onClick={() => onPick(category)}><i style={{ backgroundColor: category.color }}/><span>{category.name}</span></button>)}</div>
   </section></div>
 }
 
@@ -105,17 +216,48 @@ function EntryView({ bootstrap, setBootstrap, currentId, setCurrentId, refreshPe
   const [form, setForm] = useState(EMPTY_FORM)
   const [categorySheet, setCategorySheet] = useState(false)
   const [currencySheet, setCurrencySheet] = useState(false)
+  const [dateSheet, setDateSheet] = useState(false)
   const [showNote, setShowNote] = useState(false)
   const [saving, setSaving] = useState(false)
-  const [toast, setToast] = useState('')
-  const touchStart = useRef<number | null>(null)
+  const { toast, notify, dismiss } = useToast()
+  const swipe = useRef<{ x: number; y: number; active: boolean } | null>(null)
+  const trackRef = useRef<HTMLDivElement>(null)
+  const deleteRef = useRef<HTMLButtonElement>(null)
+  const offset = useRef(0)
+  const swapped = useRef(false)
+  const committing = useRef(false)
+  const swapTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
+  // Черновик несохранённого нового расхода, чтобы свайп по истории не стирал набранную сумму.
+  const draft = useRef(EMPTY_FORM)
+  const synced = useRef<{ id: string; form: typeof EMPTY_FORM }>({ id: '', form: EMPTY_FORM })
 
-  useEffect(() => {
-    setForm(current ? inputFromExpense(current, bootstrap.currencies) : { ...EMPTY_FORM, currency: localStorage.getItem('moapp:last-currency') || 'RSD' })
-    setShowNote(Boolean(current?.note))
-  }, [currentId]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => () => clearTimeout(swapTimer.current), [])
 
-  const key = (value: string) => setForm((previous) => ({ ...previous, amount: applyKeypad(previous.amount, value, bootstrap.currencies.find((item) => item.code === previous.currency)?.decimals ?? 2) }))
+  // Соседняя карточка уже стоит на месте текущей, поэтому ленту возвращаем в ноль синхронно — до кадра, без мигания.
+  useLayoutEffect(() => {
+    const didSwap = swapped.current
+    if (didSwap) {
+      swapped.current = false
+      committing.current = false
+      const node = trackRef.current
+      if (node) { node.style.transition = 'none'; node.style.transform = ''; offset.current = 0 }
+    }
+    // При свайпе новое состояние уже достигнуто анимацией; при удалении кнопка мягко гаснет сама.
+    styleDeleteButton(deleteRef.current, currentId ? 1 : 0, didSwap ? 0 : 180)
+  }, [currentId])
+
+  useLayoutEffect(() => {
+    const base = current ? inputFromExpense(current, bootstrap.currencies) : draft.current.amount ? draft.current : { ...EMPTY_FORM, currency: localStorage.getItem('moapp:last-currency') || 'RSD' }
+    // Свежую версию записи подхватываем, только пока пользователь не начал править её сам.
+    const sameRecord = synced.current.id === (currentId || '')
+    if (sameRecord && JSON.stringify(form) !== JSON.stringify(synced.current.form)) return
+    synced.current = { id: currentId || '', form: base }
+    setForm(base)
+    // Заметка всегда свёрнута в одну строку: развёрнутое поле у одних расходов и свёрнутое у других меняло высоту при листании.
+    setShowNote(false)
+  }, [currentId, current?.version]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const key = useCallback((value: string) => setForm((previous) => ({ ...previous, amount: applyKeypad(previous.amount, value, bootstrap.currencies.find((item) => item.code === previous.currency)?.decimals ?? 2) })), [bootstrap.currencies])
 
   const buildExpense = (categoryId: string): Expense => {
     const now = new Date().toISOString()
@@ -127,7 +269,7 @@ function EntryView({ bootstrap, setBootstrap, currentId, setCurrentId, refreshPe
   }
 
   const chooseCategory = async (category: Category) => {
-    if (!form.amount || Number(form.amount) <= 0) { setToast('Сначала введите сумму'); return }
+    if (!form.amount || Number(form.amount) <= 0) { notify('Сначала введите сумму'); return }
     setSaving(true); setCategorySheet(false)
     const expense = buildExpense(category.id)
     const previousExpenses = bootstrap.expenses
@@ -136,48 +278,166 @@ function EntryView({ bootstrap, setBootstrap, currentId, setCurrentId, refreshPe
       const result = await submitExpenseOperation(current ? 'updateExpense' : 'createExpense', expense)
       if (result?.expense) setBootstrap((data) => ({ ...data, expenses: data.expenses.map((item) => item.id === expense.id ? result.expense! : item) }))
       else if (!result) setBootstrap((data) => ({ ...data, expenses: data.expenses.map((item) => item.id === expense.id ? { ...item, pending:true } : item) }))
-      setToast(result?.status === 'conflict' ? 'Конфликт: выберите действие сверху' : current ? 'Изменения сохранены' : 'Расход добавлен')
-      if (!current) { setCurrentId(null); setForm({ ...EMPTY_FORM, currency: form.currency }) }
+      notify(result?.status === 'conflict' ? 'Конфликт: выберите действие сверху' : current ? 'Изменения сохранены' : 'Расход добавлен')
+      if (!current) { draft.current = EMPTY_FORM; setCurrentId(null); setForm({ ...EMPTY_FORM, currency: form.currency }) }
+      else synced.current = { id: current.id, form }
       refreshPending()
-    } catch (error) { setBootstrap((data) => ({ ...data, expenses: previousExpenses })); setToast(error instanceof ApiError ? error.message : 'Не удалось сохранить') }
+    } catch (error) { setBootstrap((data) => ({ ...data, expenses: previousExpenses })); notify(error instanceof ApiError ? error.message : 'Не удалось сохранить') }
     finally { setSaving(false) }
   }
 
-  const remove = async () => {
-    if (!current || !window.confirm('Удалить этот расход?')) return
-    const previousExpenses = bootstrap.expenses
-    const deleted = { ...current, deletedAt: new Date().toISOString(), pending: !navigator.onLine }
-    setBootstrap((data) => ({ ...data, expenses: data.expenses.map((item) => item.id === current.id ? deleted : item) }))
-    setCurrentId(null)
-    try { await submitExpenseOperation('deleteExpense', current); setToast('Расход удалён') }
-    catch (error) { setBootstrap((data) => ({ ...data, expenses: previousExpenses })); setCurrentId(current.id); setToast(error instanceof ApiError ? error.message : 'Не удалось удалить') }
+  const restore = async (deleted: Expense) => {
+    // Сервер при обновлении сам снимает deleted_at, поэтому возврат — это обычная правка поверх версии после удаления.
+    const restored: Expense = { ...deleted, deletedAt: null, updatedAt: new Date().toISOString(), version: deleted.version + 1, pending: !navigator.onLine }
+    setBootstrap((data) => ({ ...data, expenses: data.expenses.map((item) => item.id === restored.id ? restored : item) }))
+    try {
+      const result = await submitExpenseOperation('updateExpense', restored)
+      if (result?.expense) setBootstrap((data) => ({ ...data, expenses: data.expenses.map((item) => item.id === restored.id ? result.expense! : item) }))
+      notify(result?.status === 'conflict' ? 'Конфликт: выберите действие сверху' : 'Расход возвращён')
+    } catch (error) {
+      setBootstrap((data) => ({ ...data, expenses: data.expenses.map((item) => item.id === deleted.id ? deleted : item) }))
+      notify(error instanceof ApiError ? error.message : 'Не удалось вернуть расход')
+    }
     refreshPending()
   }
 
-  const move = (direction: 'older' | 'newer') => {
-    if (direction === 'older') {
-      if (!current && activeExpenses[0]) setCurrentId(activeExpenses[0].id)
-      else if (currentIndex >= 0 && activeExpenses[currentIndex + 1]) setCurrentId(activeExpenses[currentIndex + 1].id)
-    } else {
-      if (currentIndex > 0) setCurrentId(activeExpenses[currentIndex - 1].id)
-      else setCurrentId(null)
+  const remove = async () => {
+    if (!current) return
+    const target = current
+    const previousExpenses = bootstrap.expenses
+    const deletedAt = new Date().toISOString()
+    setBootstrap((data) => ({ ...data, expenses: data.expenses.map((item) => item.id === target.id ? { ...item, deletedAt, pending: !navigator.onLine } : item) }))
+    setCurrentId(null)
+    try {
+      const result = await submitExpenseOperation('deleteExpense', target)
+      // Версию после удаления сервер поднимает на единицу — без неё возврат ушёл бы в конфликт.
+      const stored: Expense = result?.expense ?? { ...target, deletedAt, version: target.version + 1, pending: true }
+      setBootstrap((data) => ({ ...data, expenses: data.expenses.map((item) => item.id === target.id ? stored : item) }))
+      if (result?.status === 'conflict') notify('Конфликт: выберите действие сверху')
+      else notify('Расход удалён', { label: 'Вернуть', run: () => void restore(stored) })
+    } catch (error) {
+      setBootstrap((data) => ({ ...data, expenses: previousExpenses }))
+      setCurrentId(target.id)
+      notify(error instanceof ApiError ? error.message : 'Не удалось удалить')
     }
+    refreshPending()
   }
 
+  // Слева от текущей карточки лежит более старый расход, справа — более новый (или карточка нового расхода).
+  const olderNeighbour = current ? activeExpenses[currentIndex + 1] : activeExpenses[0]
+  const newerNeighbour = currentIndex > 0 ? activeExpenses[currentIndex - 1] : undefined
+  const canMove = (direction: 'older' | 'newer') => direction === 'older' ? Boolean(olderNeighbour) : currentIndex >= 0
+
+  // Лента едет за пальцем один к одному, поэтому соседняя карточка видна на всём пути.
+  const slide = (dx: number, duration: number) => {
+    const node = trackRef.current
+    if (!node) return
+    const easing = 'cubic-bezier(.25,.8,.3,1)'
+    node.style.transition = duration ? `transform ${duration}ms ${easing}` : 'none'
+    node.style.transform = dx ? `translateX(${dx}px)` : ''
+    offset.current = dx
+
+    const sourcePresence = current ? 1 : 0
+    const direction = dx ? directionOf(dx) : null
+    const targetPresence = !direction || !canMove(direction)
+      ? sourcePresence
+      : direction === 'older' || Boolean(newerNeighbour) ? 1 : 0
+    const progress = Math.min(Math.abs(dx) / (node.clientWidth + CARD_GAP), 1)
+    styleDeleteButton(deleteRef.current, sourcePresence + (targetPresence - sourcePresence) * progress, duration)
+  }
+
+  const move = (direction: 'older' | 'newer') => {
+    if (!canMove(direction)) return
+    const target = direction === 'older' ? olderNeighbour : newerNeighbour ?? null
+    if (!current) draft.current = form
+    const span = (trackRef.current?.clientWidth ?? 320) + CARD_GAP
+    const destination = direction === 'older' ? span : -span
+    const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    // Чем ближе карточка уже подтянута пальцем, тем короче доводка — быстрый флик не должен ощущаться вязким.
+    const duration = reduced ? 0 : Math.min(300, Math.max(150, Math.abs(destination - offset.current) * 0.55))
+    committing.current = true
+    slide(destination, duration)
+    clearTimeout(swapTimer.current)
+    // Подмену делаем ровно в той точке, где соседняя карточка встала на место текущей: сдвиг снимет useLayoutEffect до отрисовки.
+    swapTimer.current = setTimeout(() => { swapped.current = true; setCurrentId(target?.id ?? null) }, duration)
+    tap(6)
+  }
+
+  const swipeStart = (event: React.PointerEvent) => {
+    // Пока лента доезжает до соседа, новый жест перехватывать нельзя: подмена карточки дёрнет её из-под пальца.
+    if (committing.current || categorySheet || currencySheet || dateSheet) return
+    if (event.pointerType === 'mouse' && event.button !== 0) return
+    swipe.current = { x: event.clientX, y: event.clientY, active: false }
+  }
+
+  const swipeMove = (event: React.PointerEvent) => {
+    const start = swipe.current
+    if (!start) return
+    const dx = event.clientX - start.x
+    const dy = event.clientY - start.y
+    if (!start.active) {
+      // Пока не ясно, горизонтальный это жест или что-то ещё, — не мешаем ни скроллу, ни нажатию клавиши.
+      if (Math.abs(dy) > SWIPE_START && Math.abs(dy) > Math.abs(dx)) { swipe.current = null; return }
+      if (Math.abs(dx) < SWIPE_START || Math.abs(dx) < Math.abs(dy) * 1.5) return
+      start.active = true
+      // Захват уводит pointerup с клавиши или категории на всю секцию: случайного ввода при свайпе не будет.
+      event.currentTarget.setPointerCapture(event.pointerId)
+    }
+    // В тупике (дальше расходов нет) лента почти не поддаётся — это и есть подсказка.
+    slide(canMove(directionOf(dx)) ? dx : Math.max(-26, Math.min(26, dx * 0.2)), 0)
+  }
+
+  const swipeEnd = (event: React.PointerEvent) => {
+    const start = swipe.current
+    swipe.current = null
+    if (!start?.active) return
+    // Освобождать захват вручную не нужно: браузер снимает его сам сразу после pointerup и pointercancel,
+    // а Firefox к этому моменту уже считает pointerId недействительным и бросает NotFoundError.
+    const dx = event.clientX - start.x
+    if (Math.abs(dx) > SWIPE_COMMIT && canMove(directionOf(dx))) move(directionOf(dx))
+    else slide(0, 220)
+  }
+
+  const swipeCancel = () => {
+    if (swipe.current?.active) slide(0, 220)
+    swipe.current = null
+  }
+
+  const occurredLabel = formatEntryDate(form.occurredAt) || formatEntryDate(isoToLocalInput(new Date().toISOString()))
+  const faceOf = (expense: Expense): CardFace => {
+    const data = inputFromExpense(expense, bootstrap.currencies)
+    return { title: 'Редактирование', date: formatEntryDate(data.occurredAt), amount: data.amount, currency: data.currency }
+  }
+  const blankFace = (amount: string, currency: string): CardFace => ({ title: 'Новый расход', date: formatEntryDate(isoToLocalInput(new Date().toISOString())), amount, currency })
+  const liveFace: CardFace = current
+    ? { title: 'Редактирование', date: occurredLabel, amount: form.amount, currency: form.currency }
+    : { ...blankFace(form.amount, form.currency), date: occurredLabel }
+  const olderFace = olderNeighbour ? faceOf(olderNeighbour) : null
+  const newerFace = newerNeighbour ? faceOf(newerNeighbour)
+    : currentIndex === 0 ? blankFace(draft.current.amount, draft.current.amount ? draft.current.currency : localStorage.getItem('moapp:last-currency') || 'RSD')
+    : null
   const main = bootstrap.categories.filter((item) => !item.archivedAt && item.placement === 'main').sort((a,b) => a.sortOrder-b.sortOrder)
   const additional = bootstrap.categories.filter((item) => !item.archivedAt && item.placement === 'additional').sort((a,b) => a.sortOrder-b.sortOrder)
-  return <section className="entry-view">
-    <header className="topline"><div><p className="eyebrow">{current ? 'Редактирование' : 'Новый расход'}</p><span>{current ? new Date(current.occurredAt).toLocaleString('ru-RU', { timeZone:'Europe/Belgrade', day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' }) : 'Сегодня'}</span></div><div className="record-count">{current ? `${currentIndex + 1} / ${activeExpenses.length}` : '＋'}</div></header>
-    <div key={currentId || 'new'} className="swipe-area" onPointerDown={(e) => touchStart.current = e.clientX} onPointerUp={(e) => { if (touchStart.current === null) return; const dx=e.clientX-touchStart.current; if (Math.abs(dx)>55) move(dx < 0 ? 'older':'newer'); touchStart.current=null }}>
-      <div className="amount-row"><input aria-label="Сумма" value={form.amount} readOnly placeholder="0"/><button onClick={() => setCurrencySheet(true)}>{form.currency}<span>⌄</span></button></div>
-      <p className="swipe-hint">← старые расходы <span>свайп</span> новый →</p>
+  const ready = Boolean(form.amount) && Number(form.amount) > 0
+  const currentCategory = current ? bootstrap.categories.find((item) => item.id === current.categoryId) : undefined
+  // Категорию из «Другого» показываем на самой кнопке «Другое»: добавлять её в сетку нельзя — та переносится на вторую строку и дёргает раскладку.
+  const otherFace = currentCategory && !main.some((item) => item.id === currentCategory.id) ? currentCategory : null
+  const dirty = current ? JSON.stringify(form) !== JSON.stringify(inputFromExpense(current, bootstrap.currencies)) : false
+  const categoryHint = !ready ? 'Сначала введите сумму' : dirty ? 'Выберите категорию, чтобы сохранить' : 'Категория'
+  return <section className={`entry-view${current ? ' editing' : ''}`} onPointerDown={swipeStart} onPointerMove={swipeMove} onPointerUp={swipeEnd} onPointerCancel={swipeCancel}>
+    <div className="swipe-area">
+      <div className="entry-track" ref={trackRef}>
+        {olderFace && <div className="entry-card aside older" aria-hidden="true"><EntryCard face={olderFace}/></div>}
+        <div className="entry-card"><EntryCard face={liveFace} onDate={() => setDateSheet(true)} onCurrency={() => setCurrencySheet(true)}/></div>
+        {newerFace && <div className="entry-card aside newer" aria-hidden="true"><EntryCard face={newerFace}/></div>}
+      </div>
     </div>
+    <button ref={deleteRef} type="button" className={`icon-danger entry-delete${current ? '' : ' off'}`} onClick={remove} tabIndex={current ? 0 : -1} aria-hidden={!current} aria-label="Удалить расход"><TrashIcon/></button>
     <Keypad onKey={key}/>
-    {current && <div className="edit-fields"><label>Дата и время<input type="datetime-local" value={form.occurredAt} onChange={(e) => setForm({...form, occurredAt:e.target.value})}/></label></div>}
-    <div className="categories"><p>Категория</p><div className="main-categories">{main.map((category) => <button disabled={saving} key={category.id} onClick={() => chooseCategory(category)}><i style={{backgroundColor:category.color}}/><span>{category.name}</span></button>)}<button onClick={() => setCategorySheet(true)}><i className="dots">•••</i><span>Другое</span></button></div></div>
-    <div className="note-block">{!showNote ? <button className="text-button" onClick={() => setShowNote(true)}>＋ Добавить заметку</button> : <label>Заметка <span>необязательно</span><input autoFocus maxLength={200} placeholder="Например, IKEA" value={form.note} onChange={(e) => setForm({...form,note:e.target.value})}/></label>}</div>
-    {current && <button className="danger-link" onClick={remove}>Удалить расход</button>}
-    {categorySheet && <CategorySheet categories={additional} onClose={() => setCategorySheet(false)} onPick={chooseCategory}/>}
+    <div className={`categories${ready ? '' : ' locked'}${dirty ? ' unsaved' : ''}`}><p>{categoryHint}</p><div className="main-categories">{main.map((category) => <button disabled={saving} key={category.id} className={category.id === current?.categoryId ? 'selected' : undefined} onClick={() => chooseCategory(category)}><i style={{backgroundColor:category.color}}/><span>{category.name}</span></button>)}<button className={otherFace ? 'selected' : undefined} onClick={() => setCategorySheet(true)}>{otherFace ? <i style={{backgroundColor:otherFace.color}}/> : <i className="dots">•••</i>}<span>{otherFace ? otherFace.name : 'Другое'}</span></button></div></div>
+    <div className="note-block">{!showNote ? <button className="text-button" onClick={() => setShowNote(true)}>{form.note ? `✎ ${form.note}` : '＋ Добавить заметку'}</button> : <label>Заметка <span>необязательно</span><input autoFocus maxLength={200} placeholder="Например, IKEA" value={form.note} onChange={(e) => setForm({...form,note:e.target.value})}/></label>}</div>
+    {dateSheet && <DateSheet value={form.occurredAt} onClose={() => setDateSheet(false)} onPick={(value) => { setForm({ ...form, occurredAt: value }); setDateSheet(false) }}/>}
+    {categorySheet && <CategorySheet categories={additional} selectedId={current?.categoryId} onClose={() => setCategorySheet(false)} onPick={chooseCategory}/>}
     {currencySheet && <CurrencySheet
       currencies={bootstrap.currencies}
       selected={form.currency}
@@ -188,7 +448,7 @@ function EntryView({ bootstrap, setBootstrap, currentId, setCurrentId, refreshPe
         setCurrencySheet(false)
       }}
     />}
-    {toast && <button className="toast" onClick={() => setToast('')}>{toast}</button>}
+    {toast && <Toast toast={toast} onDismiss={dismiss}/>}
   </section>
 }
 
@@ -255,12 +515,12 @@ function Heatmap({ points }: { points:{date:string;value:number}[] }) {
 function SettingsView({ bootstrap, setBootstrap, refreshPending, onLogout }: { bootstrap:Bootstrap; setBootstrap:React.Dispatch<React.SetStateAction<Bootstrap>>; refreshPending:()=>void;onLogout:()=>void }) {
   const [editing,setEditing]=useState<Category|null>(null)
   const [adding,setAdding]=useState(false)
-  const [notice,setNotice]=useState('')
+  const {toast:notice,notify:setNotice,dismiss:hideNotice}=useToast()
   const colors=['#819978','#d98f70','#d2ad62','#7d9db4','#aa8aaf','#797d72']
   const save=async(category:Category)=>{const previous=bootstrap.categories;setBootstrap((b)=>({...b,categories:[category,...b.categories.filter((x)=>x.id!==category.id)]}));try{const saved=bootstrap.categories.some((x)=>x.id===category.id)?await updateCategory(category):await createCategory(category);setBootstrap((b)=>({...b,categories:b.categories.map((x)=>x.id===category.id?saved:x)}));setEditing(null);setAdding(false);setNotice('Категория сохранена')}catch(error){setBootstrap((b)=>({...b,categories:previous}));setNotice(error instanceof ApiError?error.message:'Не удалось сохранить категорию')}refreshPending()}
   const move=async(category:Category,direction:-1|1)=>{const previous=bootstrap.categories;const group=bootstrap.categories.filter((x)=>x.placement===category.placement&&!x.archivedAt).sort((a,b)=>a.sortOrder-b.sortOrder);const index=group.findIndex((x)=>x.id===category.id),next=index+direction;if(next<0||next>=group.length)return;[group[index],group[next]]=[group[next],group[index]];const groupIds=group.map((x)=>x.id);const ids=bootstrap.categories.filter((x)=>!x.archivedAt).sort((a,b)=>a.placement.localeCompare(b.placement)||a.sortOrder-b.sortOrder).map((x)=>x.id);const ordered=ids.filter((id)=>!groupIds.includes(id));if(category.placement==='main')ordered.unshift(...groupIds);else ordered.push(...groupIds);setBootstrap((b)=>({...b,categories:b.categories.map((x)=>{const order=groupIds.indexOf(x.id);return order>=0?{...x,sortOrder:order}:x})}));try{const result=await reorderCategories(ordered);const fresh=new Map(result.categories.map((x)=>[x.id,x]));setBootstrap((b)=>({...b,categories:b.categories.map((x)=>fresh.get(x.id)||x)}))}catch(error){setBootstrap((b)=>({...b,categories:previous}));setNotice(error instanceof ApiError?error.message:'Не удалось изменить порядок')}refreshPending()}
   const groups:[Category['placement'],string][]=[['main','Основные'],['additional','Дополнительные']]
-  return <section className="page"><header className="page-header settings-title"><div><p className="eyebrow">Настройки</p><h1>Категории</h1></div><button className="add-button" onClick={()=>setAdding(true)}>＋</button></header><p className="page-intro">Настройте быстрые кнопки и их порядок. Категории меняются только онлайн; архивные останутся в истории.</p>{notice&&<button className="toast" onClick={()=>setNotice('')}>{notice}</button>}
+  return <section className="page"><header className="page-header settings-title"><div><p className="eyebrow">Настройки</p><h1>Категории</h1></div><button className="add-button" onClick={()=>setAdding(true)}>＋</button></header><p className="page-intro">Настройте быстрые кнопки и их порядок. Категории меняются только онлайн; архивные останутся в истории.</p>{notice&&<Toast toast={notice} onDismiss={hideNotice}/>}
     {groups.map(([placement,title])=><div className="settings-group" key={placement}><h2>{title}</h2>{bootstrap.categories.filter((x)=>x.placement===placement&&!x.archivedAt).sort((a,b)=>a.sortOrder-b.sortOrder).map((category)=><div className="category-row" key={category.id}><i style={{background:category.color}}/><button className="category-name" onClick={()=>setEditing(category)}>{category.name}</button><button onClick={()=>move(category,-1)} aria-label="Выше">↑</button><button onClick={()=>move(category,1)} aria-label="Ниже">↓</button></div>)}</div>)}
     {(editing||adding)&&<CategoryEditor category={editing} colors={colors} onClose={()=>{setEditing(null);setAdding(false)}} onSave={save}/>}
     <div className="settings-group"><h2>Это устройство</h2><p className="page-intro">Для работы без интернета расходы и сессия доверенно сохраняются в этом браузере. Не используйте эту функцию на общем устройстве.</p><button className="danger-link" onClick={onLogout}>Выйти и удалить локальные данные</button></div>
@@ -282,23 +542,39 @@ export default function App() {
   const [offline,setOffline]=useState(!navigator.onLine)
   const [pending,setPending]=useState({total:0,conflicts:0,failed:0})
   const [error,setError]=useState('')
+  const [confirm,setConfirm]=useState<Confirmation|null>(null)
+  const pagerRef=useRef<HTMLDivElement>(null)
+  const settleTimer=useRef<ReturnType<typeof setTimeout>>(undefined)
+  // Аналитика с четырьмя графиками монтируется сразу после первой отрисовки: к моменту свайпа она уже готова.
+  const [chartsReady,setChartsReady]=useState(false)
   const refreshPending=()=>outboxStats().then(setPending)
   const load=async()=>{setError('');try{let stats=await outboxStats();setPending(stats);if(navigator.onLine&&stats.total&&!stats.conflicts&&!stats.failed){await syncOutbox(refreshPending);stats=await outboxStats();setPending(stats)}if(stats.conflicts||stats.failed){const cached=await readCachedBootstrap();if(cached){setBootstrap(cached);setOffline(!navigator.onLine);return}}const result=await getBootstrap();setBootstrap(result.data);setOffline(result.offline);refreshPending()}catch(error){if(error instanceof ApiError&&error.status===401){localStorage.removeItem('moapp:known-session');setAuth('locked');return}setError('Не удалось загрузить данные. Откройте приложение один раз с интернетом.')}}
   useEffect(()=>{getSession().then((s)=>setAuth(s.authenticated?'ok':'locked')).catch((error)=>setAuth(error instanceof ApiError&&error.status===401?'locked':localStorage.getItem('moapp:known-session')?'ok':'locked'))},[])
   useEffect(()=>{if(auth==='ok')load()},[auth]) // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(()=>{if(bootstrap)void cacheBootstrap(bootstrap)},[bootstrap])
   useEffect(()=>{const online=()=>{setOffline(false);load()};const off=()=>setOffline(true);const unauthorized=()=>{localStorage.removeItem('moapp:known-session');setAuth('locked')};window.addEventListener('online',online);window.addEventListener('offline',off);window.addEventListener('moapp:unauthorized',unauthorized);return()=>{window.removeEventListener('online',online);window.removeEventListener('offline',off);window.removeEventListener('moapp:unauthorized',unauthorized)}},[]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(()=>{const id=setTimeout(()=>setChartsReady(true),150);return()=>clearTimeout(id)},[])
+  useEffect(()=>{const node=pagerRef.current;if(!node||!node.clientWidth)return;const left=tabs.findIndex((item)=>item.id===tab)*node.clientWidth;if(Math.abs(node.scrollLeft-left)>4)node.scrollTo({left,behavior:'smooth'})},[tab])
+  // Панель браузера меняет высоту и ширину вьюпорта — страницу нужно вернуть точно на место без анимации.
+  useEffect(()=>{const snap=()=>{const node=pagerRef.current;if(!node||!node.clientWidth)return;node.scrollLeft=tabs.findIndex((item)=>item.id===tab)*node.clientWidth};window.addEventListener('resize',snap);return()=>window.removeEventListener('resize',snap)},[tab])
+  const onPagerScroll=()=>{const node=pagerRef.current;if(!node||!node.clientWidth)return;clearTimeout(settleTimer.current);settleTimer.current=setTimeout(()=>{const next=tabs[Math.round(node.scrollLeft/node.clientWidth)]?.id;if(next&&next!==tab)setTab(next)},90)}
   if(auth==='checking')return <div className="splash"><div className="brand-mark">m</div></div>
   if(auth==='locked')return <PinScreen onSuccess={()=>setAuth('ok')}/>
   if(error)return <><div className="splash"><div className="brand-mark">m</div><p>Ожидаем подключение…</p></div><button className="toast toast-error toast-action" role="alert" onClick={load}>{error} · Повторить</button></>
   if(!bootstrap)return <div className="splash"><div className="brand-mark">m</div><p>Загружаем расходы…</p></div>
   const updateBootstrap = setBootstrap as React.Dispatch<React.SetStateAction<Bootstrap>>
   const edit=(id:string)=>{setCurrentId(id);setTab('entry')}
-  const resolveIssues=async()=>{if(!window.confirm('Отбросить локальные конфликтующие изменения и загрузить актуальные данные с сервера?'))return;await discardOutboxIssues();await load()}
-  const signOut=async()=>{if(!window.confirm('Выйти и удалить сохранённые на этом устройстве расходы и очередь?'))return;await logout();setBootstrap(null);setAuth('locked')}
+  const resolveIssues=()=>setConfirm({title:'Отбросить локальные изменения?',body:'Конфликтующие правки из очереди будут удалены, а расходы загружены с сервера заново.',label:'Отбросить',run:async()=>{await discardOutboxIssues();await load()}})
+  const signOut=()=>setConfirm({title:'Выйти из приложения?',body:'С этого устройства будут удалены сохранённые расходы и очередь синхронизации. Данные на сервере останутся.',label:'Выйти',run:async()=>{await logout();setBootstrap(null);setAuth('locked')}})
   return <div className="app-shell">
     {(offline||pending.total>0)&&(pending.conflicts||pending.failed?<button className="sync-status attention" onClick={resolveIssues}><span>{pending.conflicts?`Конфликт: ${pending.conflicts} · решить`:`Ошибка: ${pending.failed} · решить`}</span><i/></button>:<div className="sync-status"><span>{offline?'Офлайн':`Синхронизация: ${pending.total}`}</span><i/></div>)}
-    <main className="content">{tab==='entry'&&<EntryView bootstrap={bootstrap} setBootstrap={updateBootstrap} currentId={currentId} setCurrentId={setCurrentId} refreshPending={refreshPending}/>} {tab==='history'&&<HistoryView bootstrap={bootstrap} edit={edit}/>} {tab==='analytics'&&<AnalyticsView bootstrap={bootstrap}/>} {tab==='settings'&&<SettingsView bootstrap={bootstrap} setBootstrap={updateBootstrap} refreshPending={refreshPending} onLogout={signOut}/>}</main>
+    <main className="pager" ref={pagerRef} onScroll={onPagerScroll}>
+      <div className="page-slot"><EntryView bootstrap={bootstrap} setBootstrap={updateBootstrap} currentId={currentId} setCurrentId={setCurrentId} refreshPending={refreshPending}/></div>
+      <div className="page-slot"><HistoryView bootstrap={bootstrap} edit={edit}/></div>
+      <div className="page-slot">{chartsReady&&<AnalyticsView bootstrap={bootstrap}/>}</div>
+      <div className="page-slot"><SettingsView bootstrap={bootstrap} setBootstrap={updateBootstrap} refreshPending={refreshPending} onLogout={signOut}/></div>
+    </main>
     <nav className="bottom-nav" aria-label="Основная навигация">{tabs.map((item)=><button key={item.id} className={tab===item.id?'active':''} onClick={()=>{setTab(item.id);if(item.id==='entry')setCurrentId(null)}}><span>{item.icon}</span><small>{item.label}</small></button>)}</nav>
+    {confirm&&<ConfirmSheet confirmation={confirm} onCancel={()=>setConfirm(null)}/>}
   </div>
 }
