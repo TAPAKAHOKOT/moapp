@@ -215,7 +215,7 @@ function EntryView({ bootstrap, setBootstrap, currentId, setCurrentId, refreshPe
   const [showNote, setShowNote] = useState(false)
   const [saving, setSaving] = useState(false)
   const { toast, notify, dismiss } = useToast()
-  const swipe = useRef<{ x: number; y: number; active: boolean } | null>(null)
+  const swipe = useRef<{ x: number; y: number; lastX: number; active: boolean } | null>(null)
   const trackRef = useRef<HTMLDivElement>(null)
   const deleteRef = useRef<HTMLButtonElement>(null)
   const offset = useRef(0)
@@ -362,7 +362,7 @@ function EntryView({ bootstrap, setBootstrap, currentId, setCurrentId, refreshPe
     // Пока лента доезжает до соседа, новый жест перехватывать нельзя: подмена карточки дёрнет её из-под пальца.
     if (committing.current || categorySheet || currencySheet || dateSheet) return
     if (event.pointerType === 'mouse' && event.button !== 0) return
-    swipe.current = { x: event.clientX, y: event.clientY, active: false }
+    swipe.current = { x: event.clientX, y: event.clientY, lastX: event.clientX, active: false }
   }
 
   const swipeMove = (event: React.PointerEvent) => {
@@ -370,13 +370,12 @@ function EntryView({ bootstrap, setBootstrap, currentId, setCurrentId, refreshPe
     if (!start) return
     const dx = event.clientX - start.x
     const dy = event.clientY - start.y
+    start.lastX = event.clientX
     if (!start.active) {
       // Пока не ясно, горизонтальный это жест или что-то ещё, — не мешаем ни скроллу, ни нажатию клавиши.
       if (Math.abs(dy) > SWIPE_START && Math.abs(dy) > Math.abs(dx)) { swipe.current = null; return }
       if (Math.abs(dx) < SWIPE_START || Math.abs(dx) < Math.abs(dy) * 1.5) return
       start.active = true
-      // Захват уводит pointerup с клавиши или категории на всю секцию: случайного ввода при свайпе не будет.
-      event.currentTarget.setPointerCapture(event.pointerId)
     }
     // В тупике (дальше расходов нет) лента почти не поддаётся — это и есть подсказка.
     slide(canMove(swipeDirection(dx)) ? dx : Math.max(-26, Math.min(26, dx * 0.2)), 0)
@@ -386,16 +385,21 @@ function EntryView({ bootstrap, setBootstrap, currentId, setCurrentId, refreshPe
     const start = swipe.current
     swipe.current = null
     if (!start?.active) return
-    // Освобождать захват вручную не нужно: браузер снимает его сам сразу после pointerup и pointercancel,
-    // а Firefox к этому моменту уже считает pointerId недействительным и бросает NotFoundError.
+    // Capture-фаза секции срабатывает раньше pointerup клавиши и не даёт свайпу случайно ввести цифру.
+    event.stopPropagation()
     const dx = event.clientX - start.x
     if (Math.abs(dx) > SWIPE_COMMIT && canMove(swipeDirection(dx))) move(swipeDirection(dx))
     else slide(0, 220)
   }
 
   const swipeCancel = () => {
-    if (swipe.current?.active) slide(0, 220)
+    const start = swipe.current
     swipe.current = null
+    if (!start?.active) return
+    // Touch-браузеры иногда присылают pointercancel после уже распознанного горизонтального жеста.
+    const dx = start.lastX - start.x
+    if (Math.abs(dx) > SWIPE_COMMIT && canMove(swipeDirection(dx))) move(swipeDirection(dx))
+    else slide(0, 220)
   }
 
   const occurredLabel = formatEntryDate(form.occurredAt) || formatEntryDate(isoToLocalInput(new Date().toISOString()))
@@ -419,7 +423,7 @@ function EntryView({ bootstrap, setBootstrap, currentId, setCurrentId, refreshPe
   const otherFace = currentCategory && !main.some((item) => item.id === currentCategory.id) ? currentCategory : null
   const dirty = current ? JSON.stringify(form) !== JSON.stringify(inputFromExpense(current, bootstrap.currencies)) : false
   const categoryHint = !ready ? 'Сначала введите сумму' : dirty ? 'Выберите категорию, чтобы сохранить' : 'Категория'
-  return <section className={`entry-view${current ? ' editing' : ''}`} onPointerDown={swipeStart} onPointerMove={swipeMove} onPointerUp={swipeEnd} onPointerCancel={swipeCancel}>
+  return <section className={`entry-view${current ? ' editing' : ''}`} onPointerDown={swipeStart} onPointerMove={swipeMove} onPointerUpCapture={swipeEnd} onPointerCancel={swipeCancel}>
     <div className="swipe-area">
       <div className="entry-track" ref={trackRef}>
         {olderFace && <div className="entry-card aside older" aria-hidden="true"><EntryCard face={olderFace}/></div>}
