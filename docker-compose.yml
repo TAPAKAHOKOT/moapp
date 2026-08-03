@@ -49,7 +49,7 @@ services:
       APP_PIN: ${APP_PIN:?APP_PIN is required}
       SESSION_SECRET: ${SESSION_SECRET:?SESSION_SECRET is required}
       SESSION_TTL_DAYS: ${SESSION_TTL_DAYS:-30}
-      APP_ORIGIN: ${APP_ORIGIN:-https://maapp.tapakahokot.com}
+      APP_ORIGIN: ${APP_ORIGIN:-https://moapp.tapakahokot.com}
       DEFAULT_ANALYTICS_CURRENCY: ${DEFAULT_ANALYTICS_CURRENCY:-RSD}
       FRANKFURTER_URL: ${FRANKFURTER_URL:-https://api.frankfurter.dev/v2}
       TZ: ${TZ:-Europe/Belgrade}
