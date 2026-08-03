@@ -215,7 +215,9 @@ function EntryView({ bootstrap, setBootstrap, currentId, setCurrentId, refreshPe
   const [showNote, setShowNote] = useState(false)
   const [saving, setSaving] = useState(false)
   const { toast, notify, dismiss } = useToast()
-  const swipe = useRef<{ x: number; y: number; lastX: number; active: boolean } | null>(null)
+  const swipe = useRef<{ x: number; y: number; lastX: number; active: boolean; touchId: number | null } | null>(null)
+  const suppressTouchPointerUp = useRef(false)
+  const entryRef = useRef<HTMLElement>(null)
   const trackRef = useRef<HTMLDivElement>(null)
   const deleteRef = useRef<HTMLButtonElement>(null)
   const offset = useRef(0)
@@ -318,7 +320,7 @@ function EntryView({ bootstrap, setBootstrap, currentId, setCurrentId, refreshPe
     refreshPending()
   }
 
-  // Справа от текущей карточки лежит более старый расход, слева — более новый (или карточка нового расхода).
+  // Слева от текущей карточки лежит более старый расход, справа — более новый (или карточка нового расхода).
   const olderNeighbour = current ? activeExpenses[currentIndex + 1] : activeExpenses[0]
   const newerNeighbour = currentIndex > 0 ? activeExpenses[currentIndex - 1] : undefined
   const canMove = (direction: 'older' | 'newer') => direction === 'older' ? Boolean(olderNeighbour) : currentIndex >= 0
@@ -346,7 +348,7 @@ function EntryView({ bootstrap, setBootstrap, currentId, setCurrentId, refreshPe
     const target = direction === 'older' ? olderNeighbour : newerNeighbour ?? null
     if (!current) draft.current = form
     const span = (trackRef.current?.clientWidth ?? 320) + CARD_GAP
-    const destination = direction === 'older' ? -span : span
+    const destination = direction === 'older' ? span : -span
     const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches
     // Чем ближе карточка уже подтянута пальцем, тем короче доводка — быстрый флик не должен ощущаться вязким.
     const duration = reduced ? 0 : Math.min(300, Math.max(150, Math.abs(destination - offset.current) * 0.55))
@@ -358,49 +360,120 @@ function EntryView({ bootstrap, setBootstrap, currentId, setCurrentId, refreshPe
     tap(6)
   }
 
-  const swipeStart = (event: React.PointerEvent) => {
+  const swipeStartAt = (clientX: number, clientY: number, touchId: number | null = null) => {
     // Пока лента доезжает до соседа, новый жест перехватывать нельзя: подмена карточки дёрнет её из-под пальца.
-    if (committing.current || categorySheet || currencySheet || dateSheet) return
-    if (event.pointerType === 'mouse' && event.button !== 0) return
-    swipe.current = { x: event.clientX, y: event.clientY, lastX: event.clientX, active: false }
+    if (committing.current || categorySheet || currencySheet || dateSheet) return false
+    swipe.current = { x: clientX, y: clientY, lastX: clientX, active: false, touchId }
+    return true
   }
 
-  const swipeMove = (event: React.PointerEvent) => {
+  const swipeMoveTo = (clientX: number, clientY: number) => {
     const start = swipe.current
-    if (!start) return
-    const dx = event.clientX - start.x
-    const dy = event.clientY - start.y
-    start.lastX = event.clientX
+    if (!start) return false
+    const dx = clientX - start.x
+    const dy = clientY - start.y
+    start.lastX = clientX
     if (!start.active) {
-      // Пока не ясно, горизонтальный это жест или что-то ещё, — не мешаем ни скроллу, ни нажатию клавиши.
-      if (Math.abs(dy) > SWIPE_START && Math.abs(dy) > Math.abs(dx)) { swipe.current = null; return }
-      if (Math.abs(dx) < SWIPE_START || Math.abs(dx) < Math.abs(dy) * 1.5) return
+      // Пока не ясно, горизонтальный это жест или что-то ещё, — не мешаем вертикальному скроллу и нажатию клавиши.
+      if (Math.abs(dy) > SWIPE_START && Math.abs(dy) > Math.abs(dx)) { swipe.current = null; return false }
+      if (Math.abs(dx) < SWIPE_START || Math.abs(dx) < Math.abs(dy) * 1.5) return false
       start.active = true
     }
     // В тупике (дальше расходов нет) лента почти не поддаётся — это и есть подсказка.
     slide(canMove(swipeDirection(dx)) ? dx : Math.max(-26, Math.min(26, dx * 0.2)), 0)
+    return true
   }
 
-  const swipeEnd = (event: React.PointerEvent) => {
+  const swipeEndAt = (clientX: number) => {
     const start = swipe.current
     swipe.current = null
-    if (!start?.active) return
-    // Capture-фаза секции срабатывает раньше pointerup клавиши и не даёт свайпу случайно ввести цифру.
-    event.stopPropagation()
-    const dx = event.clientX - start.x
+    if (!start?.active) return false
+    const dx = clientX - start.x
     if (Math.abs(dx) > SWIPE_COMMIT && canMove(swipeDirection(dx))) move(swipeDirection(dx))
     else slide(0, 220)
+    return true
   }
 
-  const swipeCancel = () => {
+  const swipeCancelAt = () => {
     const start = swipe.current
     swipe.current = null
     if (!start?.active) return
-    // Touch-браузеры иногда присылают pointercancel после уже распознанного горизонтального жеста.
     const dx = start.lastX - start.x
     if (Math.abs(dx) > SWIPE_COMMIT && canMove(swipeDirection(dx))) move(swipeDirection(dx))
     else slide(0, 220)
   }
+
+  const usesNativeTouch = () => 'ontouchstart' in window
+
+  const swipeStart = (event: React.PointerEvent) => {
+    if (event.pointerType === 'touch' && usesNativeTouch()) return
+    if (event.pointerType === 'mouse' && event.button !== 0) return
+    swipeStartAt(event.clientX, event.clientY)
+  }
+
+  const swipeMove = (event: React.PointerEvent) => {
+    if (event.pointerType === 'touch' && usesNativeTouch()) return
+    swipeMoveTo(event.clientX, event.clientY)
+  }
+
+  const swipeEnd = (event: React.PointerEvent) => {
+    if (event.pointerType === 'touch' && usesNativeTouch()) {
+      // touchend завершит жест следом; здесь нужно лишь не пропустить pointerup до нажатой клавиши.
+      if (suppressTouchPointerUp.current || swipe.current?.active) event.stopPropagation()
+      return
+    }
+    if (!swipe.current?.active) { swipe.current = null; return }
+    // Capture-фаза секции срабатывает раньше pointerup клавиши и не даёт свайпу случайно ввести цифру.
+    event.stopPropagation()
+    swipeEndAt(event.clientX)
+  }
+
+  const swipeCancel = (event: React.PointerEvent) => {
+    if (event.pointerType === 'touch' && usesNativeTouch()) return
+    swipeCancelAt()
+  }
+
+  useEffect(() => {
+    const node = entryRef.current
+    if (!node || !usesNativeTouch()) return
+    const findTouch = (touches: TouchList, identifier: number) => Array.from(touches).find((touch) => touch.identifier === identifier)
+    const touchStart = (event: TouchEvent) => {
+      suppressTouchPointerUp.current = false
+      if (event.touches.length !== 1) { swipe.current = null; return }
+      const touch = event.touches[0]
+      if (touch) swipeStartAt(touch.clientX, touch.clientY, touch.identifier)
+    }
+    const touchMove = (event: TouchEvent) => {
+      const start = swipe.current
+      if (!start || start.touchId === null) return
+      const touch = findTouch(event.touches, start.touchId)
+      if (touch && swipeMoveTo(touch.clientX, touch.clientY)) {
+        suppressTouchPointerUp.current = true
+        event.preventDefault()
+      }
+    }
+    const touchEnd = (event: TouchEvent) => {
+      const start = swipe.current
+      if (!start || start.touchId === null) return
+      const touch = findTouch(event.changedTouches, start.touchId)
+      if (touch) swipeEndAt(touch.clientX)
+      setTimeout(() => { suppressTouchPointerUp.current = false }, 0)
+    }
+    const touchCancel = () => {
+      swipeCancelAt()
+      setTimeout(() => { suppressTouchPointerUp.current = false }, 0)
+    }
+    node.addEventListener('touchstart', touchStart, { passive: true })
+    node.addEventListener('touchmove', touchMove, { passive: false })
+    node.addEventListener('touchend', touchEnd, { passive: true })
+    node.addEventListener('touchcancel', touchCancel, { passive: true })
+    return () => {
+      node.removeEventListener('touchstart', touchStart)
+      node.removeEventListener('touchmove', touchMove)
+      node.removeEventListener('touchend', touchEnd)
+      node.removeEventListener('touchcancel', touchCancel)
+    }
+  })
 
   const occurredLabel = formatEntryDate(form.occurredAt) || formatEntryDate(isoToLocalInput(new Date().toISOString()))
   const faceOf = (expense: Expense): CardFace => {
@@ -423,7 +496,7 @@ function EntryView({ bootstrap, setBootstrap, currentId, setCurrentId, refreshPe
   const otherFace = currentCategory && !main.some((item) => item.id === currentCategory.id) ? currentCategory : null
   const dirty = current ? JSON.stringify(form) !== JSON.stringify(inputFromExpense(current, bootstrap.currencies)) : false
   const categoryHint = !ready ? 'Сначала введите сумму' : dirty ? 'Выберите категорию, чтобы сохранить' : 'Категория'
-  return <section className={`entry-view${current ? ' editing' : ''}`} onPointerDown={swipeStart} onPointerMove={swipeMove} onPointerUpCapture={swipeEnd} onPointerCancel={swipeCancel}>
+  return <section ref={entryRef} className={`entry-view${current ? ' editing' : ''}`} onPointerDown={swipeStart} onPointerMove={swipeMove} onPointerUpCapture={swipeEnd} onPointerCancel={swipeCancel}>
     <div className="swipe-area">
       <div className="entry-track" ref={trackRef}>
         {olderFace && <div className="entry-card aside older" aria-hidden="true"><EntryCard face={olderFace}/></div>}

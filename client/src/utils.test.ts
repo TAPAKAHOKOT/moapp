@@ -17,9 +17,9 @@ describe('money helpers', () => {
 })
 
 describe('expense timeline gestures', () => {
-  it('moves left into older expenses and right into newer expenses', () => {
-    expect(swipeDirection(-80)).toBe('older')
-    expect(swipeDirection(80)).toBe('newer')
+  it('moves right into older expenses and left into newer expenses', () => {
+    expect(swipeDirection(80)).toBe('older')
+    expect(swipeDirection(-80)).toBe('newer')
   })
 })
 
