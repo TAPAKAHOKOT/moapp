@@ -1,0 +1,113 @@
+name: moapp
+
+services:
+  volume-init:
+    image: alpine:3.22
+    restart: "no"
+    command: ["chown", "1000:1000", "/data"]
+    volumes:
+      - moapp_data:/data
+
+  restore:
+    image: litestream/litestream:0.5.15
+    restart: "no"
+    user: "1000:1000"
+    depends_on:
+      volume-init:
+        condition: service_completed_successfully
+    command:
+      - restore
+      - -config
+      - /etc/litestream.yml
+      - -if-db-not-exists
+      - -if-replica-exists
+      - -integrity-check
+      - quick
+      - /data/moapp.sqlite
+    environment: &r2-environment
+      R2_ACCOUNT_ID: ${R2_ACCOUNT_ID:?R2_ACCOUNT_ID is required}
+      R2_BUCKET: ${R2_BUCKET:?R2_BUCKET is required}
+      R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID:?R2_ACCESS_KEY_ID is required}
+      R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY:?R2_SECRET_ACCESS_KEY is required}
+      R2_REPLICA_PATH: ${R2_REPLICA_PATH:-production/moapp.sqlite}
+    volumes:
+      - moapp_data:/data
+      - ./infra/litestream.yml:/etc/litestream.yml:ro
+
+  app:
+    image: ${APP_IMAGE:-ghcr.io/your-github-user/moapp:latest}
+    restart: unless-stopped
+    init: true
+    depends_on:
+      restore:
+        condition: service_completed_successfully
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 3000
+      DATABASE_PATH: /data/moapp.sqlite
+      APP_PIN: ${APP_PIN:?APP_PIN is required}
+      SESSION_SECRET: ${SESSION_SECRET:?SESSION_SECRET is required}
+      SESSION_TTL_DAYS: ${SESSION_TTL_DAYS:-30}
+      APP_ORIGIN: ${APP_ORIGIN:-https://maapp.tapakahokot.com}
+      DEFAULT_ANALYTICS_CURRENCY: ${DEFAULT_ANALYTICS_CURRENCY:-RSD}
+      FRANKFURTER_URL: ${FRANKFURTER_URL:-https://api.frankfurter.dev/v2}
+      TZ: ${TZ:-Europe/Belgrade}
+    ports:
+      - "127.0.0.1:${APP_HOST_PORT:-8892}:3000"
+    volumes:
+      - moapp_data:/data
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/api/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 15s
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
+
+  litestream:
+    image: litestream/litestream:0.5.15
+    restart: unless-stopped
+    stop_grace_period: 30s
+    user: "1000:1000"
+    command: ["replicate", "-config", "/etc/litestream.yml"]
+    depends_on:
+      app:
+        condition: service_healthy
+    environment: *r2-environment
+    volumes:
+      - moapp_data:/data
+      - ./infra/litestream.yml:/etc/litestream.yml:ro
+    healthcheck:
+      test: ["CMD", "litestream", "databases", "-config", "/etc/litestream.yml"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    security_opt:
+      - no-new-privileges:true
+
+  backup-verify:
+    profiles: ["maintenance"]
+    build:
+      context: ./infra
+      dockerfile: backup-check.Dockerfile
+    restart: "no"
+    environment: *r2-environment
+    volumes:
+      - ./infra/litestream.yml:/etc/litestream.yml:ro
+    tmpfs:
+      - /restore:size=256m,mode=0700
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  moapp_data:
+    name: moapp_data

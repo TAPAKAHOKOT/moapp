@@ -1,0 +1,105 @@
+name: CI and deploy
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run lint --if-present
+      - run: npm test --if-present
+      - run: npm run build
+
+  image:
+    if: github.event_name != 'pull_request'
+    needs: check
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.image-name.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compute lowercase image name
+        id: image-name
+        shell: bash
+        run: |
+          echo "image=ghcr.io/${GITHUB_REPOSITORY,,}:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+          echo "latest=ghcr.io/${GITHUB_REPOSITORY,,}:latest" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ steps.image-name.outputs.image }}
+            ${{ steps.image-name.outputs.latest }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    if: github.event_name != 'pull_request'
+    needs: image
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      DEPLOY_PATH: ${{ secrets.VPS_DEPLOY_PATH }}
+      IMAGE: ${{ needs.image.outputs.image }}
+      SSH_HOST: ${{ secrets.VPS_HOST }}
+      SSH_PORT: ${{ secrets.VPS_SSH_PORT }}
+      SSH_USER: ${{ secrets.VPS_USER }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure SSH
+        shell: bash
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          : "${SSH_PORT:=22}"
+          ssh-keyscan -p "$SSH_PORT" -H "$SSH_HOST" >> ~/.ssh/known_hosts
+          echo "SSH_PORT=$SSH_PORT" >> "$GITHUB_ENV"
+      - name: Upload deployment configuration
+        shell: bash
+        run: |
+          : "${DEPLOY_PATH:=/opt/moapp}"
+          ssh -p "$SSH_PORT" "$SSH_USER@$SSH_HOST" "mkdir -p '$DEPLOY_PATH/infra/nginx'"
+          scp -P "$SSH_PORT" docker-compose.yml .dockerignore "$SSH_USER@$SSH_HOST:$DEPLOY_PATH/"
+          scp -P "$SSH_PORT" infra/litestream.yml infra/backup-check.Dockerfile infra/verify-backup.sh "$SSH_USER@$SSH_HOST:$DEPLOY_PATH/infra/"
+          echo "DEPLOY_PATH=$DEPLOY_PATH" >> "$GITHUB_ENV"
+      - name: Log in to GHCR on VPS
+        shell: bash
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: printf '%s' "$GHCR_TOKEN" | ssh -p "$SSH_PORT" "$SSH_USER@$SSH_HOST" "docker login ghcr.io -u '${{ github.actor }}' --password-stdin"
+      - name: Deploy and check health
+        shell: bash
+        run: |
+          ssh -p "$SSH_PORT" "$SSH_USER@$SSH_HOST" "cd '$DEPLOY_PATH' && APP_IMAGE='$IMAGE' docker compose --env-file .env pull app restore litestream && APP_IMAGE='$IMAGE' docker compose --env-file .env up -d --remove-orphans && for attempt in \$(seq 1 24); do curl --fail --silent http://127.0.0.1:8892/api/health >/dev/null && exit 0; sleep 5; done; docker compose logs --tail=100 app; exit 1"
+      - name: Remove temporary GHCR credentials
+        if: always()
+        shell: bash
+        run: ssh -p "$SSH_PORT" "$SSH_USER@$SSH_HOST" "docker logout ghcr.io >/dev/null 2>&1 || true"

@@ -1,0 +1,26 @@
+logging:
+  level: info
+  type: text
+
+# Create a full snapshot daily and keep point-in-time recovery data for 90 days.
+# Litestream durations are expressed in hours (days are not accepted).
+snapshot:
+  interval: 24h
+  retention: 2160h
+
+validation:
+  interval: 24h
+
+dbs:
+  - path: /data/moapp.sqlite
+    monitor-interval: 1s
+    checkpoint-interval: 1m
+    replica:
+      type: s3
+      bucket: ${R2_BUCKET}
+      path: ${R2_REPLICA_PATH}
+      endpoint: ${R2_ACCOUNT_ID}.r2.cloudflarestorage.com
+      region: auto
+      access-key-id: ${R2_ACCESS_KEY_ID}
+      secret-access-key: ${R2_SECRET_ACCESS_KEY}
+      sync-interval: 10s
