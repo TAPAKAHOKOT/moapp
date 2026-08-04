@@ -66,22 +66,43 @@ export function buildExpenseOperation(type: OutboxItem['type'], expense: Expense
 }
 
 export async function submitExpenseOperation(type: OutboxItem['type'], expense: Expense): Promise<SyncResult | null> {
-  const item = buildExpenseOperation(type, expense, crypto.randomUUID(), new Date().toISOString())
-  await queueMutation(item)
-  if (!navigator.onLine) return null
-  try {
-    const response = await sendOperations([item])
-    const result = response.results[0]
-    if (!result) throw new ApiError(500, 'INVALID_RESPONSE', 'Сервер вернул пустой результат')
-    if (result.status === 'applied' || result.status === 'unchanged') await removeMutation(item.operationId)
-    else if (result.status === 'conflict') await queueMutation({ ...item, status: 'conflict', error: result.error?.message, current: result.current })
-    else { await removeMutation(item.operationId); throw new ApiError(400, result.error?.code || 'VALIDATION', result.error?.message || 'Изменение отклонено') }
-    return result
-  } catch (error) {
-    if (error instanceof TypeError) return null
-    await removeMutation(item.operationId)
-    throw error
+  const result = (await submitExpenseOperations(type, [expense]))[0] ?? null
+  if (result?.status === 'error') throw new ApiError(400, result.error?.code || 'VALIDATION', result.error?.message || 'Изменение отклонено')
+  return result
+}
+
+export async function submitExpenseOperations(type: OutboxItem['type'], expenses: Expense[]): Promise<(SyncResult | null)[]> {
+  const createdAt = new Date().toISOString()
+  const items = expenses.map((expense) => buildExpenseOperation(type, expense, crypto.randomUUID(), createdAt))
+  await Promise.all(items.map((item) => queueMutation(item)))
+  if (!navigator.onLine) return items.map(() => null)
+  const results: (SyncResult | null)[] = []
+  for (let offset = 0; offset < items.length; offset += 200) {
+    const chunk = items.slice(offset, offset + 200)
+    let response: Awaited<ReturnType<typeof sendOperations>>
+    try { response = await sendOperations(chunk) }
+    catch (error) {
+      if (error instanceof TypeError) return [...results, ...items.slice(offset).map(() => null)]
+      const remaining = items.slice(offset)
+      await Promise.all(remaining.map((item) => removeMutation(item.operationId)))
+      const message = error instanceof ApiError ? error.message : 'Изменение отклонено'
+      return [...results, ...remaining.map((item) => ({ operationId:item.operationId,status:'error' as const,error:{code:'REQUEST_ERROR',message} }))]
+    }
+    for (const item of chunk) {
+      const result = response.results.find((candidate) => candidate.operationId === item.operationId)
+      if (!result) {
+        await removeMutation(item.operationId)
+        results.push({ operationId:item.operationId,status:'error',error:{code:'INVALID_RESPONSE',message:'Сервер вернул пустой результат'} })
+      } else if (result.status === 'applied' || result.status === 'unchanged') {
+        await removeMutation(item.operationId); results.push(result)
+      } else if (result.status === 'conflict') {
+        await queueMutation({ ...item, status:'conflict', error:result.error?.message, current:result.current }); results.push(result)
+      } else {
+        await removeMutation(item.operationId); results.push(result)
+      }
+    }
   }
+  return results
 }
 
 export async function syncOutbox(onProgress?: () => void) {

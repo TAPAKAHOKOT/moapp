@@ -6,7 +6,7 @@ import {
 import { Bar, Doughnut, Line } from 'react-chartjs-2'
 import {
   ApiError, createCategory, discardOutboxIssues, getAnalytics, getBootstrap, getSession, login, logout,
-  reorderCategories, submitExpenseOperation, syncOutbox, updateCategory,
+  reorderCategories, submitExpenseOperation, submitExpenseOperations, syncOutbox, updateCategory,
 } from './api'
 import { cacheBootstrap, outboxStats, readCachedBootstrap } from './offline'
 import type { AnalyticsData, Bootstrap, Category, Currency, Expense } from './types'
@@ -15,6 +15,7 @@ import { amountToMinor, applyKeypad, convertExpense, isoToLocalInput, localDateK
 ChartJS.register(ArcElement, BarElement, CategoryScale, Filler, Legend, LinearScale, LineElement, PointElement, Tooltip)
 
 type Tab = 'entry' | 'history' | 'analytics' | 'settings'
+type Theme = 'light' | 'dark'
 const CHART_COLOR = '#758d69'
 const EMPTY_FORM = { amount: '', currency: 'RSD', note: '', occurredAt: '' }
 
@@ -524,28 +525,70 @@ function EntryView({ bootstrap, setBootstrap, currentId, setCurrentId, refreshPe
   </section>
 }
 
-function HistoryView({ bootstrap, edit }: { bootstrap: Bootstrap; edit: (id: string) => void }) {
+function HistoryView({ bootstrap, setBootstrap, edit, refreshPending }: {
+  bootstrap: Bootstrap
+  setBootstrap: React.Dispatch<React.SetStateAction<Bootstrap>>
+  edit: (id: string) => void
+  refreshPending: () => void
+}) {
   const [query, setQuery] = useState('')
+  const [selected, setSelected] = useState<Set<string>>(() => new Set())
+  const [deleting, setDeleting] = useState(false)
+  const { toast, notify, dismiss } = useToast()
   const categoryMap = new Map(bootstrap.categories.map((category) => [category.id, category]))
   const expenses = bootstrap.expenses.filter((item) => !item.deletedAt && `${categoryMap.get(item.categoryId)?.name} ${item.currency}`.toLowerCase().includes(query.toLowerCase())).sort((a,b) => b.occurredAt.localeCompare(a.occurredAt))
   const grouped = expenses.reduce<Record<string, Expense[]>>((result, item) => { (result[localDateKey(item.occurredAt)] ||= []).push(item); return result }, {})
   const groups = Object.entries(grouped)
-  return <section className="page"><header className="page-header"><p className="eyebrow">Все записи</p><h1>История</h1></header><input className="search" type="search" placeholder="Категория или валюта" value={query} onChange={(e) => setQuery(e.target.value)}/>
-    <div className="history-list">{groups.map(([date, items]) => <div key={date} className="history-day"><div className="history-date"><span>{new Date(`${date}T12:00:00Z`).toLocaleDateString('ru-RU',{timeZone:'Europe/Belgrade',day:'numeric',month:'long'})}</span><b>{items?.length}</b></div>{items?.map((expense) => { const category=categoryMap.get(expense.categoryId); return <button key={expense.id} onClick={() => edit(expense.id)}><i style={{backgroundColor:category?.color}}/><span><b>{category?.name || 'Архивная категория'}</b><small>{new Date(expense.occurredAt).toLocaleTimeString('ru-RU',{timeZone:'Europe/Belgrade',hour:'2-digit',minute:'2-digit'})}{expense.note ? ` · ${expense.note}`:''}</small></span><strong>{money(expense.amountMinor,expense.currency,bootstrap.currencies)}</strong>{expense.pending && <em>●</em>}</button>})}</div>)}</div>
+  const toggle = (id: string) => setSelected((current) => {
+    const next = new Set(current)
+    if (next.has(id)) next.delete(id)
+    else next.add(id)
+    return next
+  })
+  const removeSelected = async () => {
+    const targets = bootstrap.expenses.filter((expense) => !expense.deletedAt && selected.has(expense.id))
+    if (!targets.length || deleting) return
+    setDeleting(true)
+    const targetIds = new Set(targets.map((expense) => expense.id))
+    const originals = new Map(targets.map((expense) => [expense.id, expense]))
+    const deletedAt = new Date().toISOString()
+    setBootstrap((data) => ({ ...data, expenses: data.expenses.map((expense) => targetIds.has(expense.id) ? { ...expense, deletedAt, pending: !navigator.onLine } : expense) }))
+    setSelected(new Set())
+    const results = await submitExpenseOperations('deleteExpense', targets)
+    const failed = new Set<string>()
+    const stored = new Map<string, Expense>()
+    results.forEach((result, index) => {
+      const target = targets[index]!
+      if (result?.status === 'error') failed.add(target.id)
+      else stored.set(target.id, result?.expense ?? { ...target, deletedAt, version: target.version + 1, pending: true })
+    })
+    setBootstrap((data) => ({ ...data, expenses: data.expenses.map((expense) => {
+      if (failed.has(expense.id)) return originals.get(expense.id) ?? expense
+      return stored.get(expense.id) ?? expense
+    }) }))
+    notify(failed.size ? `Удалено: ${targets.length - failed.size}. Не удалось: ${failed.size}` : `Удалено расходов: ${targets.length}`)
+    refreshPending()
+    setDeleting(false)
+  }
+  return <section className="page"><header className="page-header history-title"><div><p className="eyebrow">Все записи</p><h1>История</h1></div><button type="button" className={`icon-danger history-delete${selected.size ? '' : ' off'}`} onClick={removeSelected} disabled={deleting} tabIndex={selected.size ? 0 : -1} aria-hidden={!selected.size} aria-label={`Удалить выбранные расходы: ${selected.size}`}><TrashIcon/></button></header><input className="search" type="search" placeholder="Категория или валюта" value={query} onChange={(e) => setQuery(e.target.value)}/>
+    <div className="history-list">{groups.map(([date, items]) => <div key={date} className="history-day"><div className="history-date"><span>{new Date(`${date}T12:00:00Z`).toLocaleDateString('ru-RU',{timeZone:'Europe/Belgrade',day:'numeric',month:'long'})}</span><b>{items?.length}</b></div>{items?.map((expense) => { const category=categoryMap.get(expense.categoryId); const checked=selected.has(expense.id); return <div key={expense.id} className={`history-expense${checked ? ' selected' : ''}`}><label className="expense-check" aria-label={`Выбрать расход ${category?.name || ''}`}><input type="checkbox" checked={checked} onChange={()=>toggle(expense.id)}/><span/></label><button className="history-row" onClick={() => edit(expense.id)}><i style={{backgroundColor:category?.color}}/><span><b>{category?.name || 'Архивная категория'}</b><small>{new Date(expense.occurredAt).toLocaleTimeString('ru-RU',{timeZone:'Europe/Belgrade',hour:'2-digit',minute:'2-digit'})}{expense.note ? ` · ${expense.note}`:''}</small></span><strong>{money(expense.amountMinor,expense.currency,bootstrap.currencies)}</strong>{expense.pending && <em>●</em>}</button></div>})}</div>)}</div>
+    {toast&&<Toast toast={toast} onDismiss={dismiss}/>}
   </section>
 }
 
-function AnalyticsView({ bootstrap }: { bootstrap: Bootstrap }) {
+function AnalyticsView({ bootstrap, theme, active }: { bootstrap: Bootstrap; theme: Theme; active: boolean }) {
   const [target, setTarget] = useState(localStorage.getItem('moapp:analytics-currency') || 'RSD')
   const [currencySheet, setCurrencySheet] = useState(false)
-  const [remote,setRemote]=useState<AnalyticsData|null>(null)
+  const [remote,setRemote]=useState<{revision:string;data:AnalyticsData}|null>(null)
   const [analyticsOffline,setAnalyticsOffline]=useState(!navigator.onLine)
   const [analyticsLoading,setAnalyticsLoading]=useState(navigator.onLine)
   const today=localDateKey(new Date())
-  const from=bootstrap.expenses.length?bootstrap.expenses.map((expense)=>localDateKey(expense.occurredAt)).sort()[0]!:today.slice(0,8)+'01'
+  const activeExpenses=bootstrap.expenses.filter((expense)=>!expense.deletedAt)
+  const from=activeExpenses.length?activeExpenses.map((expense)=>localDateKey(expense.occurredAt)).sort()[0]!:today.slice(0,8)+'01'
+  const expenseRevision=bootstrap.expenses.map((expense)=>`${expense.id}:${expense.version}:${expense.updatedAt}:${expense.deletedAt||''}:${expense.amountMinor}:${expense.currency}:${expense.categoryId}:${expense.occurredAt}`).join('|')
   const fallback=useMemo(()=>fallbackAnalytics(bootstrap,target,from,today),[bootstrap,target,from,today])
-  useEffect(()=>{let active=true;if(!navigator.onLine){setAnalyticsOffline(true);setAnalyticsLoading(false);setRemote(null);return}setAnalyticsLoading(true);getAnalytics(from,today,target).then((result)=>{if(active){setRemote(result);setAnalyticsOffline(false);setAnalyticsLoading(false)}}).catch(()=>{if(active){setRemote(null);setAnalyticsOffline(true);setAnalyticsLoading(false)}});return()=>{active=false}},[from,today,target])
-  const data=remote||fallback
+  useEffect(()=>{let active=true;if(!navigator.onLine){setAnalyticsOffline(true);setAnalyticsLoading(false);setRemote(null);return}setAnalyticsLoading(true);getAnalytics(from,today,target).then((result)=>{if(active){setRemote({revision:expenseRevision,data:result});setAnalyticsOffline(false);setAnalyticsLoading(false)}}).catch(()=>{if(active){setRemote(null);setAnalyticsOffline(true);setAnalyticsLoading(false)}});return()=>{active=false}},[from,today,target,expenseRevision])
+  const data=remote?.revision===expenseRevision?remote.data:fallback
   const decimals=bootstrap.currencies.find((currency)=>currency.code===target)?.decimals??2
   const divisor=10**decimals
   const end=new Date(`${today}T12:00:00Z`)
@@ -556,13 +599,15 @@ function AnalyticsView({ bootstrap }: { bootstrap: Bootstrap }) {
   const serverWeekdays=new Map(data.weekdays.map((point)=>[point.weekday,point.amountMinor/divisor]))
   const weekdays=[1,2,3,4,5,6,0].map((day)=>serverWeekdays.get(day)||0)
   const total=data.totalMinor/divisor
-  const chartOptions = { responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false}}, scales:{x:{grid:{display:false},ticks:{maxTicksLimit:6}},y:{display:false}} }
+  const chartColor=theme==='dark'?'#9ab58e':CHART_COLOR
+  const chartText=theme==='dark'?'#a6aaa1':'#73776f'
+  const chartOptions = { responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false}}, scales:{x:{grid:{display:false},ticks:{maxTicksLimit:6,color:chartText}},y:{display:false}} }
   return <section className="page analytics"><header className="page-header analytics-title"><div><p className="eyebrow">Все расходы</p><h1>{new Intl.NumberFormat('ru-RU',{maximumFractionDigits:0}).format(total)} <small>{target}</small></h1></div><button className="currency-choice" onClick={()=>setCurrencySheet(true)}>{target}⌄</button></header>
     <p className="rate-caption">{analyticsLoading?'Обновляем аналитику…':analyticsOffline?'Офлайн-оценка по последнему сохранённому курсу':data.rateDate?`Исторические курсы с ${new Date(`${data.rateDate}T12:00:00Z`).toLocaleDateString('ru-RU')}`:'Курсы обновляются'}{data.missingCurrencies.length?` · без ${data.missingCurrencies.join(', ')}`:''}</p>
-    <div className="chart-card"><div><h2>Динамика</h2><p>Последние 30 дней</p></div><div className="line-chart"><Line data={{labels:days.map((d)=>new Date(`${d}T12:00`).toLocaleDateString('ru-RU',{day:'numeric',month:'short'})),datasets:[{data:byDay,borderColor:CHART_COLOR,backgroundColor:'rgba(117,141,105,.12)',fill:true,tension:.38,pointRadius:0,borderWidth:2}]}} options={chartOptions}/></div></div>
+    <div className="chart-card"><div><h2>Динамика</h2><p>Последние 30 дней</p></div><div className="line-chart"><Line data={{labels:days.map((d)=>new Date(`${d}T12:00`).toLocaleDateString('ru-RU',{day:'numeric',month:'short'})),datasets:[{data:byDay,borderColor:chartColor,backgroundColor:theme==='dark'?'rgba(154,181,142,.16)':'rgba(117,141,105,.12)',fill:true,tension:.38,pointRadius:0,borderWidth:2}]}} options={chartOptions}/></div></div>
     <div className="chart-card split"><div><h2>Категории</h2><p>За всё время</p></div><div className="donut-wrap"><Doughnut data={{labels:byCategory.map((x)=>x.name),datasets:[{data:byCategory.map((x)=>x.value),backgroundColor:byCategory.map((x)=>x.color||'#a9afa5'),borderWidth:0,spacing:3}]}} options={{responsive:true,maintainAspectRatio:false,cutout:'72%',plugins:{legend:{display:false}}}}/><span>{byCategory.length}</span></div><div className="legend">{byCategory.slice(0,5).map((x)=><div key={x.categoryId}><i style={{background:x.color||'#a9afa5'}}/><span>{x.name}</span><b>{Math.round(x.value/total*100)||0}%</b></div>)}</div></div>
-    <div className="chart-card"><div><h2>По дням недели</h2><p>Когда тратим больше</p></div><div className="bar-chart"><Bar data={{labels:['Пн','Вт','Ср','Чт','Пт','Сб','Вс'],datasets:[{data:weekdays,backgroundColor:CHART_COLOR,borderRadius:6,borderSkipped:false}]}} options={chartOptions}/></div></div>
-    <Heatmap points={data.calendar.map((point)=>({date:point.date,value:point.amountMinor/divisor}))}/>
+    <div className="chart-card"><div><h2>По дням недели</h2><p>Когда тратим больше</p></div><div className="bar-chart"><Bar data={{labels:['Пн','Вт','Ср','Чт','Пт','Сб','Вс'],datasets:[{data:weekdays,backgroundColor:chartColor,borderRadius:6,borderSkipped:false}]}} options={chartOptions}/></div></div>
+    <Heatmap points={data.calendar.map((point)=>({date:point.date,value:point.amountMinor/divisor}))} active={active}/>
     {currencySheet && <CurrencySheet currencies={bootstrap.currencies} selected={target} onClose={()=>setCurrencySheet(false)} onSelect={(code)=>{setTarget(code);localStorage.setItem('moapp:analytics-currency',code);setCurrencySheet(false)}}/>}
   </section>
 }
@@ -576,15 +621,24 @@ function fallbackAnalytics(bootstrap:Bootstrap,target:string,from:string,to:stri
   return {currency:target,from,to,totalMinor:sum(expenses),expenseCount:expenses.length,convertedCount:expenses.length,rateDate:bootstrap.rates.date,missingCurrencies:[],daily:dates.map((date)=>{const items=expenses.filter((item)=>item.date===date);return{date,amountMinor:sum(items),count:items.length}}),categories:[...categories.values()].map((category)=>{const items=expenses.filter((item)=>item.expense.categoryId===category.id);return{categoryId:category.id,name:category.name,color:category.color,amountMinor:sum(items),count:items.length}}),weekdays:Array.from({length:7},(_,weekday)=>{const items=expenses.filter((item)=>(weekdayFromDateKey(item.date)+1)%7===weekday);return{weekday,amountMinor:sum(items),count:items.length}}),calendar:dates.map((date)=>{const items=expenses.filter((item)=>item.date===date);return{date,amountMinor:sum(items),count:items.length}})}
 }
 
-function Heatmap({ points }: { points:{date:string;value:number}[] }) {
+function Heatmap({ points, active }: { points:{date:string;value:number}[]; active:boolean }) {
+  const scrollRef=useRef<HTMLDivElement>(null)
+  const aligned=useRef(false)
   const values = new Map(points.map((point)=>[point.date,point.value]))
   const max=Math.max(...values.values(),1)
-  const today=localDateKey(new Date());const start=new Date(`${today}T12:00:00Z`);start.setUTCDate(start.getUTCDate()-363-weekdayFromDateKey(today))
+  const today=localDateKey(new Date());const start=new Date(`${today}T12:00:00Z`);start.setUTCDate(start.getUTCDate()-364-weekdayFromDateKey(today))
   const days=Array.from({length:371},(_,index)=>{const d=new Date(start);d.setUTCDate(d.getUTCDate()+index);return d})
-  return <div className="chart-card heatmap-card"><div><h2>Календарь расходов</h2><p>Последние 12 месяцев</p></div><div className="heatmap-scroll"><div className="heatmap">{days.map((date)=>{const key=date.toISOString().slice(0,10);const value=values.get(key)||0;const level=value===0?0:Math.max(1,Math.ceil(value/max*4));return <span key={key} className={`level-${level}`} title={`${date.toLocaleDateString('ru-RU',{timeZone:'Europe/Belgrade'})}: ${Math.round(value)}`}/>})}</div></div><div className="heat-legend"><span>Меньше</span>{[0,1,2,3,4].map((level)=><i key={level} className={`level-${level}`}/>)}<span>Больше</span></div></div>
+  const weeks=Array.from({length:53},(_,week)=>days.slice(week*7,week*7+7))
+  const monthLabels=weeks.map((week,index)=>{
+    const first=week.find((date)=>date.getUTCDate()===1)
+    const labelDate=first??(index===0?week[0]:undefined)
+    return labelDate?.toLocaleDateString('ru-RU',{timeZone:'UTC',month:'short'}).replace('.','')??''
+  })
+  useLayoutEffect(()=>{if(!active||aligned.current)return;const frame=requestAnimationFrame(()=>{const node=scrollRef.current;if(node){node.scrollLeft=node.scrollWidth;aligned.current=true}});return()=>cancelAnimationFrame(frame)},[active])
+  return <div className="chart-card heatmap-card"><div><h2>Календарь расходов</h2><p>Последние 12 месяцев</p></div><div className="heatmap-scroll" ref={scrollRef}><div className="heatmap-content"><div className="heatmap-months">{monthLabels.map((label,index)=><span key={index}>{label}</span>)}</div><div className="heatmap">{days.map((date)=>{const key=date.toISOString().slice(0,10);const value=values.get(key)||0;const level=value===0?0:Math.max(1,Math.ceil(value/max*4));return <span key={key} className={`level-${level}`} title={`${date.toLocaleDateString('ru-RU',{timeZone:'Europe/Belgrade'})}: ${Math.round(value)}`}/>})}</div></div></div><div className="heat-legend"><span>Меньше</span>{[0,1,2,3,4].map((level)=><i key={level} className={`level-${level}`}/>)}<span>Больше</span></div></div>
 }
 
-function SettingsView({ bootstrap, setBootstrap, refreshPending, onLogout }: { bootstrap:Bootstrap; setBootstrap:React.Dispatch<React.SetStateAction<Bootstrap>>; refreshPending:()=>void;onLogout:()=>void }) {
+function SettingsView({ bootstrap, setBootstrap, refreshPending, onLogout, theme, onThemeChange }: { bootstrap:Bootstrap; setBootstrap:React.Dispatch<React.SetStateAction<Bootstrap>>; refreshPending:()=>void;onLogout:()=>void;theme:Theme;onThemeChange:(theme:Theme)=>void }) {
   const [editing,setEditing]=useState<Category|null>(null)
   const [adding,setAdding]=useState(false)
   const {toast:notice,notify:setNotice,dismiss:hideNotice}=useToast()
@@ -595,7 +649,7 @@ function SettingsView({ bootstrap, setBootstrap, refreshPending, onLogout }: { b
   return <section className="page"><header className="page-header settings-title"><div><p className="eyebrow">Настройки</p><h1>Категории</h1></div><button className="add-button" onClick={()=>setAdding(true)}>＋</button></header><p className="page-intro">Настройте быстрые кнопки и их порядок. Категории меняются только онлайн; архивные останутся в истории.</p>{notice&&<Toast toast={notice} onDismiss={hideNotice}/>}
     {groups.map(([placement,title])=><div className="settings-group" key={placement}><h2>{title}</h2>{bootstrap.categories.filter((x)=>x.placement===placement&&!x.archivedAt).sort((a,b)=>a.sortOrder-b.sortOrder).map((category)=><div className="category-row" key={category.id}><i style={{background:category.color}}/><button className="category-name" onClick={()=>setEditing(category)}>{category.name}</button><button onClick={()=>move(category,-1)} aria-label="Выше">↑</button><button onClick={()=>move(category,1)} aria-label="Ниже">↓</button></div>)}</div>)}
     {(editing||adding)&&<CategoryEditor category={editing} colors={colors} onClose={()=>{setEditing(null);setAdding(false)}} onSave={save}/>}
-    <div className="settings-group"><h2>Это устройство</h2><p className="page-intro">Для работы без интернета расходы и сессия доверенно сохраняются в этом браузере. Не используйте эту функцию на общем устройстве.</p><button className="danger-link" onClick={onLogout}>Выйти и удалить локальные данные</button></div>
+    <div className="settings-group"><h2>Это устройство</h2><div className="theme-setting"><div><b>Оформление</b><small>Сохраняется только на этом устройстве</small></div><div className="theme-toggle" role="group" aria-label="Тема оформления"><button type="button" className={theme==='light'?'selected':''} aria-pressed={theme==='light'} onClick={()=>onThemeChange('light')}>Светлая</button><button type="button" className={theme==='dark'?'selected':''} aria-pressed={theme==='dark'} onClick={()=>onThemeChange('dark')}>Тёмная</button></div></div><p className="page-intro device-note">Для работы без интернета расходы и сессия доверенно сохраняются в этом браузере. Не используйте эту функцию на общем устройстве.</p><button className="danger-link" onClick={onLogout}>Выйти и удалить локальные данные</button></div>
   </section>
 }
 
@@ -614,6 +668,7 @@ export default function App() {
   const [offline,setOffline]=useState(!navigator.onLine)
   const [pending,setPending]=useState({total:0,conflicts:0,failed:0})
   const [error,setError]=useState('')
+  const [theme,setTheme]=useState<Theme>(()=>localStorage.getItem('moapp:theme')==='dark'?'dark':'light')
   const [confirm,setConfirm]=useState<Confirmation|null>(null)
   const pagerRef=useRef<HTMLDivElement>(null)
   const settleTimer=useRef<ReturnType<typeof setTimeout>>(undefined)
@@ -626,6 +681,7 @@ export default function App() {
   useEffect(()=>{if(bootstrap)void cacheBootstrap(bootstrap)},[bootstrap])
   useEffect(()=>{const online=()=>{setOffline(false);load()};const off=()=>setOffline(true);const unauthorized=()=>{localStorage.removeItem('moapp:known-session');setAuth('locked')};window.addEventListener('online',online);window.addEventListener('offline',off);window.addEventListener('moapp:unauthorized',unauthorized);return()=>{window.removeEventListener('online',online);window.removeEventListener('offline',off);window.removeEventListener('moapp:unauthorized',unauthorized)}},[]) // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(()=>{const id=setTimeout(()=>setChartsReady(true),150);return()=>clearTimeout(id)},[])
+  useEffect(()=>{document.documentElement.dataset.theme=theme;document.documentElement.style.colorScheme=theme;localStorage.setItem('moapp:theme',theme)},[theme])
   useEffect(()=>{const node=pagerRef.current;if(!node||!node.clientWidth)return;const left=tabs.findIndex((item)=>item.id===tab)*node.clientWidth;if(Math.abs(node.scrollLeft-left)>4)node.scrollTo({left,behavior:'smooth'})},[tab])
   // Панель браузера меняет высоту и ширину вьюпорта — страницу нужно вернуть точно на место без анимации.
   useEffect(()=>{const snap=()=>{const node=pagerRef.current;if(!node||!node.clientWidth)return;node.scrollLeft=tabs.findIndex((item)=>item.id===tab)*node.clientWidth};window.addEventListener('resize',snap);return()=>window.removeEventListener('resize',snap)},[tab])
@@ -642,9 +698,9 @@ export default function App() {
     {(offline||pending.total>0)&&(pending.conflicts||pending.failed?<button className="sync-status attention" onClick={resolveIssues}><span>{pending.conflicts?`Конфликт: ${pending.conflicts} · решить`:`Ошибка: ${pending.failed} · решить`}</span><i/></button>:<div className="sync-status"><span>{offline?'Офлайн':`Синхронизация: ${pending.total}`}</span><i/></div>)}
     <main className="pager" ref={pagerRef} onScroll={onPagerScroll}>
       <div className="page-slot"><EntryView bootstrap={bootstrap} setBootstrap={updateBootstrap} currentId={currentId} setCurrentId={setCurrentId} refreshPending={refreshPending}/></div>
-      <div className="page-slot"><HistoryView bootstrap={bootstrap} edit={edit}/></div>
-      <div className="page-slot">{chartsReady&&<AnalyticsView bootstrap={bootstrap}/>}</div>
-      <div className="page-slot"><SettingsView bootstrap={bootstrap} setBootstrap={updateBootstrap} refreshPending={refreshPending} onLogout={signOut}/></div>
+      <div className="page-slot"><HistoryView bootstrap={bootstrap} setBootstrap={updateBootstrap} edit={edit} refreshPending={refreshPending}/></div>
+      <div className="page-slot">{chartsReady&&<AnalyticsView bootstrap={bootstrap} theme={theme} active={tab==='analytics'}/>}</div>
+      <div className="page-slot"><SettingsView bootstrap={bootstrap} setBootstrap={updateBootstrap} refreshPending={refreshPending} onLogout={signOut} theme={theme} onThemeChange={setTheme}/></div>
     </main>
     <nav className="bottom-nav" aria-label="Основная навигация">{tabs.map((item)=><button key={item.id} className={tab===item.id?'active':''} onClick={()=>{setTab(item.id);if(item.id==='entry')setCurrentId(null)}}><span>{item.icon}</span><small>{item.label}</small></button>)}</nav>
     {confirm&&<ConfirmSheet confirmation={confirm} onCancel={()=>setConfirm(null)}/>}
