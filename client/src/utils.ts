@@ -58,3 +58,26 @@ export function localDateKey(value: string | Date, timeZone = APP_TIME_ZONE) {
 export function weekdayFromDateKey(key: string) {
   return (new Date(`${key}T12:00:00Z`).getUTCDay() + 6) % 7
 }
+
+export function shiftDateKey(key: string, days: number) {
+  const date = new Date(`${key}T12:00:00Z`)
+  date.setUTCDate(date.getUTCDate() + days)
+  return date.toISOString().slice(0, 10)
+}
+
+export function startOfWeekDateKey(key: string) {
+  return shiftDateKey(key, -weekdayFromDateKey(key))
+}
+
+export function weekDateRange(key: string, offset = 0) {
+  const from = shiftDateKey(startOfWeekDateKey(key), offset * 7)
+  return { from, to: shiftDateKey(from, 6) }
+}
+
+export function countCalendarWeekdays(from: string, to: string) {
+  const counts = Array.from({ length: 7 }, () => 0)
+  for (let date = from; date <= to; date = shiftDateKey(date, 1)) {
+    counts[new Date(`${date}T12:00:00Z`).getUTCDay()]!++
+  }
+  return counts
+}

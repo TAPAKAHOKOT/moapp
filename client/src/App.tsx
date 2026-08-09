@@ -3,6 +3,7 @@ import {
   ArcElement, BarElement, CategoryScale, Chart as ChartJS, Filler, Legend,
   LinearScale, LineElement, PointElement, Tooltip,
 } from 'chart.js'
+import type { ChartOptions } from 'chart.js'
 import { Bar, Doughnut, Line } from 'react-chartjs-2'
 import {
   ApiError, createCategory, discardOutboxIssues, getAnalytics, getBootstrap, getSession, login, logout,
@@ -10,12 +11,13 @@ import {
 } from './api'
 import { cacheBootstrap, outboxStats, readCachedBootstrap } from './offline'
 import type { AnalyticsData, Bootstrap, Category, Currency, Expense } from './types'
-import { amountToMinor, applyKeypad, convertExpense, isoToLocalInput, localDateKey, localInputToIso, swipeDirection, weekdayFromDateKey } from './utils'
+import { amountToMinor, applyKeypad, convertExpense, countCalendarWeekdays, isoToLocalInput, localDateKey, localInputToIso, shiftDateKey, swipeDirection, weekdayFromDateKey, weekDateRange } from './utils'
 
 ChartJS.register(ArcElement, BarElement, CategoryScale, Filler, Legend, LinearScale, LineElement, PointElement, Tooltip)
 
 type Tab = 'entry' | 'history' | 'analytics' | 'settings'
 type Theme = 'light' | 'dark'
+type AnalyticsPeriod = 'week' | 'all'
 const CHART_COLOR = '#758d69'
 const EMPTY_FORM = { amount: '', currency: 'RSD', note: '', occurredAt: '' }
 
@@ -578,47 +580,100 @@ function HistoryView({ bootstrap, setBootstrap, edit, refreshPending }: {
 
 function AnalyticsView({ bootstrap, theme, active }: { bootstrap: Bootstrap; theme: Theme; active: boolean }) {
   const [target, setTarget] = useState(localStorage.getItem('moapp:analytics-currency') || 'RSD')
+  const [period, setPeriod] = useState<AnalyticsPeriod>('week')
+  const [weekOffset, setWeekOffset] = useState(0)
   const [currencySheet, setCurrencySheet] = useState(false)
-  const [remote,setRemote]=useState<{revision:string;data:AnalyticsData}|null>(null)
+  const [remote,setRemote]=useState<{key:string;data:AnalyticsData;previousTotalMinor:number|null}|null>(null)
   const [analyticsOffline,setAnalyticsOffline]=useState(!navigator.onLine)
   const [analyticsLoading,setAnalyticsLoading]=useState(navigator.onLine)
   const today=localDateKey(new Date())
+  const selectedWeek=weekDateRange(today,weekOffset)
+  const previousWeek=weekDateRange(today,weekOffset-1)
+  const currentWeekPartial=weekOffset===0&&weekdayFromDateKey(today)<6
+  const previousAnalyticsTo=currentWeekPartial?shiftDateKey(previousWeek.from,weekdayFromDateKey(today)):previousWeek.to
   const activeExpenses=bootstrap.expenses.filter((expense)=>!expense.deletedAt)
-  const from=activeExpenses.length?activeExpenses.map((expense)=>localDateKey(expense.occurredAt)).sort()[0]!:today.slice(0,8)+'01'
+  const allFrom=activeExpenses.length?activeExpenses.map((expense)=>localDateKey(expense.occurredAt)).sort()[0]!:today.slice(0,8)+'01'
+  const from=period==='week'?selectedWeek.from:allFrom
+  const to=period==='week'&&selectedWeek.to>today?today:selectedWeek.to
+  const analyticsTo=period==='week'?to:today
   const expenseRevision=bootstrap.expenses.map((expense)=>`${expense.id}:${expense.version}:${expense.updatedAt}:${expense.deletedAt||''}:${expense.amountMinor}:${expense.currency}:${expense.categoryId}:${expense.occurredAt}`).join('|')
-  const fallback=useMemo(()=>fallbackAnalytics(bootstrap,target,from,today),[bootstrap,target,from,today])
-  useEffect(()=>{let active=true;if(!navigator.onLine){setAnalyticsOffline(true);setAnalyticsLoading(false);setRemote(null);return}setAnalyticsLoading(true);getAnalytics(from,today,target).then((result)=>{if(active){setRemote({revision:expenseRevision,data:result});setAnalyticsOffline(false);setAnalyticsLoading(false)}}).catch(()=>{if(active){setRemote(null);setAnalyticsOffline(true);setAnalyticsLoading(false)}});return()=>{active=false}},[from,today,target,expenseRevision])
-  const data=remote?.revision===expenseRevision?remote.data:fallback
+  const requestKey=`${expenseRevision}:${from}:${analyticsTo}:${target}:${period}`
+  const fallback=useMemo(()=>fallbackAnalytics(bootstrap,target,from,analyticsTo),[bootstrap,target,from,analyticsTo])
+  const previousFallback=useMemo(()=>fallbackAnalytics(bootstrap,target,previousWeek.from,previousAnalyticsTo),[bootstrap,target,previousWeek.from,previousAnalyticsTo])
+  useEffect(()=>{let active=true;if(!navigator.onLine){setAnalyticsOffline(true);setAnalyticsLoading(false);setRemote(null);return}setAnalyticsLoading(true);Promise.all([getAnalytics(from,analyticsTo,target),period==='week'?getAnalytics(previousWeek.from,previousAnalyticsTo,target):Promise.resolve(null)]).then(([result,previous])=>{if(active){setRemote({key:requestKey,data:result,previousTotalMinor:previous?.totalMinor??null});setAnalyticsOffline(false);setAnalyticsLoading(false)}}).catch(()=>{if(active){setRemote(null);setAnalyticsOffline(true);setAnalyticsLoading(false)}});return()=>{active=false}},[from,analyticsTo,target,period,previousWeek.from,previousAnalyticsTo,requestKey])
+  const data=remote?.key===requestKey?remote.data:fallback
+  const previousTotalMinor=remote?.key===requestKey?remote.previousTotalMinor:period==='week'?previousFallback.totalMinor:null
   const decimals=bootstrap.currencies.find((currency)=>currency.code===target)?.decimals??2
   const divisor=10**decimals
-  const end=new Date(`${today}T12:00:00Z`)
-  const days=Array.from({length:30},(_,index)=>{const date=new Date(end);date.setUTCDate(date.getUTCDate()-29+index);return date.toISOString().slice(0,10)})
+  const days=period==='week'
+    ? Array.from({length:7},(_,index)=>shiftDateKey(selectedWeek.from,index))
+    : Array.from({length:30},(_,index)=>shiftDateKey(today,-29+index))
   const dailyMap=new Map(data.daily.map((point)=>[point.date,point.amountMinor/divisor]))
   const byDay=days.map((date)=>dailyMap.get(date)||0)
   const byCategory=data.categories.filter((item)=>item.amountMinor>0).map((item)=>({...item,value:item.amountMinor/divisor}))
   const serverWeekdays=new Map(data.weekdays.map((point)=>[point.weekday,point.amountMinor/divisor]))
-  const weekdays=[1,2,3,4,5,6,0].map((day)=>serverWeekdays.get(day)||0)
+  const weekdayCounts=countCalendarWeekdays(from,analyticsTo)
+  const weekdays=[1,2,3,4,5,6,0].map((day)=>Math.round((serverWeekdays.get(day)||0)/(weekdayCounts[day]||1)))
   const total=data.totalMinor/divisor
+  const previousTotal=(previousTotalMinor??0)/divisor
+  const elapsedDays=period==='week'?(weekOffset===0?weekdayFromDateKey(today)+1:7):Math.max(1,Math.round((new Date(`${analyticsTo}T12:00:00Z`).getTime()-new Date(`${from}T12:00:00Z`).getTime())/86400000)+1)
+  const weekRange=formatWeekRange(selectedWeek.from,selectedWeek.to)
+  const last30Total=byDay.reduce((sum,value)=>sum+value,0)
   const chartColor=theme==='dark'?'#9ab58e':CHART_COLOR
   const chartText=theme==='dark'?'#a6aaa1':'#73776f'
-  const chartOptions = { responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false}}, scales:{x:{grid:{display:false},ticks:{maxTicksLimit:6,color:chartText}},y:{display:false}} }
-  return <section className="page analytics"><header className="page-header analytics-title"><div><p className="eyebrow">Все расходы</p><h1>{new Intl.NumberFormat('ru-RU',{maximumFractionDigits:0}).format(total)} <small>{target}</small></h1></div><button className="currency-choice" onClick={()=>setCurrencySheet(true)}>{target}⌄</button></header>
+  const lineOptions:ChartOptions<'line'>={responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{label:(context)=>formatAnalyticsAmount(context.parsed.y??0,target)}}},scales:{x:{grid:{display:false},ticks:{maxTicksLimit:period==='week'?7:6,color:chartText}},y:{beginAtZero:true,border:{display:false},grid:{color:theme==='dark'?'rgba(255,255,255,.06)':'rgba(32,37,31,.06)'},ticks:{color:chartText,maxTicksLimit:4,callback:(value)=>formatCompactNumber(Number(value))}}}}
+  const barOptions:ChartOptions<'bar'>={responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{label:(context)=>formatAnalyticsAmount(context.parsed.y??0,target)}}},scales:{x:{grid:{display:false},ticks:{color:chartText}},y:{beginAtZero:true,border:{display:false},grid:{color:theme==='dark'?'rgba(255,255,255,.06)':'rgba(32,37,31,.06)'},ticks:{color:chartText,maxTicksLimit:4,callback:(value)=>formatCompactNumber(Number(value))}}}}
+  return <section className="page analytics"><header className="page-header analytics-title"><div><p className="eyebrow">{period==='week'?'Расходы за неделю':'Все расходы'}</p><h1>{new Intl.NumberFormat('ru-RU',{maximumFractionDigits:0}).format(total)} <small>{target}</small></h1>{period==='week'&&<p className="analytics-comparison">{weekComparisonLabel(total,previousTotal,currentWeekPartial)}</p>}</div><button className="currency-choice" onClick={()=>setCurrencySheet(true)}>{target}⌄</button></header>
+    <div className="analytics-period" role="group" aria-label="Период аналитики"><button type="button" aria-pressed={period==='week'} className={period==='week'?'selected':''} onClick={()=>setPeriod('week')}>Неделя</button><button type="button" aria-pressed={period==='all'} className={period==='all'?'selected':''} onClick={()=>setPeriod('all')}>Всё время</button></div>
+    {period==='week'&&<div className="week-navigator"><button type="button" onClick={()=>setWeekOffset((value)=>value-1)} aria-label="Предыдущая неделя">‹</button><div><b>{weekOffset===0?'Текущая неделя':weekOffset===-1?'Прошлая неделя':'Выбранная неделя'}</b><span>{weekRange}</span></div><button type="button" onClick={()=>setWeekOffset((value)=>Math.min(0,value+1))} disabled={weekOffset===0} aria-label="Следующая неделя">›</button></div>}
+    <div className="analytics-stats"><div><span>{period==='week'?'Среднее в день':'Последние 30 дней'}</span><strong>{formatAnalyticsAmount(period==='week'?total/elapsedDays:last30Total,target)}</strong></div><div><span>Операций</span><strong>{data.expenseCount}</strong></div></div>
     <p className="rate-caption">{analyticsLoading?'Обновляем аналитику…':analyticsOffline?'Офлайн-оценка по последнему сохранённому курсу':data.rateDate?`Исторические курсы с ${new Date(`${data.rateDate}T12:00:00Z`).toLocaleDateString('ru-RU')}`:'Курсы обновляются'}{data.missingCurrencies.length?` · без ${data.missingCurrencies.join(', ')}`:''}</p>
-    <div className="chart-card"><div><h2>Динамика</h2><p>Последние 30 дней</p></div><div className="line-chart"><Line data={{labels:days.map((d)=>new Date(`${d}T12:00`).toLocaleDateString('ru-RU',{day:'numeric',month:'short'})),datasets:[{data:byDay,borderColor:chartColor,backgroundColor:theme==='dark'?'rgba(154,181,142,.16)':'rgba(117,141,105,.12)',fill:true,tension:.38,pointRadius:0,borderWidth:2}]}} options={chartOptions}/></div></div>
-    <div className="chart-card split"><div><h2>Категории</h2><p>За всё время</p></div><div className="donut-wrap"><Doughnut data={{labels:byCategory.map((x)=>x.name),datasets:[{data:byCategory.map((x)=>x.value),backgroundColor:byCategory.map((x)=>x.color||'#a9afa5'),borderWidth:0,spacing:3}]}} options={{responsive:true,maintainAspectRatio:false,cutout:'72%',plugins:{legend:{display:false}}}}/><span>{byCategory.length}</span></div><div className="legend">{byCategory.slice(0,5).map((x)=><div key={x.categoryId}><i style={{background:x.color||'#a9afa5'}}/><span>{x.name}</span><b>{Math.round(x.value/total*100)||0}%</b></div>)}</div></div>
-    <div className="chart-card"><div><h2>По дням недели</h2><p>Когда тратим больше</p></div><div className="bar-chart"><Bar data={{labels:['Пн','Вт','Ср','Чт','Пт','Сб','Вс'],datasets:[{data:weekdays,backgroundColor:chartColor,borderRadius:6,borderSkipped:false}]}} options={chartOptions}/></div></div>
-    <Heatmap points={data.calendar.map((point)=>({date:point.date,value:point.amountMinor/divisor}))} active={active}/>
+    <div className="chart-card"><div><h2>Динамика</h2><p>{period==='week'?'Понедельник — воскресенье':'Последние 30 дней'}</p></div>{data.expenseCount?<div className="line-chart"><Line data={{labels:days.map((d)=>new Date(`${d}T12:00`).toLocaleDateString('ru-RU',period==='week'?{weekday:'short'}:{day:'numeric',month:'short'})),datasets:[{data:byDay,borderColor:chartColor,backgroundColor:theme==='dark'?'rgba(154,181,142,.16)':'rgba(117,141,105,.12)',fill:true,tension:.38,pointRadius:period==='week'?3:0,pointBackgroundColor:chartColor,borderWidth:2}]}} options={lineOptions}/></div>:<AnalyticsEmpty>В этом периоде ещё нет расходов</AnalyticsEmpty>}</div>
+    <div className={`chart-card${byCategory.length?' split':''}`}><div><h2>Категории</h2><p>{period==='week'?'За выбранную неделю':'За всё время'}</p></div>{byCategory.length?<><div className="donut-wrap"><Doughnut data={{labels:byCategory.map((x)=>x.name),datasets:[{data:byCategory.map((x)=>x.value),backgroundColor:byCategory.map((x)=>x.color||'#a9afa5'),borderWidth:0,spacing:3}]}} options={{responsive:true,maintainAspectRatio:false,cutout:'72%',plugins:{legend:{display:false},tooltip:{callbacks:{label:(context)=>formatAnalyticsAmount(context.parsed,target)}}}}}/><span>{formatCompactNumber(total)}</span></div><div className="legend">{byCategory.slice(0,5).map((x)=><div key={x.categoryId}><i style={{background:x.color||'#a9afa5'}}/><span>{x.name}</span><span className="legend-value"><b>{formatAnalyticsAmount(x.value,target)}</b><small>{Math.round(x.value/total*100)||0}%</small></span></div>)}</div></>:<AnalyticsEmpty>Категории появятся после первого расхода</AnalyticsEmpty>}</div>
+    {period==='all'&&<div className="chart-card"><div><h2>По дням недели</h2><p>Средние траты за календарный день</p></div>{data.expenseCount?<div className="bar-chart"><Bar data={{labels:['Пн','Вт','Ср','Чт','Пт','Сб','Вс'],datasets:[{data:weekdays,backgroundColor:chartColor,borderRadius:6,borderSkipped:false}]}} options={barOptions}/></div>:<AnalyticsEmpty>Недостаточно данных для сравнения</AnalyticsEmpty>}</div>}
+    {period==='all'&&<Heatmap
+      points={data.calendar.map((point)=>({date:point.date,value:point.amountMinor/divisor}))}
+      active={active}
+    />}
     {currencySheet && <CurrencySheet currencies={bootstrap.currencies} selected={target} onClose={()=>setCurrencySheet(false)} onSelect={(code)=>{setTarget(code);localStorage.setItem('moapp:analytics-currency',code);setCurrencySheet(false)}}/>}
   </section>
+}
+
+function AnalyticsEmpty({children}:{children:string}) {
+  return <div className="analytics-empty"><span>⌁</span><p>{children}</p></div>
+}
+
+function formatAnalyticsAmount(value:number,currency:string) {
+  return `${new Intl.NumberFormat('ru-RU',{maximumFractionDigits:0}).format(value)} ${currency}`
+}
+
+function formatCompactNumber(value:number) {
+  return new Intl.NumberFormat('ru-RU',{notation:'compact',maximumFractionDigits:1}).format(value)
+}
+
+function weekComparisonLabel(total:number,previous:number,partial:boolean) {
+  const comparison=partial?'за те же дни прошлой недели':'на прошлой неделе'
+  if(previous===0)return total===0?`Как и ${comparison}`:partial?'За те же дни прошлой недели расходов не было':'На прошлой неделе расходов не было'
+  const difference=Math.round(Math.abs(total-previous)/previous*100)
+  if(difference===0)return partial?'На уровне тех же дней прошлой недели':'На уровне прошлой недели'
+  return `На ${difference}% ${total>previous?'больше':'меньше'}, чем ${comparison}`
 }
 
 function fallbackAnalytics(bootstrap:Bootstrap,target:string,from:string,to:string):AnalyticsData {
   const decimals=bootstrap.currencies.find((currency)=>currency.code===target)?.decimals??2
   const categories=new Map(bootstrap.categories.map((category)=>[category.id,category]))
-  const expenses=bootstrap.expenses.filter((expense)=>!expense.deletedAt).map((expense)=>({expense,date:localDateKey(expense.occurredAt),amountMinor:Math.round(convertExpense(expense,target,bootstrap.currencies,bootstrap.rates)*10**decimals)}))
+  const expenses=bootstrap.expenses.filter((expense)=>!expense.deletedAt).map((expense)=>({expense,date:localDateKey(expense.occurredAt),amountMinor:Math.round(convertExpense(expense,target,bootstrap.currencies,bootstrap.rates)*10**decimals)})).filter((item)=>item.date>=from&&item.date<=to)
   const sum=(items:typeof expenses)=>items.reduce((total,item)=>total+item.amountMinor,0)
   const dates=[...new Set(expenses.map((item)=>item.date))]
   return {currency:target,from,to,totalMinor:sum(expenses),expenseCount:expenses.length,convertedCount:expenses.length,rateDate:bootstrap.rates.date,missingCurrencies:[],daily:dates.map((date)=>{const items=expenses.filter((item)=>item.date===date);return{date,amountMinor:sum(items),count:items.length}}),categories:[...categories.values()].map((category)=>{const items=expenses.filter((item)=>item.expense.categoryId===category.id);return{categoryId:category.id,name:category.name,color:category.color,amountMinor:sum(items),count:items.length}}),weekdays:Array.from({length:7},(_,weekday)=>{const items=expenses.filter((item)=>(weekdayFromDateKey(item.date)+1)%7===weekday);return{weekday,amountMinor:sum(items),count:items.length}}),calendar:dates.map((date)=>{const items=expenses.filter((item)=>item.date===date);return{date,amountMinor:sum(items),count:items.length}})}
+}
+
+function formatWeekRange(from:string,to:string) {
+  const start=new Date(`${from}T12:00:00Z`),end=new Date(`${to}T12:00:00Z`)
+  const sameMonth=start.getUTCFullYear()===end.getUTCFullYear()&&start.getUTCMonth()===end.getUTCMonth()
+  const startLabel=start.toLocaleDateString('ru-RU',{timeZone:'UTC',day:'numeric',...(sameMonth?{}:{month:'short'})}).replace('.','')
+  const endLabel=end.toLocaleDateString('ru-RU',{timeZone:'UTC',day:'numeric',month:sameMonth?'long':'short'}).replace('.','')
+  return `${startLabel}–${endLabel}`
 }
 
 function Heatmap({ points, active }: { points:{date:string;value:number}[]; active:boolean }) {
