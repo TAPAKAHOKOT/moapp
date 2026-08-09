@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { amountToMinor, applyKeypad, convertExpense, isoToLocalInput, localDateKey, localInputToIso, swipeDirection, weekdayFromDateKey } from './utils'
+import { amountToMinor, applyKeypad, convertExpense, countCalendarWeekdays, isoToLocalInput, localDateKey, localInputToIso, shiftDateKey, startOfWeekDateKey, swipeDirection, weekdayFromDateKey, weekDateRange } from './utils'
 import type { Currency, Expense } from './types'
 
 const currencies: Currency[] = [
@@ -34,5 +34,18 @@ describe('Belgrade date helpers', () => {
   it('groups a late UTC expense by Belgrade day', () => {
     expect(localDateKey('2026-08-03T22:30:00.000Z')).toBe('2026-08-04')
     expect(weekdayFromDateKey('2026-08-03')).toBe(0)
+  })
+  it('finds a Monday-to-Sunday budget week', () => {
+    expect(startOfWeekDateKey('2026-08-09')).toBe('2026-08-03')
+    expect(shiftDateKey(startOfWeekDateKey('2026-08-09'), 6)).toBe('2026-08-09')
+    expect(startOfWeekDateKey('2026-08-03')).toBe('2026-08-03')
+  })
+  it('moves between complete budget weeks', () => {
+    expect(weekDateRange('2026-08-09')).toEqual({ from: '2026-08-03', to: '2026-08-09' })
+    expect(weekDateRange('2026-08-09', -1)).toEqual({ from: '2026-07-27', to: '2026-08-02' })
+  })
+  it('counts weekday occurrences for fair all-time averages', () => {
+    expect(countCalendarWeekdays('2026-08-03', '2026-08-09')).toEqual([1, 1, 1, 1, 1, 1, 1])
+    expect(countCalendarWeekdays('2026-08-03', '2026-08-16')).toEqual([2, 2, 2, 2, 2, 2, 2])
   })
 })
