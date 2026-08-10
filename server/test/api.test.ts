@@ -130,6 +130,30 @@ test("analytics groups UTC timestamps by the Belgrade calendar day", async () =>
   assert.equal(analytics.statusCode, 200);
   assert.equal(analytics.json().totalMinor, 4200);
   assert.equal(analytics.json().daily[0].date, "2026-08-04");
+
+  const otherId = randomUUID();
+  assert.equal((await app.inject({
+    method: "POST",
+    url: "/api/expenses",
+    headers: { cookie },
+    payload: {
+      id: otherId,
+      amountMinor: 1800,
+      currency: "RSD",
+      categoryId: "other",
+      occurredAt: "2026-08-04T10:00:00.000Z",
+      note: null
+    }
+  })).statusCode, 201);
+  const products = await app.inject({
+    method: "GET",
+    url: "/api/analytics?from=2026-08-04&to=2026-08-04&currency=RSD&categoryId=products",
+    headers: { cookie }
+  });
+  assert.equal(products.statusCode, 200);
+  assert.equal(products.json().totalMinor, 4200);
+  assert.equal(products.json().expenseCount, 1);
+  assert.deepEqual(products.json().categories.map((category: { categoryId: string }) => category.categoryId), ["products"]);
 });
 
 test("changing APP_PIN revokes sessions while retaining SESSION_SECRET", async () => {

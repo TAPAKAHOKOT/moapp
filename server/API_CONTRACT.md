@@ -77,7 +77,7 @@ Frankfurter v2 data is cached in SQLite with EUR as the pivot currency. The serv
 - `GET /api/rates/status`
 - `POST /api/rates/refresh`
 - `GET /api/rates/convert?amount=10&from=EUR&to=RSD&date=2026-08-03`
-- `GET /api/analytics?from=YYYY-MM-DD&to=YYYY-MM-DD&currency=RSD`
+- `GET /api/analytics?from=YYYY-MM-DD&to=YYYY-MM-DD&currency=RSD&categoryId=products` — `categoryId` is optional; when omitted, all categories are included.
 
 Analytics returns `totalMinor`, counts, daily points, category totals, weekday totals, and calendar points, all converted to the requested currency. `missingCurrencies` makes partial results explicit when no cached conversion is available, and `rateDate` reports the oldest rate involved.
 

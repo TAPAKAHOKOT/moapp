@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { amountToMinor, applyKeypad, convertExpense, countCalendarWeekdays, isoToLocalInput, localDateKey, localInputToIso, shiftDateKey, startOfWeekDateKey, swipeDirection, weekdayFromDateKey, weekDateRange } from './utils'
+import { amountToMinor, applyKeypad, convertExpense, countCalendarWeekdays, isoToLocalInput, localDateKey, localInputToIso, monthDateRange, shiftDateKey, startOfWeekDateKey, swipeDirection, weekdayFromDateKey, weekDateRange } from './utils'
 import type { Currency, Expense } from './types'
 
 const currencies: Currency[] = [
@@ -43,6 +43,10 @@ describe('Belgrade date helpers', () => {
   it('moves between complete budget weeks', () => {
     expect(weekDateRange('2026-08-09')).toEqual({ from: '2026-08-03', to: '2026-08-09' })
     expect(weekDateRange('2026-08-09', -1)).toEqual({ from: '2026-07-27', to: '2026-08-02' })
+  })
+  it('moves between complete calendar months', () => {
+    expect(monthDateRange('2026-08-09')).toEqual({ from: '2026-08-01', to: '2026-08-31' })
+    expect(monthDateRange('2026-03-09', -1)).toEqual({ from: '2026-02-01', to: '2026-02-28' })
   })
   it('counts weekday occurrences for fair all-time averages', () => {
     expect(countCalendarWeekdays('2026-08-03', '2026-08-09')).toEqual([1, 1, 1, 1, 1, 1, 1])
