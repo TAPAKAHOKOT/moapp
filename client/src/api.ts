@@ -140,8 +140,10 @@ export async function reorderCategories(ids: string[]) {
   return request<{ categories: Category[] }>('/api/categories/order', { method: 'PUT', body: JSON.stringify({ ids }) })
 }
 
-export function getAnalytics(from: string, to: string, currency: string) {
-  return request<AnalyticsData>(`/api/analytics?${new URLSearchParams({ from, to, currency })}`)
+export function getAnalytics(from: string, to: string, currency: string, categoryId?: string) {
+  const params = new URLSearchParams({ from, to, currency })
+  if (categoryId) params.set('categoryId', categoryId)
+  return request<AnalyticsData>(`/api/analytics?${params}`)
 }
 
 function fallbackCurrencies(): Currency[] {

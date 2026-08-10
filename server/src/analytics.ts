@@ -20,14 +20,17 @@ function localDateKey(value: string | Date): string {
 
 export async function registerAnalyticsRoutes(app: FastifyInstance): Promise<void> {
   app.get("/api/analytics", { preHandler: app.requireAuth }, async (request, reply) => {
-    const q = request.query as { from?: string; to?: string; currency?: string };
+    const q = request.query as { from?: string; to?: string; currency?: string; categoryId?: string };
     const today = localDateKey(new Date());
     const defaultFrom = `${today.slice(0, 8)}01`;
     const from = q.from ?? defaultFrom;
     const to = q.to ?? today;
+    const categoryId = q.categoryId?.trim();
     const target = (q.currency ?? app.config.defaultAnalyticsCurrency).toUpperCase();
     if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to) || from > to || !isCurrency(target))
       return reply.code(400).send(jsonError("VALIDATION", "Valid from, to and currency are required"));
+    if (categoryId && !app.db.prepare("SELECT 1 FROM categories WHERE id = ?").get(categoryId))
+      return reply.code(400).send(jsonError("VALIDATION", "Category not found"));
     await ensureRates(app, from, to);
     // Expense timestamps are stored as UTC instants, while product dates are
     // Europe/Belgrade calendar dates. Filter in application code so records near
@@ -35,7 +38,7 @@ export async function registerAnalyticsRoutes(app: FastifyInstance): Promise<voi
     const rows = (app.db.prepare("SELECT * FROM expenses WHERE deleted_at IS NULL ORDER BY occurred_at").all() as ExpenseRow[])
       .filter((row) => {
         const date = localDateKey(row.occurred_at);
-        return date >= from && date <= to;
+        return date >= from && date <= to && (!categoryId || row.category_id === categoryId);
       });
     const categories = new Map<string, Point>();
     const daily = new Map<string, Point>();

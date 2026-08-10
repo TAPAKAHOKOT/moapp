@@ -74,6 +74,15 @@ export function weekDateRange(key: string, offset = 0) {
   return { from, to: shiftDateKey(from, 6) }
 }
 
+export function monthDateRange(key: string, offset = 0) {
+  const date = new Date(`${key}T12:00:00Z`)
+  date.setUTCDate(1)
+  date.setUTCMonth(date.getUTCMonth() + offset)
+  const from = date.toISOString().slice(0, 10)
+  date.setUTCMonth(date.getUTCMonth() + 1)
+  return { from, to: shiftDateKey(date.toISOString().slice(0, 10), -1) }
+}
+
 export function countCalendarWeekdays(from: string, to: string) {
   const counts = Array.from({ length: 7 }, () => 0)
   for (let date = from; date <= to; date = shiftDateKey(date, 1)) {
