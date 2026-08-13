@@ -1,10 +1,4 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import {
-  ArcElement, BarElement, CategoryScale, Chart as ChartJS, Filler, Legend,
-  LinearScale, LineElement, PointElement, Tooltip,
-} from 'chart.js'
-import type { ChartOptions } from 'chart.js'
-import { Bar, Doughnut, Line } from 'react-chartjs-2'
+import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { QRCodeSVG } from 'qrcode.react'
 import {
   WorkspaceApiError as ApiError, createCategory, getAnalytics, getBootstrap,
@@ -21,9 +15,9 @@ import { monitorServiceWorkerUpdates } from './service-worker-update'
 import type { AnalyticsData, AuthenticatedSession, CapabilityIntent, Category, Currency, Expense, RecoveryPrepareResponse, SessionState, WorkspaceBootstrap, WorkspaceSummary } from './types'
 import { amountToMinor, applyKeypad, convertExpense, countCalendarWeekdays, isoToLocalInput, localDateKey, localInputToIso, monthDateRange, shiftDateKey, swipeDirection, weekdayFromDateKey, weekDateRange } from './utils'
 
-ChartJS.register(ArcElement, BarElement, CategoryScale, Filler, Legend, LinearScale, LineElement, PointElement, Tooltip)
+const AnalyticsChart = lazy(() => import('./AnalyticsCharts'))
 
-type Tab = 'entry' | 'history' | 'analytics' | 'settings'
+export type Tab = 'entry' | 'history' | 'analytics' | 'settings'
 type Theme = 'light' | 'dark'
 type AnalyticsPeriod = 'week' | 'month'
 const CHART_COLOR = '#758d69'
@@ -76,7 +70,7 @@ function styleDeleteButton(node: HTMLButtonElement | null, presence: number, dur
 
 type ToastState = { text: string; action?: { label: string; run: () => void } }
 
-function useToast(timeout = 2600) {
+export function useToast(timeout = 2600) {
   const [toast, setToast] = useState<ToastState | null>(null)
   useEffect(() => {
     if (!toast) return
@@ -576,7 +570,7 @@ function AnalyticsView({ userId, workspaceId, bootstrap, theme }: { userId: stri
   const requestKey=`${expenseRevision}:${from}:${analyticsTo}:${target}:${period}:${categoryId??'all'}`
   const fallback=useMemo(()=>fallbackAnalytics(bootstrap,target,from,analyticsTo,categoryId),[bootstrap,target,from,analyticsTo,categoryId])
   const previousFallback=useMemo(()=>fallbackAnalytics(bootstrap,target,previousWeek.from,previousAnalyticsTo,categoryId),[bootstrap,target,previousWeek.from,previousAnalyticsTo,categoryId])
-  useEffect(()=>{let active=true;if(!navigator.onLine){setAnalyticsOffline(true);setAnalyticsLoading(false);setRemote(null);return}setAnalyticsLoading(true);Promise.all([getAnalytics(workspaceId,from,analyticsTo,target,categoryId??undefined),period==='week'?getAnalytics(workspaceId,previousWeek.from,previousAnalyticsTo,target,categoryId??undefined):Promise.resolve(null)]).then(([result,previous])=>{if(active){setRemote({key:requestKey,data:result,previousTotalMinor:previous?.totalMinor??null});setAnalyticsOffline(false);setAnalyticsLoading(false)}}).catch(()=>{if(active){setRemote(null);setAnalyticsOffline(true);setAnalyticsLoading(false)}});return()=>{active=false}},[workspaceId,from,analyticsTo,target,categoryId,period,previousWeek.from,previousAnalyticsTo,requestKey])
+  useEffect(()=>{let active=true;const controller=new AbortController();if(!navigator.onLine){setAnalyticsOffline(true);setAnalyticsLoading(false);setRemote(null);return()=>controller.abort()}setAnalyticsLoading(true);Promise.all([getAnalytics(workspaceId,from,analyticsTo,target,categoryId??undefined,controller.signal),period==='week'?getAnalytics(workspaceId,previousWeek.from,previousAnalyticsTo,target,categoryId??undefined,controller.signal):Promise.resolve(null)]).then(([result,previous])=>{if(active){setRemote({key:requestKey,data:result,previousTotalMinor:previous?.totalMinor??null});setAnalyticsOffline(false);setAnalyticsLoading(false)}}).catch(()=>{if(active&&!controller.signal.aborted){setRemote(null);setAnalyticsOffline(true);setAnalyticsLoading(false)}});return()=>{active=false;controller.abort()}},[workspaceId,from,analyticsTo,target,categoryId,period,previousWeek.from,previousAnalyticsTo,requestKey])
   const data=remote?.key===requestKey?remote.data:fallback
   const previousTotalMinor=remote?.key===requestKey?remote.previousTotalMinor:period==='week'?previousFallback.totalMinor:null
   const decimals=bootstrap.currencies.find((currency)=>currency.code===target)?.decimals??2
@@ -597,8 +591,7 @@ function AnalyticsView({ userId, workspaceId, bootstrap, theme }: { userId: stri
   const selectedCategoryName=categoryId?activeCategories.find((category)=>category.id===categoryId)?.name:'Все категории'
   const chartColor=theme==='dark'?'#9ab58e':CHART_COLOR
   const chartText=theme==='dark'?'#a6aaa1':'#73776f'
-  const lineOptions:ChartOptions<'line'>={responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{label:(context)=>formatAnalyticsAmount(context.parsed.y??0,target)}}},scales:{x:{grid:{display:false},ticks:{maxTicksLimit:period==='week'?7:6,color:chartText}},y:{beginAtZero:true,border:{display:false},grid:{color:theme==='dark'?'rgba(255,255,255,.06)':'rgba(32,37,31,.06)'},ticks:{color:chartText,maxTicksLimit:4,callback:(value)=>formatCompactNumber(Number(value))}}}}
-  const barOptions:ChartOptions<'bar'>={responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{label:(context)=>formatAnalyticsAmount(context.parsed.y??0,target)}}},scales:{x:{grid:{display:false},ticks:{color:chartText}},y:{beginAtZero:true,border:{display:false},grid:{color:theme==='dark'?'rgba(255,255,255,.06)':'rgba(32,37,31,.06)'},ticks:{color:chartText,maxTicksLimit:4,callback:(value)=>formatCompactNumber(Number(value))}}}}
+  const chartGrid=theme==='dark'?'rgba(255,255,255,.06)':'rgba(32,37,31,.06)'
   return <section className="page analytics"><header className="page-header analytics-title"><div><p className="eyebrow">{period==='week'?'Расходы за неделю':'Расходы за месяц'} · {selectedCategoryName}</p><h1>{new Intl.NumberFormat('ru-RU',{maximumFractionDigits:0}).format(total)} <small>{target}</small></h1>{period==='week'&&<p className="analytics-comparison">{weekComparisonLabel(total,previousTotal,currentWeekPartial)}</p>}</div><button className="currency-choice" onClick={()=>setCurrencySheet(true)}>{target}⌄</button></header>
     <div className="analytics-period" role="group" aria-label="Период аналитики"><button type="button" aria-pressed={period==='week'} className={period==='week'?'selected':''} onClick={()=>setPeriod('week')}>Неделя</button><button type="button" aria-pressed={period==='month'} className={period==='month'?'selected':''} onClick={()=>setPeriod('month')}>Месяц</button></div>
     <label className="analytics-category"><span>Категория</span><select aria-label="Категория расходов" value={categoryId??''} onChange={(event)=>setCategoryByPeriod((current)=>({...current,[period]:event.target.value||null}))}><option value="">Все категории</option>{activeCategories.map((category)=><option key={category.id} value={category.id}>{category.name}</option>)}</select></label>
@@ -606,9 +599,9 @@ function AnalyticsView({ userId, workspaceId, bootstrap, theme }: { userId: stri
     {period==='month'&&<div className="week-navigator"><button type="button" onClick={()=>setMonthOffset((value)=>value-1)} aria-label="Предыдущий месяц">‹</button><div><b>{monthOffset===0?'Текущий месяц':monthOffset===-1?'Прошлый месяц':'Выбранный месяц'}</b><span>{monthLabel}</span></div><button type="button" onClick={()=>setMonthOffset((value)=>Math.min(0,value+1))} disabled={monthOffset===0} aria-label="Следующий месяц">›</button></div>}
     <div className="analytics-stats"><div><span>Среднее в день</span><strong>{formatAnalyticsAmount(total/elapsedDays,target)}</strong></div><div><span>Операций</span><strong>{data.expenseCount}</strong></div></div>
     <p className="rate-caption">{analyticsLoading?'Обновляем аналитику…':analyticsOffline?'Офлайн-оценка по последнему сохранённому курсу':data.rateDate?`Исторические курсы с ${new Date(`${data.rateDate}T12:00:00Z`).toLocaleDateString('ru-RU')}`:'Курсы обновляются'}{data.missingCurrencies.length?` · без ${data.missingCurrencies.join(', ')}`:''}</p>
-    <div className="chart-card"><div><h2>Динамика</h2><p>{period==='week'?'Понедельник — воскресенье':'По дням выбранного месяца'}</p></div>{data.expenseCount?<div className="line-chart"><Line data={{labels:days.map((d)=>new Date(`${d}T12:00`).toLocaleDateString('ru-RU',period==='week'?{weekday:'short'}:{day:'numeric',month:'short'})),datasets:[{data:byDay,borderColor:chartColor,backgroundColor:theme==='dark'?'rgba(154,181,142,.16)':'rgba(117,141,105,.12)',fill:true,tension:.38,pointRadius:period==='week'?3:0,pointBackgroundColor:chartColor,borderWidth:2}]}} options={lineOptions}/></div>:<AnalyticsEmpty>В этом периоде ещё нет расходов</AnalyticsEmpty>}</div>
-    <div className={`chart-card${byCategory.length?' split':''}`}><div><h2>Категории</h2><p>{period==='week'?'За выбранную неделю':'За выбранный месяц'}</p></div>{byCategory.length?<><div className="donut-wrap"><Doughnut data={{labels:byCategory.map((x)=>x.name),datasets:[{data:byCategory.map((x)=>x.value),backgroundColor:byCategory.map((x)=>x.color||'#a9afa5'),borderWidth:0,spacing:3}]}} options={{responsive:true,maintainAspectRatio:false,cutout:'72%',plugins:{legend:{display:false},tooltip:{callbacks:{label:(context)=>formatAnalyticsAmount(context.parsed,target)}}}}}/><span>{formatCompactNumber(total)}</span></div><div className="legend">{byCategory.slice(0,5).map((x)=><div key={x.categoryId}><i style={{background:x.color||'#a9afa5'}}/><span>{x.name}</span><span className="legend-value"><b>{formatAnalyticsAmount(x.value,target)}</b><small>{Math.round(x.value/total*100)||0}%</small></span></div>)}</div></>:<AnalyticsEmpty>Категории появятся после первого расхода</AnalyticsEmpty>}</div>
-    {period==='month'&&<div className="chart-card"><div><h2>По дням недели</h2><p>Средние траты за календарный день</p></div>{data.expenseCount?<div className="bar-chart"><Bar data={{labels:['Пн','Вт','Ср','Чт','Пт','Сб','Вс'],datasets:[{data:weekdays,backgroundColor:chartColor,borderRadius:6,borderSkipped:false}]}} options={barOptions}/></div>:<AnalyticsEmpty>Недостаточно данных для сравнения</AnalyticsEmpty>}</div>}
+    <div className="chart-card"><div><h2>Динамика</h2><p>{period==='week'?'Понедельник — воскресенье':'По дням выбранного месяца'}</p></div>{data.expenseCount?<div className="line-chart"><Suspense fallback={null}><AnalyticsChart kind="line" labels={days.map((d)=>new Date(`${d}T12:00`).toLocaleDateString('ru-RU',period==='week'?{weekday:'short'}:{day:'numeric',month:'short'}))} values={byDay} color={chartColor} fillColor={theme==='dark'?'rgba(154,181,142,.16)':'rgba(117,141,105,.12)'} pointRadius={period==='week'?3:0} target={target} textColor={chartText} gridColor={chartGrid} maxTicksLimit={period==='week'?7:6}/></Suspense></div>:<AnalyticsEmpty>В этом периоде ещё нет расходов</AnalyticsEmpty>}</div>
+    <div className={`chart-card${byCategory.length?' split':''}`}><div><h2>Категории</h2><p>{period==='week'?'За выбранную неделю':'За выбранный месяц'}</p></div>{byCategory.length?<><div className="donut-wrap"><Suspense fallback={null}><AnalyticsChart kind="doughnut" labels={byCategory.map((x)=>x.name)} values={byCategory.map((x)=>x.value)} colors={byCategory.map((x)=>x.color||'#a9afa5')} target={target}/></Suspense><span>{formatCompactNumber(total)}</span></div><div className="legend">{byCategory.slice(0,5).map((x)=><div key={x.categoryId}><i style={{background:x.color||'#a9afa5'}}/><span>{x.name}</span><span className="legend-value"><b>{formatAnalyticsAmount(x.value,target)}</b><small>{Math.round(x.value/total*100)||0}%</small></span></div>)}</div></>:<AnalyticsEmpty>Категории появятся после первого расхода</AnalyticsEmpty>}</div>
+    {period==='month'&&<div className="chart-card"><div><h2>По дням недели</h2><p>Средние траты за календарный день</p></div>{data.expenseCount?<div className="bar-chart"><Suspense fallback={null}><AnalyticsChart kind="bar" labels={['Пн','Вт','Ср','Чт','Пт','Сб','Вс']} values={weekdays} color={chartColor} target={target} textColor={chartText} gridColor={chartGrid}/></Suspense></div>:<AnalyticsEmpty>Недостаточно данных для сравнения</AnalyticsEmpty>}</div>}
     {currencySheet && <CurrencySheet currencies={bootstrap.currencies} selected={target} onClose={()=>setCurrencySheet(false)} onSelect={(code)=>{setTarget(code);setWorkspacePreference(userId, workspaceId, 'analytics-currency', code);setCurrencySheet(false)}}/>}
   </section>
 }
@@ -673,24 +666,30 @@ function AccessSettings({ user, workspace, pendingCount, onSession, onCreateWork
     onNotice(reason instanceof ApiError ? reason.message : fallback)
   }, [onNotice])
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (signal?: AbortSignal) => {
     if (!navigator.onLine) {
       setMembers([]); setDevices([]); setInvitations([])
       return
     }
     try {
       const [people, sessions, links] = await Promise.all([
-        listMembers(workspace.id),
-        listSessions(),
-        workspace.role === 'owner' ? listInvitations(workspace.id) : Promise.resolve({ invitations: [] }),
+        listMembers(workspace.id, signal),
+        listSessions(signal),
+        workspace.role === 'owner' ? listInvitations(workspace.id, signal) : Promise.resolve({ invitations: [] }),
       ])
+      if (signal?.aborted) return
       setMembers(people.members); setDevices(sessions.sessions); setInvitations(links.invitations)
     } catch (reason) {
+      if (signal?.aborted) return
       showError(reason, 'Не удалось обновить настройки доступа')
     }
   }, [showError, workspace.id, workspace.role])
 
-  useEffect(() => { void refresh() }, [refresh])
+  useEffect(() => {
+    const controller = new AbortController()
+    void refresh(controller.signal)
+    return () => controller.abort()
+  }, [refresh])
 
   const invite = async () => {
     try {
@@ -753,13 +752,13 @@ function AccessSettings({ user, workspace, pendingCount, onSession, onCreateWork
           }}>Передать</button>
           <button onClick={() => {
             if (!window.confirm('Удалить участника? Его серверный доступ прекратится, но уже скачанные офлайн-данные удалённо стереть нельзя.')) return
-            void removeMember(workspace.id, member.userId).then(refresh).catch((reason) => showError(reason, 'Не удалось удалить участника'))
+            void removeMember(workspace.id, member.userId).then(() => refresh()).catch((reason) => showError(reason, 'Не удалось удалить участника'))
           }}>Удалить</button>
         </span>}
       </div>)}
       {workspace.role === 'owner' ? <>
         <button className="sheet-cancel" disabled={!navigator.onLine} onClick={() => void invite()}>Пригласить человека</button>
-        {invitations.map((item) => <div className="management-row" key={item.id}><span>Активное приглашение<small>до {new Date(item.expiresAt).toLocaleString('ru-RU')}</small></span><button onClick={() => void revokeInvitation(workspace.id, item.id).then(refresh).catch((reason) => showError(reason, 'Не удалось отозвать приглашение'))}>Отозвать</button></div>)}
+        {invitations.map((item) => <div className="management-row" key={item.id}><span>Активное приглашение<small>до {new Date(item.expiresAt).toLocaleString('ru-RU')}</small></span><button onClick={() => void revokeInvitation(workspace.id, item.id).then(() => refresh()).catch((reason) => showError(reason, 'Не удалось отозвать приглашение'))}>Отозвать</button></div>)}
       </> : <button className="danger-link" disabled={!navigator.onLine} onClick={() => {
         const warning = pendingCount ? `Есть несинхронизированные изменения: ${pendingCount}. Выйти и удалить их с этого устройства?` : 'Выйти из пространства?'
         if (!window.confirm(warning)) return
@@ -775,7 +774,7 @@ function AccessSettings({ user, workspace, pendingCount, onSession, onCreateWork
       <button className="sheet-cancel" disabled={!navigator.onLine} onClick={() => void device()}>Подключить моё устройство</button>
       {devices.map((deviceItem) => <div className="management-row" key={deviceItem.id}>
         <span>{deviceItem.label}<small>{deviceItem.current ? 'Это устройство' : `Активность: ${new Date(deviceItem.lastSeenAt).toLocaleString('ru-RU')}`}</small></span>
-        {!deviceItem.current && <button onClick={() => void revokeSession(deviceItem.id).then(refresh).catch((reason) => showError(reason, 'Не удалось отключить сессию'))}>Отключить</button>}
+        {!deviceItem.current && <button onClick={() => void revokeSession(deviceItem.id).then(() => refresh()).catch((reason) => showError(reason, 'Не удалось отключить сессию'))}>Отключить</button>}
       </div>)}
       {!user.user.recoveryConfigured && <p className="page-intro device-note">Восстановление пока не настроено. Без сохранённой ссылки доступ нельзя будет вернуть после потери всех устройств.</p>}
       <button className="primary" disabled={!navigator.onLine} onClick={() => void rotateRecovery()}>{user.user.recoveryConfigured ? 'Создать новую ссылку восстановления' : 'Настроить восстановление'}</button>
@@ -849,6 +848,17 @@ function CategoryEditor({ category, colors, onClose, onSave }:{category:Category
 }
 
 const tabs:{id:Tab;label:string;icon:string}[]=[{id:'entry',label:'Расход',icon:'＋'},{id:'history',label:'История',icon:'≡'},{id:'analytics',label:'Аналитика',icon:'⌁'},{id:'settings',label:'Настройки',icon:'⚙'}]
+
+export function pagerTabsAt(scrollLeft: number, clientWidth: number): Tab[] {
+  if (clientWidth <= 0) return ['entry']
+  const position = Math.max(0, Math.min(tabs.length - 1, scrollLeft / clientWidth))
+  const touching = [Math.floor(position), Math.ceil(position)].map((index) => tabs[index]!.id)
+  return [...new Set<Tab>(['entry', ...touching])]
+}
+
+function pagerTabsFor(tab: Tab): Tab[] {
+  return tab === 'entry' ? ['entry'] : ['entry', tab]
+}
 
 export function CreateWorkspaceSheet({ existing, onClose, onCreate }: { existing: boolean; onClose: () => void; onCreate: (id: string, name: string, displayName?: string) => Promise<void> }) {
   const [name,setName]=useState(''); const [displayName,setDisplayName]=useState(''); const [busy,setBusy]=useState(false)
@@ -1008,18 +1018,24 @@ export function CapabilityScreen({ intent, session, knownUserId, finish, close, 
 
 export default function App({ capability = null }: { capability?: CapabilityIntent | null }) {
   const [state,setState]=useState(()=>createAppState(capability))
-  const [tab,setTab]=useState<Tab>('entry')
+  const [pagerState,setPagerState]=useState<{workspaceId:string|null;tab:Tab;mounted:Tab[]}>({workspaceId:null,tab:'entry',mounted:['entry']})
   const [currentId,setCurrentId]=useState<string|null>(null)
   const [createOpen,setCreateOpen]=useState(false)
   const [switchOpen,setSwitchOpen]=useState(false)
   const [initialRecovery,setInitialRecovery]=useState<RecoveryPrepareResponse|null>(null)
   const [error,setError]=useState('')
-  const [notice,setNotice]=useState('')
+  const { toast: notice, notify: setNotice, dismiss: hideNotice } = useToast()
   const [theme,setTheme]=useState<Theme>(()=>localStorage.getItem('moapp:theme')==='dark'?'dark':'light')
   const [updateWaiting,setUpdateWaiting]=useState(false)
   const [draftDirty,setDraftDirty]=useState(false)
   const [workspaceReloadEpoch,setWorkspaceReloadEpoch]=useState(0)
   const stateRef=useRef(state); stateRef.current=state
+  const tab=pagerState.workspaceId===state.activeWorkspaceId?pagerState.tab:'entry'
+  const mountedTabs=pagerState.workspaceId===state.activeWorkspaceId?pagerState.mounted:['entry']
+  const setTab=useCallback((next:Tab)=>{
+    const workspaceId=stateRef.current.activeWorkspaceId
+    setPagerState({workspaceId,tab:next,mounted:pagerTabsFor(next)})
+  },[])
   const capabilityRef=useRef(capability)
   const monitor=useRef<ReturnType<typeof monitorServiceWorkerUpdates> | undefined>(undefined)
   const coordinator=useRef<ReturnType<typeof createIdentityCoordinator> | null>(null)
@@ -1028,6 +1044,7 @@ export default function App({ capability = null }: { capability?: CapabilityInte
   const sessionAbort=useRef(new AbortController())
   const refreshEpoch=useRef(0)
   const pager=useRef<HTMLElement|null>(null)
+  const pagerWorkspace=useRef<string|null>(null)
   const pagerTimer=useRef<ReturnType<typeof setTimeout>>(undefined)
   const draftDirtyRef=useRef(draftDirty); draftDirtyRef.current=draftDirty
   const requestEpoch=useRef<Record<string,number>>({})
@@ -1120,7 +1137,19 @@ export default function App({ capability = null }: { capability?: CapabilityInte
     return()=>item.dispose()
   },[])
   useEffect(()=>{document.documentElement.dataset.theme=theme;localStorage.setItem('moapp:theme',theme)},[theme])
-  useEffect(()=>{pager.current?.scrollTo({left:tabs.findIndex((item)=>item.id===tab)*pager.current.clientWidth,behavior:'smooth'})},[tab])
+  useLayoutEffect(()=>{
+    const node=pager.current
+    if(!node)return
+    const workspaceId=state.activeWorkspaceId
+    if(pagerWorkspace.current!==workspaceId){
+      pagerWorkspace.current=workspaceId
+      clearTimeout(pagerTimer.current)
+      node.scrollLeft=0
+      setPagerState({workspaceId,tab:'entry',mounted:['entry']})
+      return
+    }
+    node.scrollLeft=tabs.findIndex((item)=>item.id===tab)*node.clientWidth
+  },[state.activeWorkspaceId,tab])
   useEffect(()=>()=>clearTimeout(pagerTimer.current),[])
 
   const session=state.session
@@ -1274,6 +1303,15 @@ export default function App({ capability = null }: { capability?: CapabilityInte
   }
   const activateUpdate=()=>{if(draftDirty){setError('Сначала сохраните или очистите черновик расхода.');return}monitor.current?.activateWaiting()}
   const onPagerScroll=()=>{
+    const node=pager.current
+    if(node?.clientWidth){
+      const workspaceId=stateRef.current.activeWorkspaceId
+      const visible=pagerTabsAt(node.scrollLeft,node.clientWidth)
+      setPagerState((previous)=>{
+        const tab=previous.workspaceId===workspaceId?previous.tab:'entry'
+        return previous.workspaceId===workspaceId&&previous.mounted.length===visible.length&&previous.mounted.every((item,index)=>item===visible[index])?previous:{workspaceId,tab,mounted:visible}
+      })
+    }
     clearTimeout(pagerTimer.current)
     pagerTimer.current=setTimeout(()=>{const node=pager.current;if(!node?.clientWidth)return;const item=tabs[Math.max(0,Math.min(tabs.length-1,Math.round(node.scrollLeft/node.clientWidth)))];if(item)setTab(item.id)},90)
   }
@@ -1293,10 +1331,10 @@ export default function App({ capability = null }: { capability?: CapabilityInte
     <header className="workspace-header"><button onClick={()=>setSwitchOpen(true)}>{workspace.name}⌄</button>{updateWaiting&&<button onClick={activateUpdate}>Обновить</button>}</header>
     <div className={`sync-status${stats.conflicts||stats.failed?' attention':''}`}><span>{navigator.onLine?stats.conflicts||stats.failed?`Нужна проверка · ${stats.conflicts+stats.failed}`:`Синхронизация · ${stats.total}`:'Офлайн'}</span><i/></div>
     <main className="pager" ref={pager} onScroll={onPagerScroll}>
-      <div className="page-slot"><EntryView userId={auth.user.id} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} currentId={currentId} setCurrentId={setCurrentId} refreshPending={refreshPending} onDraftDirtyChange={setDraftDirty}/></div>
-      <div className="page-slot"><HistoryView userId={auth.user.id} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} edit={(id)=>{setCurrentId(id);setTab('entry')}} refreshPending={refreshPending}/></div>
-      <div className="page-slot"><AnalyticsView userId={auth.user.id} workspaceId={workspaceId} bootstrap={bootstrap} theme={theme}/></div>
-      <div className="page-slot"><SettingsView user={auth} workspace={workspace} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} pendingCount={stats.total} refreshPending={refreshPending} onLogout={()=>void logoutCurrent()} theme={theme} onThemeChange={setTheme} onSession={hydrate} onCreateWorkspace={openCreate}/></div>
+      <div className="page-slot">{mountedTabs.includes('entry')&&<EntryView userId={auth.user.id} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} currentId={currentId} setCurrentId={setCurrentId} refreshPending={refreshPending} onDraftDirtyChange={setDraftDirty}/>}</div>
+      <div className="page-slot">{mountedTabs.includes('history')&&<HistoryView userId={auth.user.id} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} edit={(id)=>{setCurrentId(id);setTab('entry')}} refreshPending={refreshPending}/>}</div>
+      <div className="page-slot">{mountedTabs.includes('analytics')&&<AnalyticsView userId={auth.user.id} workspaceId={workspaceId} bootstrap={bootstrap} theme={theme}/>}</div>
+      <div className="page-slot">{mountedTabs.includes('settings')&&<SettingsView user={auth} workspace={workspace} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} pendingCount={stats.total} refreshPending={refreshPending} onLogout={()=>void logoutCurrent()} theme={theme} onThemeChange={setTheme} onSession={hydrate} onCreateWorkspace={openCreate}/>}</div>
     </main>
     <nav className="bottom-nav">{tabs.map((item)=><button key={item.id} className={tab===item.id?'active':''} onClick={()=>setTab(item.id)}><span>{item.icon}</span><small>{item.label}</small></button>)}</nav>
     {switchOpen&&<WorkspaceSwitcher items={auth.workspaces} active={workspaceId} runtimes={state.runtimes} onSelect={switchWorkspace} onCreate={openCreate}/>}
@@ -1307,6 +1345,6 @@ export default function App({ capability = null }: { capability?: CapabilityInte
       await hydrate(outcome.session,true)
     }}/>}
     {error&&<button className="toast toast-error" onClick={()=>setError('')}>{error}</button>}
-    {notice&&<button className="toast" onClick={()=>setNotice('')}>{notice}</button>}
+    {notice&&<Toast toast={notice} onDismiss={hideNotice}/>}
   </div>
 }
