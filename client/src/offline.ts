@@ -2,6 +2,7 @@ import type { Bootstrap, OutboxItem } from './types'
 
 const DB_NAME = 'moapp-offline'
 const DB_VERSION = 2
+const pendingWrites = new Set<Promise<unknown>>()
 
 function openDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -19,13 +20,21 @@ function openDb(): Promise<IDBDatabase> {
 
 async function store<T>(name: 'cache' | 'outbox', mode: IDBTransactionMode, action: (s: IDBObjectStore) => IDBRequest<T>): Promise<T> {
   const db = await openDb()
-  return new Promise((resolve, reject) => {
+  const pending = new Promise<T>((resolve, reject) => {
     const transaction = db.transaction(name, mode)
     const request = action(transaction.objectStore(name))
-    request.onsuccess = () => resolve(request.result)
+    let result: T
+    request.onsuccess = () => { result = request.result }
     request.onerror = () => reject(request.error)
-    transaction.oncomplete = () => db.close()
+    transaction.oncomplete = () => { db.close(); resolve(result!) }
+    transaction.onerror = () => { db.close(); reject(transaction.error) }
+    transaction.onabort = () => { db.close(); reject(transaction.error) }
   })
+  if (mode === 'readwrite') {
+    pendingWrites.add(pending)
+    void pending.then(() => pendingWrites.delete(pending), () => pendingWrites.delete(pending))
+  }
+  return pending
 }
 
 export const cacheBootstrap = (data: Bootstrap) => store('cache', 'readwrite', (s) => s.put(data, 'bootstrap'))
@@ -33,6 +42,11 @@ export const readCachedBootstrap = () => store<Bootstrap | undefined>('cache', '
 export const queueMutation = (item: OutboxItem) => store('outbox', 'readwrite', (s) => s.put(item))
 export const removeMutation = (id: string) => store('outbox', 'readwrite', (s) => s.delete(id))
 export const readOutbox = () => store<OutboxItem[]>('outbox', 'readonly', (s) => s.getAll())
+
+/** Wait until every already-started IndexedDB write has committed before replacing the page. */
+export async function waitForOfflineWrites() {
+  while (pendingWrites.size) await Promise.all([...pendingWrites])
+}
 
 export async function outboxSize() {
   return (await readOutbox()).length
