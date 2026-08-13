@@ -1,0 +1,8 @@
+.pager {
+  height: calc(100dvh - 116px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+}
+
+.workspace-header {
+  height: calc(48px + env(safe-area-inset-top));
+  padding-top: env(safe-area-inset-top);
+}

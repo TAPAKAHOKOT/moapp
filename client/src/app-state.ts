@@ -41,9 +41,25 @@ function chooseWorkspace(userId: string, workspaces: readonly WorkspaceSummary[]
   const saved = storage()?.getItem(activeKey(userId))
   return saved && workspaces.some((workspace) => workspace.id === saved) ? saved : workspaces[0]?.id ?? null
 }
+
+/**
+ * Select a workspace that can actually be rendered while offline.  A saved
+ * workspace is still preferred when it has a cache; otherwise the first
+ * cached membership wins.  This prevents a stale saved selection from
+ * leaving the app on a permanent loading screen when another workspace is
+ * available locally.
+ */
+export function chooseCachedWorkspace(userId: string, workspaces: readonly WorkspaceSummary[], runtimes: Record<string, WorkspaceRuntime>): string | null {
+  const saved = chooseWorkspace(userId, workspaces)
+  if (saved && runtimes[saved]?.bootstrap) return saved
+  return workspaces.find((workspace) => runtimes[workspace.id]?.bootstrap)?.id ?? saved
+}
 function phaseFor(session: SessionState, capability: CapabilityIntent | null, known: string | null): AppPhase {
   if (capability) return 'capability'
-  if (!session.authenticated) return known ? 'known-user-locked' : session.legacyClaimAvailable ? 'legacy-claim' : 'guest'
+  // A legacy claim is an opt-in migration, never an automatic screen at boot.
+  // A clean browser must get the normal guest landing even when old data is
+  // available on the server.
+  if (!session.authenticated) return known ? 'known-user-locked' : 'guest'
   if (known && known !== session.user.id) return 'known-user-locked'
   if (session.restrictedToRecovery) return 'restricted-recovery'
   return session.workspaces.length ? 'workspace' : 'no-workspaces'
@@ -69,6 +85,31 @@ export function createAppState(capability: CapabilityIntent | null = null): AppS
   return { phase: 'checking', session: null, knownUserId: knownUserId(), activeWorkspaceId: null, runtimes: {}, capability, identityConflict: false, conflictingSession: null }
 }
 
+/** Opens the legacy migration only after the person explicitly asks for it. */
+export function openLegacyClaim(state: AppState): AppState {
+  if (state.capability || state.session?.authenticated || !state.session?.legacyClaimAvailable) return state
+  return { ...state, phase: 'legacy-claim' }
+}
+
+/**
+ * Drops every in-memory, potentially sensitive renderable value immediately.
+ * Call this straight after `beginLogout`, before waiting for the network.
+ */
+export function createLoggedOutState(): AppState {
+  return {
+    phase: 'known-user-locked', session: null, knownUserId: null, activeWorkspaceId: null,
+    runtimes: {}, capability: null, identityConflict: false, conflictingSession: null,
+  }
+}
+
+/** Closes a capability flow without accidentally restoring its old phase. */
+export function closeCapability(state: AppState): AppState {
+  if (!state.capability) return state
+  if (state.identityConflict) return { ...state, capability: null, phase: 'known-user-locked' }
+  if (state.session) return { ...state, capability: null, phase: phaseFor(state.session, null, state.knownUserId) }
+  return { ...state, capability: null, phase: state.knownUserId ? 'known-user-locked' : 'guest' }
+}
+
 /** Hydrate only after the pending logout marker has been safely settled. */
 export async function hydrateAppState(session: SessionState, capability: CapabilityIntent | null = null): Promise<AppState> {
   const known = knownUserId()
@@ -89,13 +130,13 @@ export async function hydrateAppState(session: SessionState, capability: Capabil
   storage()?.setItem(KNOWN_USER, session.user.id)
   setSessionContext(session)
   await cacheProfile(session.user.id, session)
-  const activeWorkspaceId = chooseWorkspace(session.user.id, session.workspaces)
   const runtimes: Record<string, WorkspaceRuntime> = {}
   for (const workspace of session.workspaces) {
     const cached = await readCachedBootstrap(session.user.id, workspace.id)
     const stats = await outboxStats(session.user.id, workspace.id)
     runtimes[workspace.id] = { ...newRuntime(workspace.id), bootstrap: cached ?? null, source: cached ? 'cache' : null, status: cached ? 'ready' : 'idle', offline: false, outbox: stats }
   }
+  const activeWorkspaceId = chooseWorkspace(session.user.id, session.workspaces)
   return { phase: phaseFor(session, capability, session.user.id), session, knownUserId: session.user.id, activeWorkspaceId, runtimes, capability, identityConflict: false, conflictingSession: null }
 }
 
@@ -185,7 +226,7 @@ export function setWorkspacePreference(userId: string, workspaceId: string, name
 export const readWorkspaceStats = (userId: string, workspaceId: string): Promise<OutboxStats> => outboxStats(userId, workspaceId)
 
 export type IdentityEvent = { epoch: number; userId: string | null; sessionId: string | null }
-type CoordinatorOptions = { refresh: () => Promise<void>; abortNetwork: () => void; stopSync: () => void; onForeignIdentity: () => void; intervalMs?: number }
+type CoordinatorOptions = { refresh: (reloadWorkspace?: boolean) => Promise<void>; abortNetwork: () => void; stopSync: () => void; onForeignIdentity: () => void; intervalMs?: number }
 
 /** Broadcast is an acceleration only; server expected-context headers remain the security boundary. */
 export function createIdentityCoordinator(options: CoordinatorOptions) {
@@ -207,7 +248,9 @@ export function createIdentityCoordinator(options: CoordinatorOptions) {
   channel?.addEventListener('message', (event: MessageEvent<IdentityEvent>) => receive(event.data))
   const storageListener = (event: StorageEvent) => { if (event.key === key && event.newValue) { try { receive(JSON.parse(event.newValue) as IdentityEvent) } catch { /* ignore malformed events */ } } }
   if (typeof window !== 'undefined') window.addEventListener('storage', storageListener)
-  const refresh = () => { if (!stopped) void options.refresh() }
+  // Reconnect/foreground refreshes must also retry a workspace whose previous
+  // bootstrap failed even when the identity and selected workspace are equal.
+  const refresh = () => { if (!stopped) void options.refresh(true) }
   const visibilityListener = () => { if (document.visibilityState === 'visible') refresh() }
   if (typeof window !== 'undefined') { window.addEventListener('online', refresh); window.addEventListener('visibilitychange', visibilityListener) }
   const interval = setInterval(refresh, options.intervalMs ?? 30 * 60_000)

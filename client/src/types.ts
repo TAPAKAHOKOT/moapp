@@ -8,9 +8,11 @@ export type Currency = {
 export type Category = {
   id: string
   name: string
-  color: string
+  color: string | null
   placement: 'main' | 'additional'
   sortOrder: number
+  createdAt: string
+  updatedAt: string
   archivedAt: string | null
   version: number
 }
@@ -33,25 +35,6 @@ export type RateSnapshot = {
   base: 'RSD'
   date: string | null
   ratesToRsd: Record<string, number>
-}
-
-export type Session = { authenticated: boolean }
-
-export type Bootstrap = {
-  expenses: Expense[]
-  categories: Category[]
-  currencies: Currency[]
-  rates: RateSnapshot
-}
-
-export type OutboxItem = {
-  operationId: string
-  type: 'createExpense' | 'updateExpense' | 'deleteExpense'
-  payload: Record<string, unknown>
-  createdAt: string
-  status?: 'queued' | 'conflict' | 'failed'
-  error?: string
-  current?: Expense
 }
 
 export type SyncResult = {
@@ -78,9 +61,6 @@ export type AnalyticsData = {
   calendar: { date: string; amountMinor: number; count: number }[]
 }
 
-// Account-spaces types intentionally do not extend the temporary legacy
-// Session/Bootstrap/OutboxItem aliases above.  Plan 06 switches the UI to these
-// contracts atomically, after which the legacy aliases can be removed.
 export type UserProfile = {
   id: string
   displayName: string
