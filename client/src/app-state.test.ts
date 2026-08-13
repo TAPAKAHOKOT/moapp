@@ -2,11 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('./workspace-offline', () => ({
   cacheProfile: vi.fn(), clearUserOfflineData: vi.fn(), clearWorkspaceOfflineData: vi.fn(), outboxStats: vi.fn(async () => ({ total: 0, conflicts: 0, failed: 0 })),
-  readCachedBootstrap: vi.fn(), readCachedProfile: vi.fn(),
+  readCachedBootstrap: vi.fn(), readCachedProfile: vi.fn(), waitForWorkspaceOfflineWrites: vi.fn(),
 }))
 
-import { beginWorkspaceRequest, chooseCachedWorkspace, closeCapability, createAppState, createIdentityCoordinator, createLoggedOutState, finishWorkspaceRequest, hydrateAppState, openLegacyClaim, updateWorkspace } from './app-state'
-import { readCachedBootstrap } from './workspace-offline'
+import { beginLogout, beginWorkspaceRequest, chooseCachedWorkspace, closeCapability, createAppState, createIdentityCoordinator, createLoggedOutState, finishWorkspaceRequest, forgetKnownProfile, hydrateAppState, openLegacyClaim, settlePendingLogout, updateWorkspace } from './app-state'
+import { clearUserOfflineData, readCachedBootstrap, waitForWorkspaceOfflineWrites } from './workspace-offline'
 import type { AuthenticatedSession, GuestSession, WorkspaceRuntime, WorkspaceSummary } from './types'
 
 function memoryStorage(): Storage {
@@ -73,6 +73,57 @@ describe('workspace runtime race isolation', () => {
     expect(state).toMatchObject({ phase: 'known-user-locked', session: null, activeWorkspaceId: null, runtimes: {}, capability: null })
   })
 
+  it('drains older offline writes before the final logout clear', async () => {
+    localStorage.setItem('moapp:v2:known-user', 'user')
+    const order: string[] = []
+    vi.mocked(waitForWorkspaceOfflineWrites).mockImplementationOnce(async () => { order.push('drain') })
+    vi.mocked(clearUserOfflineData).mockImplementationOnce(async () => { order.push('clear') })
+    const state = await hydrateAppState(session('user'))
+
+    await beginLogout(state)
+
+    expect(order).toEqual(['drain', 'clear'])
+    expect(localStorage.getItem('moapp:v2:logout-pending')).toContain('session')
+  })
+
+  it('finishes local cleanup before removing a recovered logout marker', async () => {
+    localStorage.setItem('moapp:v2:logout-pending', JSON.stringify({ userId: 'user', sessionId: 'session' }))
+    const order: string[] = []
+    vi.mocked(waitForWorkspaceOfflineWrites).mockImplementationOnce(async () => { order.push('drain') })
+    vi.mocked(clearUserOfflineData).mockImplementationOnce(async () => { order.push('clear') })
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { status: 204 })))
+
+    await expect(settlePendingLogout(true)).resolves.toBe(true)
+
+    expect(order).toEqual(['drain', 'clear'])
+    expect(localStorage.getItem('moapp:v2:logout-pending')).toBeNull()
+  })
+
+  it('forgets a locked local profile without requiring a missing server session', async () => {
+    localStorage.setItem('moapp:v2:known-user', 'cached-user')
+    localStorage.setItem('moapp:v2:logout-pending', JSON.stringify({ userId: 'cached-user', sessionId: 'unknown' }))
+    localStorage.setItem('moapp:v2:user:cached-user:workspace:a:last-currency', 'EUR')
+
+    await expect(forgetKnownProfile(true, guest())).resolves.toBe(true)
+
+    expect(localStorage.getItem('moapp:v2:known-user')).toBeNull()
+    expect(localStorage.getItem('moapp:v2:logout-pending')).toBeNull()
+    expect(localStorage.getItem('moapp:v2:user:cached-user:workspace:a:last-currency')).toBeNull()
+    expect(clearUserOfflineData).toHaveBeenCalledWith('cached-user')
+  })
+
+  it.each([false, true])('does not erase a known profile without an authoritative session (online=%s)', async (online) => {
+    localStorage.setItem('moapp:v2:known-user', 'cached-user')
+    localStorage.setItem('moapp:v2:user:cached-user:workspace:a:last-currency', 'EUR')
+    const offlineDeleteCalls = vi.mocked(clearUserOfflineData).mock.calls.length
+
+    await expect(forgetKnownProfile(online, null)).resolves.toBe(false)
+
+    expect(localStorage.getItem('moapp:v2:known-user')).toBe('cached-user')
+    expect(localStorage.getItem('moapp:v2:user:cached-user:workspace:a:last-currency')).toBe('EUR')
+    expect(vi.mocked(clearUserOfflineData).mock.calls).toHaveLength(offlineDeleteCalls)
+  })
+
   it('recalculates the phase when a capability flow is closed', async () => {
     const state = await hydrateAppState(guest(true), { kind: 'invite', token: 'token' })
     expect(state.phase).toBe('capability')
@@ -101,6 +152,19 @@ describe('workspace runtime race isolation', () => {
     expect(JSON.parse(localStorage.getItem('moapp:v2:identity-epoch')!).epoch).toBe(6)
     expect(foreignIdentity).toHaveBeenCalledTimes(1)
     existing.dispose(); newer.dispose()
+  })
+
+  it('does not ignore a different identity event with the same concurrent epoch', () => {
+    const foreignIdentity = vi.fn()
+    const coordinator = createIdentityCoordinator({ refresh: async () => {}, abortNetwork: vi.fn(), stopSync: vi.fn(), onForeignIdentity: foreignIdentity, intervalMs: 60_000 })
+    const first = Object.assign(new Event('storage'), { key: 'moapp:v2:identity-epoch', newValue: JSON.stringify({ epoch: 1, eventId: 'event-a', userId: 'a', sessionId: 'a-session' }) })
+    const concurrent = Object.assign(new Event('storage'), { key: 'moapp:v2:identity-epoch', newValue: JSON.stringify({ epoch: 1, eventId: 'event-b', userId: 'b', sessionId: 'b-session' }) })
+
+    window.dispatchEvent(first)
+    window.dispatchEvent(concurrent)
+
+    expect(foreignIdentity).toHaveBeenCalledTimes(2)
+    coordinator.dispose()
   })
 
   it('forces workspace reload when connectivity returns', () => {

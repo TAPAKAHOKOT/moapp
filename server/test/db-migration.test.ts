@@ -149,7 +149,7 @@ test("a clean file reaches the latest schema without hidden identity, workspace,
   const fixture = temporaryDatabase();
   try {
     let db = openDatabase(fixture.path);
-    assert.equal((db.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number }).version, 4);
+    assert.equal((db.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number }).version, 5);
     for (const table of ["users", "workspaces", "memberships", "categories", "legacy_claims"] as const) {
       assert.equal((db.prepare(`SELECT count(*) AS count FROM ${table}`).get() as { count: number }).count, 0);
     }
@@ -157,7 +157,7 @@ test("a clean file reaches the latest schema without hidden identity, workspace,
     const sizeAfterFirstStart = statSync(fixture.path).size;
 
     db = openDatabase(fixture.path);
-    assert.equal((db.prepare("SELECT count(*) AS count FROM schema_migrations").get() as { count: number }).count, 4);
+    assert.equal((db.prepare("SELECT count(*) AS count FROM schema_migrations").get() as { count: number }).count, 5);
     assert.equal((db.prepare("SELECT count(*) AS count FROM users").get() as { count: number }).count, 0);
     assert.equal(statSync(fixture.path).size, sizeAfterFirstStart);
     db.close();
@@ -292,6 +292,65 @@ test("tenant composite keys allow same IDs but reject cross-workspace category r
   }
 });
 
+test("v5 localizes only the untouched default eating-out category", () => {
+  const fixture = temporaryDatabase();
+  try {
+    let db = openDatabase(fixture.path);
+    const userId = randomUUID();
+    const workspaceA = randomUUID();
+    const workspaceB = randomUUID();
+    const workspaceC = randomUUID();
+    createWorkspace(db, workspaceA, userId, "A");
+    createWorkspace(db, workspaceB, userId, "B");
+    createWorkspace(db, workspaceC, userId, "C");
+    seedWorkspaceCategories(db, workspaceA);
+    seedWorkspaceCategories(db, workspaceB);
+    seedWorkspaceCategories(db, workspaceC);
+
+    assert.equal(db.prepare("SELECT name FROM categories WHERE workspace_id=? AND id='eating-out'")
+      .pluck().get(workspaceA), "Кафе и рестораны");
+
+    const oldUpdatedAt = "2025-01-01T00:00:00.000Z";
+    db.prepare("UPDATE categories SET name='Eating out',version=6,updated_at=? WHERE workspace_id=? AND id='eating-out'")
+      .run(oldUpdatedAt, workspaceA);
+    db.prepare("UPDATE categories SET name='Бранч',version=3 WHERE workspace_id=? AND id='eating-out'")
+      .run(workspaceB);
+    db.prepare("UPDATE categories SET name='Eating out',version=4 WHERE workspace_id=? AND id='eating-out'")
+      .run(workspaceC);
+    db.prepare(`INSERT INTO categories
+      (workspace_id,id,name,placement,sort_order,color,version,created_at,updated_at)
+      VALUES (?, 'custom-restaurants', 'Кафе и рестораны', 'additional', 20, NULL, 1, ?, ?)`)
+      .run(workspaceC, oldUpdatedAt, oldUpdatedAt);
+    db.prepare("DELETE FROM schema_migrations WHERE version=5").run();
+    db.close();
+
+    db = openDatabase(fixture.path);
+    const localized = db.prepare("SELECT name,version,updated_at FROM categories WHERE workspace_id=? AND id='eating-out'")
+      .get(workspaceA) as { name: string; version: number; updated_at: string };
+    assert.equal(localized.name, "Кафе и рестораны");
+    assert.equal(localized.version, 7);
+    assert.notEqual(localized.updated_at, oldUpdatedAt);
+    assert.deepEqual(db.prepare("SELECT name,version FROM categories WHERE workspace_id=? AND id='eating-out'").get(workspaceB), {
+      name: "Бранч",
+      version: 3
+    });
+    assert.deepEqual(db.prepare("SELECT name,version FROM categories WHERE workspace_id=? AND id='eating-out'").get(workspaceC), {
+      name: "Eating out",
+      version: 4
+    });
+    assert.equal(db.prepare("SELECT count(*) FROM categories WHERE workspace_id=? AND name='Кафе и рестораны'")
+      .pluck().get(workspaceC), 1);
+    db.close();
+
+    db = openDatabase(fixture.path);
+    assert.equal(db.prepare("SELECT version FROM categories WHERE workspace_id=? AND id='eating-out'")
+      .pluck().get(workspaceA), 7);
+    db.close();
+  } finally {
+    rmSync(fixture.directory, { recursive: true, force: true });
+  }
+});
+
 test("access token purpose constraints reject hybrid recovery and cross-user device rows", () => {
   const fixture = temporaryDatabase();
   try {
@@ -360,7 +419,7 @@ test("an existing v3 database receives the singleton hardening migration", () =>
     db.close();
 
     db = openDatabase(fixture.path);
-    assert.equal((db.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number }).version, 4);
+    assert.equal((db.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number }).version, 5);
     assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type='index' AND name='legacy_claims_singleton_idx'").get());
     db.close();
   } finally {
@@ -385,7 +444,7 @@ test("a copy failure rolls v3 back and leaves a retryable v2 database", () => {
     db.close();
 
     db = openDatabase(fixture.path);
-    assert.equal((db.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number }).version, 4);
+    assert.equal((db.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number }).version, 5);
     assert.equal((db.prepare("SELECT count(*) AS count FROM expenses").get() as { count: number }).count, 2);
     assert.deepEqual(db.pragma("foreign_key_check"), []);
     db.close();

@@ -43,22 +43,26 @@ function openDb(): Promise<IDBDatabase> {
   })
 }
 
-async function transaction<T>(stores: string | string[], mode: IDBTransactionMode, action: (tx: IDBTransaction) => IDBRequest<T> | void): Promise<T | undefined> {
-  const db = await openDb()
-  const promise = new Promise<T | undefined>((resolve, reject) => {
-    const tx = db.transaction(stores, mode)
-    let value: T | undefined
-    let request: IDBRequest<T> | void
-    try { request = action(tx) } catch (error) { tx.abort(); reject(error); return }
-    if (request) {
-      request.onsuccess = () => { value = request.result }
-      request.onerror = () => { /* transaction.onerror carries the final failure */ }
-    }
-    tx.oncomplete = () => { db.close(); resolve(value) }
-    tx.onerror = () => { db.close(); reject(tx.error ?? new Error('IndexedDB transaction failed')) }
-    tx.onabort = () => { db.close(); reject(tx.error ?? new Error('IndexedDB transaction aborted')) }
-  })
-  return track(promise, mode === 'readwrite')
+function transaction<T>(stores: string | string[], mode: IDBTransactionMode, action: (tx: IDBTransaction) => IDBRequest<T> | void): Promise<T | undefined> {
+  // Track the whole write immediately, including time spent waiting for
+  // indexedDB.open(). Logout can then drain every write before its final clear.
+  const operation = (async () => {
+    const db = await openDb()
+    return new Promise<T | undefined>((resolve, reject) => {
+      const tx = db.transaction(stores, mode)
+      let value: T | undefined
+      let request: IDBRequest<T> | void
+      try { request = action(tx) } catch (error) { tx.abort(); reject(error); return }
+      if (request) {
+        request.onsuccess = () => { value = request.result }
+        request.onerror = () => { /* transaction.onerror carries the final failure */ }
+      }
+      tx.oncomplete = () => { db.close(); resolve(value) }
+      tx.onerror = () => { db.close(); reject(tx.error ?? new Error('IndexedDB transaction failed')) }
+      tx.onabort = () => { db.close(); reject(tx.error ?? new Error('IndexedDB transaction aborted')) }
+    })
+  })()
+  return track(operation, mode === 'readwrite')
 }
 
 function workspaceKey(userId: string, workspaceId: string) { return [userId, workspaceId] }
@@ -87,6 +91,14 @@ export async function queueMutation(userId: string, workspaceId: string, item: W
   await transaction('workspace-outbox', 'readwrite', (tx) => tx.objectStore('workspace-outbox').put(item))
 }
 
+export async function queueMutations(userId: string, workspaceId: string, items: WorkspaceOutboxItem[]): Promise<void> {
+  if (items.some((item) => item.userId !== userId || item.workspaceId !== workspaceId)) throw new Error('Outbox item does not match its storage scope')
+  await transaction('workspace-outbox', 'readwrite', (tx) => {
+    const store = tx.objectStore('workspace-outbox')
+    for (const item of items) store.put(item)
+  })
+}
+
 export async function readOutbox(userId: string, workspaceId: string): Promise<WorkspaceOutboxItem[]> {
   const db = await openDb()
   try {
@@ -108,42 +120,50 @@ export async function outboxStats(userId: string, workspaceId: string): Promise<
   return { total: items.length, conflicts: items.filter((item) => item.status === 'conflict').length, failed: items.filter((item) => item.status === 'failed').length }
 }
 
-export async function clearWorkspaceOfflineData(userId: string, workspaceId: string): Promise<void> {
-  const db = await openDb()
-  const done = new Promise<void>((resolve, reject) => {
-    const tx = db.transaction(['workspace-cache', 'workspace-outbox'], 'readwrite')
-    tx.objectStore('workspace-cache').delete(workspaceKey(userId, workspaceId))
-    const index = tx.objectStore('workspace-outbox').index('byWorkspace')
-    const cursor = index.openKeyCursor(IDBKeyRange.only(workspaceKey(userId, workspaceId)))
-    cursor.onsuccess = () => {
-      const current = cursor.result
-      // A key cursor from an index is not a portable deletion cursor (notably
-      // fake-indexeddb rejects cursor.delete()). Delete by its full primary key.
-      if (current) { tx.objectStore('workspace-outbox').delete(current.primaryKey); current.continue() }
-    }
-    tx.oncomplete = () => resolve()
-    tx.onerror = () => reject(tx.error)
-    tx.onabort = () => reject(tx.error)
-  })
-  try { await track(done, true) } finally { db.close() }
+export function clearWorkspaceOfflineData(userId: string, workspaceId: string): Promise<void> {
+  const operation = (async () => {
+    const db = await openDb()
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const tx = db.transaction(['workspace-cache', 'workspace-outbox'], 'readwrite')
+        tx.objectStore('workspace-cache').delete(workspaceKey(userId, workspaceId))
+        const index = tx.objectStore('workspace-outbox').index('byWorkspace')
+        const cursor = index.openKeyCursor(IDBKeyRange.only(workspaceKey(userId, workspaceId)))
+        cursor.onsuccess = () => {
+          const current = cursor.result
+          // A key cursor from an index is not a portable deletion cursor (notably
+          // fake-indexeddb rejects cursor.delete()). Delete by its full primary key.
+          if (current) { tx.objectStore('workspace-outbox').delete(current.primaryKey); current.continue() }
+        }
+        tx.oncomplete = () => resolve()
+        tx.onerror = () => reject(tx.error)
+        tx.onabort = () => reject(tx.error)
+      })
+    } finally { db.close() }
+  })()
+  return track(operation, true)
 }
 
-export async function clearUserOfflineData(userId: string): Promise<void> {
-  const db = await openDb()
-  const done = new Promise<void>((resolve, reject) => {
-    const tx = db.transaction(['profiles', 'workspace-cache', 'workspace-outbox', 'migration-state'], 'readwrite')
-    tx.objectStore('profiles').delete(userId)
-    for (const storeName of ['workspace-cache', 'workspace-outbox'] as const) {
-      const store = tx.objectStore(storeName)
-      const cursor = store.openKeyCursor()
-      cursor.onsuccess = () => { const current = cursor.result; if (current) { if (Array.isArray(current.key) && current.key[0] === userId) current.delete(); current.continue() } }
-    }
-    tx.objectStore('migration-state').delete([userId, 'legacy-v2'])
-    tx.oncomplete = () => resolve()
-    tx.onerror = () => reject(tx.error)
-    tx.onabort = () => reject(tx.error)
-  })
-  try { await track(done, true) } finally { db.close() }
+export function clearUserOfflineData(userId: string): Promise<void> {
+  const operation = (async () => {
+    const db = await openDb()
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const tx = db.transaction(['profiles', 'workspace-cache', 'workspace-outbox', 'migration-state'], 'readwrite')
+        tx.objectStore('profiles').delete(userId)
+        for (const storeName of ['workspace-cache', 'workspace-outbox'] as const) {
+          const store = tx.objectStore(storeName)
+          const cursor = store.openKeyCursor()
+          cursor.onsuccess = () => { const current = cursor.result; if (current) { if (Array.isArray(current.key) && current.key[0] === userId) store.delete(current.primaryKey); current.continue() } }
+        }
+        tx.objectStore('migration-state').delete([userId, 'legacy-v2'])
+        tx.oncomplete = () => resolve()
+        tx.onerror = () => reject(tx.error)
+        tx.onabort = () => reject(tx.error)
+      })
+    } finally { db.close() }
+  })()
+  return track(operation, true)
 }
 
 function legacyPreferenceKeys(userId: string, workspaceId: string) {
@@ -154,40 +174,44 @@ function legacyPreferenceKeys(userId: string, workspaceId: string) {
 }
 
 /** Explicitly moves quarantined v2 data only after the server supplied its precise legacy workspace. */
-export async function migrateLegacyOfflineData(userId: string, legacyWorkspaceId: string): Promise<void> {
-  const migration = await transaction<MigrationState | undefined>('migration-state', 'readonly', (tx) => tx.objectStore('migration-state').get([userId, 'legacy-v2']))
-  if (migration?.stage !== 'complete') {
-    if (migration?.stage !== 'db_complete') {
-      const db = await openDb()
-      const done = new Promise<void>((resolve, reject) => {
-        const tx = db.transaction(['cache', 'outbox', 'workspace-cache', 'workspace-outbox', 'migration-state'], 'readwrite')
-        const legacyCache = tx.objectStore('cache').get('bootstrap') as IDBRequest<unknown>
-        const legacyOutbox = tx.objectStore('outbox').getAll() as IDBRequest<LegacyOutbox[]>
-        legacyCache.onsuccess = () => {
-          const data = legacyCache.result as Partial<WorkspaceBootstrap> | undefined
-          if (data && typeof data === 'object') tx.objectStore('workspace-cache').put({ userId, workspaceId: legacyWorkspaceId, data: { ...data, workspaceId: legacyWorkspaceId } as WorkspaceBootstrap, cachedAt: new Date().toISOString() } satisfies CachedWorkspace)
-        }
-        legacyOutbox.onsuccess = () => {
-          for (const item of legacyOutbox.result ?? []) tx.objectStore('workspace-outbox').put({ ...item, userId, workspaceId: legacyWorkspaceId })
-        }
-        tx.objectStore('migration-state').put({ userId, migration: 'legacy-v2', stage: 'db_complete' } satisfies MigrationState)
-        // Clearing legacy stores in this very transaction prevents a crash from
-        // duplicating retries on the next start.
-        tx.objectStore('cache').clear(); tx.objectStore('outbox').clear()
-        tx.oncomplete = () => resolve()
-        tx.onerror = () => reject(tx.error)
-        tx.onabort = () => reject(tx.error)
-      })
-      try { await track(done, true) } finally { db.close() }
-    }
-    if (typeof localStorage !== 'undefined') {
-      for (const [legacy, scoped] of legacyPreferenceKeys(userId, legacyWorkspaceId)) {
-        const value = localStorage.getItem(legacy)
-        if (value !== null) { localStorage.setItem(scoped, value); localStorage.removeItem(legacy) }
+export function migrateLegacyOfflineData(userId: string, legacyWorkspaceId: string): Promise<void> {
+  const operation = (async () => {
+    const migration = await transaction<MigrationState | undefined>('migration-state', 'readonly', (tx) => tx.objectStore('migration-state').get([userId, 'legacy-v2']))
+    if (migration?.stage !== 'complete') {
+      if (migration?.stage !== 'db_complete') {
+        const db = await openDb()
+        try {
+          await new Promise<void>((resolve, reject) => {
+            const tx = db.transaction(['cache', 'outbox', 'workspace-cache', 'workspace-outbox', 'migration-state'], 'readwrite')
+            const legacyCache = tx.objectStore('cache').get('bootstrap') as IDBRequest<unknown>
+            const legacyOutbox = tx.objectStore('outbox').getAll() as IDBRequest<LegacyOutbox[]>
+            legacyCache.onsuccess = () => {
+              const data = legacyCache.result as Partial<WorkspaceBootstrap> | undefined
+              if (data && typeof data === 'object') tx.objectStore('workspace-cache').put({ userId, workspaceId: legacyWorkspaceId, data: { ...data, workspaceId: legacyWorkspaceId } as WorkspaceBootstrap, cachedAt: new Date().toISOString() } satisfies CachedWorkspace)
+            }
+            legacyOutbox.onsuccess = () => {
+              for (const item of legacyOutbox.result ?? []) tx.objectStore('workspace-outbox').put({ ...item, userId, workspaceId: legacyWorkspaceId })
+            }
+            tx.objectStore('migration-state').put({ userId, migration: 'legacy-v2', stage: 'db_complete' } satisfies MigrationState)
+            // Clearing legacy stores in this very transaction prevents a crash from
+            // duplicating retries on the next start.
+            tx.objectStore('cache').clear(); tx.objectStore('outbox').clear()
+            tx.oncomplete = () => resolve()
+            tx.onerror = () => reject(tx.error)
+            tx.onabort = () => reject(tx.error)
+          })
+        } finally { db.close() }
       }
+      if (typeof localStorage !== 'undefined') {
+        for (const [legacy, scoped] of legacyPreferenceKeys(userId, legacyWorkspaceId)) {
+          const value = localStorage.getItem(legacy)
+          if (value !== null) { localStorage.setItem(scoped, value); localStorage.removeItem(legacy) }
+        }
+      }
+      await transaction('migration-state', 'readwrite', (tx) => tx.objectStore('migration-state').put({ userId, migration: 'legacy-v2', stage: 'complete' } satisfies MigrationState))
     }
-    await transaction('migration-state', 'readwrite', (tx) => tx.objectStore('migration-state').put({ userId, migration: 'legacy-v2', stage: 'complete' } satisfies MigrationState))
-  }
+  })()
+  return track(operation, true)
 }
 
 export async function waitForWorkspaceOfflineWrites(): Promise<void> {

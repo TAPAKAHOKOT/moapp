@@ -1,11 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('./workspace-offline', () => ({
-  cacheBootstrap: vi.fn(), queueMutation: vi.fn(), readCachedBootstrap: vi.fn(), readOutbox: vi.fn(async () => []), removeMutation: vi.fn(),
+  cacheBootstrap: vi.fn(), queueMutation: vi.fn(), queueMutations: vi.fn(), readCachedBootstrap: vi.fn(), readOutbox: vi.fn(async () => []), removeMutation: vi.fn(),
 }))
 
-import { cacheBootstrap, queueMutation, readCachedBootstrap, readOutbox, removeMutation } from './workspace-offline'
-import { acceptDeviceLink, buildExpenseOperation, createCategory, createExpense, createInvitation, deleteCategory, getBootstrap, getSession, getSessionContext, prepareRecovery, previewInvitation, request, setSessionContext, submitExpenseOperation, syncAllWorkspaces, syncOutbox, updateCategory, updateExpense } from './workspace-api'
+import { cacheBootstrap, queueMutation, queueMutations, readCachedBootstrap, readOutbox, removeMutation } from './workspace-offline'
+import { acceptDeviceLink, allowWorkspaceMutations, blockWorkspaceMutations, buildExpenseOperation, createCategory, createExpense, createInvitation, deleteCategory, discardOutboxIssues, getBootstrap, getSession, getSessionContext, prepareRecovery, previewInvitation, request, setSessionContext, submitExpenseOperation, submitExpenseOperations, syncAllWorkspaces, syncOutbox, updateCategory, updateExpense } from './workspace-api'
 import type { AuthenticatedSession, Expense, WorkspaceBootstrap } from './types'
 
 const session: AuthenticatedSession = {
@@ -23,7 +23,29 @@ const response = (body: unknown) => new Response(JSON.stringify(body), { status:
 const errorResponse = (status: number, code: string) => new Response(JSON.stringify({ error: { code, message: code } }), { status, headers: { 'Content-Type': 'application/json' } })
 
 describe('workspace api identity context', () => {
-  beforeEach(() => { vi.unstubAllGlobals(); vi.clearAllMocks(); setSessionContext(null) })
+  beforeEach(() => { vi.unstubAllGlobals(); vi.clearAllMocks(); setSessionContext(null); allowWorkspaceMutations() })
+
+  it.each([
+    [401, 'UNAUTHORIZED', 'Your session has expired', 'Сессия завершилась. Восстановите доступ и повторите действие.'],
+    [429, 'TOO_MANY_REQUESTS', 'Rate limit exceeded', 'Слишком много попыток. Подождите немного и повторите.'],
+    [503, 'SERVICE_UNAVAILABLE', 'Database unavailable', 'Сервер временно недоступен. Повторите позже.'],
+  ])('localizes an English server error for status %s', async (status, code, message, localized) => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ error: { code, message } }), {
+      status,
+      headers: { 'Content-Type': 'application/json' },
+    })))
+
+    await expect(request('/api/test')).rejects.toMatchObject({ status, code, message: localized })
+  })
+
+  it('preserves an already localized server message', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ error: { code: 'CUSTOM', message: 'Ссылка уже закрыта.' } }), {
+      status: 400,
+      headers: { 'Content-Type': 'application/json' },
+    })))
+
+    await expect(request('/api/test')).rejects.toMatchObject({ message: 'Ссылка уже закрыта.' })
+  })
 
   it('hydrates the immutable expected-context snapshot from session', async () => {
     const fetchMock = vi.fn(async () => response(session)); vi.stubGlobal('fetch', fetchMock)
@@ -46,6 +68,18 @@ describe('workspace api identity context', () => {
 
     await expect(pending).rejects.toMatchObject({ name: 'AbortError' })
     expect(getSessionContext()).toBeNull()
+  })
+
+  it('does not lift an explicit logout fence when a late session read returns authenticated', async () => {
+    setSessionContext(session)
+    blockWorkspaceMutations()
+    const fetchMock = vi.fn(async () => response(session))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await getSession()
+
+    expect(() => createInvitation('workspace-a')).toThrow(expect.objectContaining({ code: 'UPGRADE_REQUIRED' }))
+    expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
   it('suppresses context only for public access previews', async () => {
@@ -163,6 +197,160 @@ describe('workspace api identity context', () => {
     await expect(submitExpenseOperation('user-a', 'workspace-a', 'createExpense', expense, '00000000-0000-4000-8000-000000000001')).rejects.toMatchObject({ status: 409, code: 'SESSION_CONTEXT_CHANGED' })
     expect(fetchMock).not.toHaveBeenCalled()
     expect(removeMutation).not.toHaveBeenCalled()
+  })
+
+  it('rejects a sync response that does not prove its workspace scope', async () => {
+    setSessionContext(session)
+    vi.stubGlobal('navigator', { onLine: true })
+    const operationId = '00000000-0000-4000-8000-000000000001'
+    vi.stubGlobal('fetch', vi.fn(async () => response({
+      serverTime: '2026-01-03T00:00:00.000Z',
+      results: [{ operationId, status: 'applied', expense }],
+    })))
+
+    await expect(submitExpenseOperation('user-a', 'workspace-a', 'createExpense', expense, operationId)).rejects.toMatchObject({
+      code: 'WORKSPACE_RESPONSE_MISMATCH',
+    })
+    expect(removeMutation).not.toHaveBeenCalledWith('user-a', 'workspace-a', operationId)
+  })
+
+  it.each([
+    ['create', 'createExpense', expense],
+    ['update', 'updateExpense', { ...expense, version: 2, updatedAt: '2026-01-02T00:00:00.000Z' }],
+    ['delete', 'deleteExpense', expense],
+    ['restore', 'updateExpense', { ...expense, version: 3, deletedAt: null, updatedAt: '2026-01-03T00:00:00.000Z' }],
+  ] as const)('rejects a permanent sync error for a single %s so the optimistic UI can roll back', async (_label, type, operationExpense) => {
+    setSessionContext(session)
+    vi.stubGlobal('navigator', { onLine: true })
+    const operationId = '00000000-0000-4000-8000-000000000001'
+    vi.stubGlobal('fetch', vi.fn(async () => response({
+      workspaceId: 'workspace-a',
+      serverTime: '2026-01-03T00:00:00.000Z',
+      results: [{ operationId, status: 'error', error: { code: 'CATEGORY_INVALID', message: 'Category is unavailable' } }],
+    })))
+
+    await expect(submitExpenseOperation('user-a', 'workspace-a', type, operationExpense, operationId)).rejects.toMatchObject({
+      code: 'CATEGORY_INVALID',
+      message: 'Категория недоступна или перенесена в архив.',
+    })
+    expect(removeMutation).not.toHaveBeenCalledWith('user-a', 'workspace-a', operationId)
+    expect(queueMutation).toHaveBeenLastCalledWith('user-a', 'workspace-a', expect.objectContaining({ operationId, status: 'failed' }))
+  })
+
+  it('returns applied and permanent-error results independently for a mixed batch', async () => {
+    setSessionContext(session)
+    vi.stubGlobal('navigator', { onLine: true })
+    const rejected = { ...expense, id: 'expense-b', updatedAt: '2026-01-02T00:00:00.000Z' }
+    vi.stubGlobal('fetch', vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { operations: Array<{ operationId: string; payload: { id: string } }> }
+      const results = body.operations.map((operation) => operation.payload.id === expense.id
+        ? { operationId: operation.operationId, status: 'applied', expense: { ...expense, version: 2 } }
+        : { operationId: operation.operationId, status: 'error', error: { code: 'CATEGORY_INVALID', message: 'Category is unavailable' } })
+      return response({ workspaceId: 'workspace-a', serverTime: '2026-01-02T00:00:00.000Z', results })
+    }))
+
+    const results = await submitExpenseOperations('user-a', 'workspace-a', 'deleteExpense', [expense, rejected])
+
+    expect(results[0]).toMatchObject({ status: 'applied', expense: { id: expense.id, version: 2 } })
+    expect(results[1]).toMatchObject({ status: 'error', error: { code: 'CATEGORY_INVALID' } })
+    expect(queueMutations).toHaveBeenCalledTimes(1)
+    expect(removeMutation).toHaveBeenCalledTimes(1)
+    expect(queueMutation).toHaveBeenCalledWith('user-a', 'workspace-a', expect.objectContaining({ status: 'failed' }))
+  })
+
+  it('returns an authoritative applied batch result when local outbox removal fails', async () => {
+    setSessionContext(session)
+    vi.stubGlobal('navigator', { onLine: true })
+    vi.mocked(removeMutation).mockRejectedValueOnce(new Error('IndexedDB removal failed'))
+    vi.stubGlobal('fetch', vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { operations: Array<{ operationId: string }> }
+      return response({
+        workspaceId: 'workspace-a',
+        serverTime: '2026-01-02T00:00:00.000Z',
+        results: [{ operationId: body.operations[0]!.operationId, status: 'applied', expense: { ...expense, version: 2 } }],
+      })
+    }))
+
+    await expect(submitExpenseOperations('user-a', 'workspace-a', 'deleteExpense', [expense])).resolves.toEqual([
+      expect.objectContaining({ status: 'applied', expense: expect.objectContaining({ id: expense.id, version: 2 }) }),
+    ])
+    expect(removeMutation).toHaveBeenCalledTimes(1)
+  })
+
+  it('returns an authoritative rejected batch result when persisting its outbox status fails', async () => {
+    setSessionContext(session)
+    vi.stubGlobal('navigator', { onLine: true })
+    vi.mocked(queueMutation).mockRejectedValueOnce(new Error('IndexedDB update failed'))
+    vi.stubGlobal('fetch', vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { operations: Array<{ operationId: string }> }
+      return response({
+        workspaceId: 'workspace-a',
+        serverTime: '2026-01-02T00:00:00.000Z',
+        results: [{ operationId: body.operations[0]!.operationId, status: 'error', error: { code: 'CATEGORY_INVALID', message: 'Category is unavailable' } }],
+      })
+    }))
+
+    await expect(submitExpenseOperations('user-a', 'workspace-a', 'deleteExpense', [expense])).resolves.toEqual([
+      expect.objectContaining({ status: 'error', error: expect.objectContaining({ code: 'CATEGORY_INVALID' }) }),
+    ])
+    expect(queueMutation).toHaveBeenCalledWith('user-a', 'workspace-a', expect.objectContaining({ status: 'failed' }))
+  })
+
+  it.each([
+    [401, 'UNAUTHORIZED'],
+    [409, 'SESSION_CONTEXT_CHANGED'],
+  ])('still rejects an authoritative batch failure %s %s', async (status, code) => {
+    setSessionContext(session)
+    vi.stubGlobal('navigator', { onLine: true })
+    vi.stubGlobal('fetch', vi.fn(async () => errorResponse(status, code)))
+
+    await expect(submitExpenseOperations('user-a', 'workspace-a', 'deleteExpense', [expense])).rejects.toMatchObject({ status, code })
+  })
+
+  it('keeps conflicted outbox entries when the authoritative bootstrap cannot be loaded', async () => {
+    setSessionContext(session)
+    vi.stubGlobal('navigator', { onLine: true })
+    const issue = { ...buildExpenseOperation('user-a', 'workspace-a', 'updateExpense', expense, 'issue-a', '2026-01-01T00:00:00.000Z'), status: 'conflict' as const }
+    vi.mocked(readOutbox).mockResolvedValueOnce([issue])
+    vi.stubGlobal('fetch', vi.fn(async () => errorResponse(503, 'SERVICE_UNAVAILABLE')))
+
+    await expect(discardOutboxIssues('user-a', 'workspace-a')).rejects.toMatchObject({ status: 503 })
+    expect(removeMutation).not.toHaveBeenCalled()
+    expect(cacheBootstrap).not.toHaveBeenCalled()
+  })
+
+  it('keeps conflicted outbox entries when discard is attempted offline', async () => {
+    setSessionContext(session)
+    const issue = { ...buildExpenseOperation('user-a', 'workspace-a', 'updateExpense', expense, 'issue-a', '2026-01-01T00:00:00.000Z'), status: 'conflict' as const }
+    vi.mocked(readOutbox).mockResolvedValueOnce([issue])
+    vi.stubGlobal('navigator', { onLine: false })
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('offline') }))
+
+    await expect(discardOutboxIssues('user-a', 'workspace-a')).rejects.toBeInstanceOf(Error)
+    expect(removeMutation).not.toHaveBeenCalled()
+    expect(cacheBootstrap).not.toHaveBeenCalled()
+  })
+
+  it('removes only problematic entries after the authoritative bootstrap succeeds', async () => {
+    setSessionContext(session)
+    vi.stubGlobal('navigator', { onLine: true })
+    const issue = { ...buildExpenseOperation('user-a', 'workspace-a', 'updateExpense', expense, 'issue-a', '2026-01-01T00:00:00.000Z'), status: 'conflict' as const }
+    const queued = buildExpenseOperation('user-a', 'workspace-a', 'createExpense', expense, 'queued-a', '2026-01-02T00:00:00.000Z')
+    const bootstrap = { workspaceId: 'workspace-a' } as WorkspaceBootstrap
+    vi.mocked(readOutbox)
+      .mockResolvedValueOnce([issue, queued])
+      .mockResolvedValueOnce([queued])
+      .mockResolvedValueOnce([issue])
+    const fetchMock = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => init?.method === 'POST'
+      ? response({ workspaceId: 'workspace-a', serverTime: '2026-01-02T00:00:00.000Z', results: [{ operationId: 'queued-a', status: 'applied', expense }] })
+      : response(bootstrap))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(discardOutboxIssues('user-a', 'workspace-a')).resolves.toEqual(bootstrap)
+    expect(cacheBootstrap).toHaveBeenCalledWith('user-a', 'workspace-a', bootstrap)
+    expect(removeMutation).toHaveBeenCalledTimes(2)
+    expect(removeMutation).toHaveBeenCalledWith('user-a', 'workspace-a', 'issue-a')
+    expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 
   it.each([

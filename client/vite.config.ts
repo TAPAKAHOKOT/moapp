@@ -1,5 +1,12 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
+import { createHash } from 'node:crypto'
+import { readFileSync } from 'node:fs'
+
+const publicShell = [
+  readFileSync(new URL('./public/manifest.webmanifest', import.meta.url)),
+  readFileSync(new URL('./public/icon.svg', import.meta.url)),
+]
 
 export default defineConfig({
   plugins: [react(), {
@@ -9,7 +16,12 @@ export default defineConfig({
       const precache = ['/', '/manifest.webmanifest', '/icon.svg', ...Object.keys(bundle)
         .filter((file) => /^assets\/.+\.(?:js|css)$/.test(file))
         .map((file) => `/${file}`)]
-      const worker = `const CACHE='moapp-shell-v3';const PRECACHE=${JSON.stringify(precache)};${WORKER_BODY}`
+      const digest = createHash('sha256').update([...precache].sort().join('|'))
+      const index = bundle['index.html']
+      if (index?.type === 'asset') digest.update(typeof index.source === 'string' ? index.source : index.source)
+      for (const source of publicShell) digest.update(source)
+      const cacheVersion = digest.digest('hex').slice(0, 12)
+      const worker = `const CACHE='moapp-shell-${cacheVersion}';const PRECACHE=${JSON.stringify(precache)};${WORKER_BODY}`
       this.emitFile({ type: 'asset', fileName: 'sw.js', source: worker })
     },
   }],

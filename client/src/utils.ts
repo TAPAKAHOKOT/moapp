@@ -1,26 +1,58 @@
 import type { Currency, Expense, RateSnapshot } from './types'
 
 export const APP_TIME_ZONE = 'Europe/Belgrade'
+export const MAX_AMOUNT_INTEGER_DIGITS = 12
+
+const MAX_SAFE_MINOR = BigInt(Number.MAX_SAFE_INTEGER)
+
+function validDecimals(value: number) {
+  if (!Number.isInteger(value) || value < 0 || value > 20) throw new RangeError('Invalid currency decimals')
+  return value
+}
+
+function amountAsMinor(value: string, decimals: number) {
+  const match = /^(\d*)(?:[.,](\d*))?$/.exec(value)
+  if (!match || (!match[1] && !match[2])) return null
+  const whole = BigInt(match[1] || '0')
+  const fraction = match[2] || ''
+  const scale = 10n ** BigInt(decimals)
+  const paddedFraction = fraction.slice(0, decimals).padEnd(decimals, '0')
+  let minor = whole * scale + BigInt(paddedFraction || '0')
+  if (fraction.length > decimals && fraction[decimals]! >= '5') minor += 1n
+  return minor
+}
 
 export function swipeDirection(dx: number) {
   return dx > 0 ? 'older' as const : 'newer' as const
 }
 
 export function amountToMinor(value: string, currency: string, currencies: Currency[]) {
-  const decimals = currencies.find((item) => item.code === currency)?.decimals ?? 2
-  return Math.round(Number(value || 0) * 10 ** decimals)
+  const decimals = validDecimals(currencies.find((item) => item.code === currency)?.decimals ?? 2)
+  if (!value) return 0
+  const minor = amountAsMinor(value, decimals)
+  if (minor === null) return Number.NaN
+  if (minor > MAX_SAFE_MINOR) throw new RangeError('Amount exceeds the safe integer limit')
+  return Number(minor)
 }
 
 export function applyKeypad(amount: string, key: string, maxDecimals = 2) {
   if (key === '⌫') return amount.slice(0, -1)
-  if (key === ',') return amount.includes('.') ? amount : `${amount || '0'}.`
-  const fraction = amount.split('.')[1] || ''
-  if (fraction.length >= maxDecimals) return amount
-  return amount === '0' ? key : `${amount}${key}`
+  const decimals = validDecimals(maxDecimals)
+  if (key === ',') return decimals === 0 || amount.includes('.') ? amount : `${amount || '0'}.`
+  if (!/^\d$/.test(key)) return amount
+  const separator = amount.indexOf('.')
+  if (separator >= 0 && amount.length - separator - 1 >= decimals) return amount
+
+  const candidate = amount === '0' ? key : `${amount}${key}`
+  const integer = candidate.split('.')[0] || '0'
+  if (integer.length > MAX_AMOUNT_INTEGER_DIGITS) return amount
+  const minor = amountAsMinor(candidate, decimals)
+  return minor !== null && minor <= MAX_SAFE_MINOR ? candidate : amount
 }
 
 export function convertExpense(expense: Expense, target: string, currencies: Currency[], rates: RateSnapshot) {
   const decimals = currencies.find((item) => item.code === expense.currency)?.decimals ?? 2
+  if (expense.currency === target) return expense.amountMinor / 10 ** decimals
   const sourceRate = rates.ratesToRsd[expense.currency] ?? (expense.currency === 'RSD' ? 1 : 0)
   const targetRate = rates.ratesToRsd[target] ?? (target === 'RSD' ? 1 : 0)
   return targetRate ? expense.amountMinor / 10 ** decimals * sourceRate / targetRate : 0

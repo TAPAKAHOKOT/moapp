@@ -1,4 +1,4 @@
-import { cacheBootstrap, queueMutation, readCachedBootstrap, readOutbox, removeMutation } from './workspace-offline'
+import { cacheBootstrap, queueMutation, queueMutations, readCachedBootstrap, readOutbox, removeMutation } from './workspace-offline'
 import type {
   AnalyticsData, AuthenticatedSession, Category, DeviceLinkMetadata, DeviceLinkPreview, DeviceSession, Expense, InvitationMetadata,
   InvitationPreview, Participant, RecoveryPrepareResponse, RecoveryPreview, SessionState, SyncResult, UserProfile, WorkspaceBootstrap,
@@ -11,6 +11,40 @@ type RequestOptions = RequestInit & { signal?: AbortSignal; suppressExpectedCont
 
 let context: ExpectedContext | null = null
 let mutationsBlocked = false
+
+const SERVER_ERROR_MESSAGES: Record<string, string> = {
+  ALREADY_AUTHENTICATED: 'В этом браузере уже открыт другой профиль.',
+  ALREADY_CONNECTED: 'Это устройство уже подключено.',
+  ALREADY_MEMBER: 'Этот профиль уже добавлен в пространство.',
+  CATEGORY_INVALID: 'Категория недоступна или перенесена в архив.',
+  CLAIM_IN_PROGRESS: 'Перенос уже выполняется в другой вкладке.',
+  DUPLICATE: 'Такая запись уже существует.',
+  FORBIDDEN: 'Для этого действия не хватает прав.',
+  IDEMPOTENCY_CONFLICT: 'Это изменение уже было отправлено с другими данными.',
+  IDENTITY_CONFLICT: 'Ссылка относится к другому профилю.',
+  INVALID_DISPLAY_NAME: 'Проверьте имя: оно не должно быть пустым или слишком длинным.',
+  INVALID_PIN: 'PIN не подошёл.',
+  INVALID_WORKSPACE_NAME: 'Проверьте название пространства.',
+  LINK_INVALID: 'Ссылка недействительна или больше не действует.',
+  NOT_FOUND: 'Запрошенные данные не найдены.',
+  OWNER_CANNOT_LEAVE: 'Сначала передайте владение пространством другому участнику.',
+  RATES_UNAVAILABLE: 'Курсы валют временно недоступны.',
+  RATE_MISSING: 'Для одной из валют пока нет курса.',
+  ROTATION_STALE: 'Параллельно уже была сохранена другая ссылка восстановления.',
+  RATE_LIMITED: 'Слишком много попыток. Подождите немного и повторите.',
+  SESSION_CONTEXT_CHANGED: 'Активная сессия изменилась. Обновите данные и повторите действие.',
+  UNAUTHORIZED: 'Сессия завершилась. Восстановите доступ и повторите действие.',
+  UPGRADE_REQUIRED: 'Нужно обновить приложение.',
+  USE_LOGOUT: 'Для текущего устройства используйте кнопку выхода.',
+  VALIDATION: 'Проверьте заполненные данные.',
+  VERSION_CONFLICT: 'Данные на сервере уже изменились. Обновите экран и повторите действие.',
+  WORKSPACE_NOT_FOUND: 'Пространство не найдено или доступ к нему закрыт.',
+}
+
+function localizeServerError(status: number, code: string, message: string) {
+  if (/[А-Яа-яЁё]/.test(message)) return message
+  return SERVER_ERROR_MESSAGES[code] ?? (status >= 500 ? 'Сервер временно недоступен. Повторите позже.' : status === 429 ? 'Слишком много попыток. Подождите немного и повторите.' : 'Не удалось выполнить запрос.')
+}
 
 export class WorkspaceApiError extends Error {
   constructor(public status: number, public code: string, message: string, public details?: unknown) { super(message) }
@@ -29,7 +63,11 @@ export const getSessionContext = () => context
 export const blockWorkspaceMutations = () => { mutationsBlocked = true }
 export const allowWorkspaceMutations = () => { mutationsBlocked = false }
 
-function rememberSession<T extends SessionState>(session: T): T { setSessionContext(session); return session }
+function rememberSession<T extends SessionState>(session: T): T {
+  setSessionContext(session)
+  if (session.authenticated) allowWorkspaceMutations()
+  return session
+}
 function assertMutationsAllowed() { if (mutationsBlocked) throw new WorkspaceApiError(410, 'UPGRADE_REQUIRED', 'Нужно обновить приложение') }
 function workspacePath(workspaceId: string, suffix = '') { return `/api/workspaces/${encodeURIComponent(workspaceId)}${suffix}` }
 
@@ -73,7 +111,9 @@ export async function request<T>(url: string, options: RequestOptions = {}): Pro
   const response = await fetch(url, { ...init, headers, credentials: 'include' })
   if (!response.ok) {
     const body = await response.json().catch(() => ({})) as ErrorEnvelope
-    throw new WorkspaceApiError(response.status, body.error?.code ?? 'REQUEST_ERROR', body.error?.message ?? body.message ?? 'Не удалось выполнить запрос', body.error?.details)
+    const code = body.error?.code ?? 'REQUEST_ERROR'
+    const message = body.error?.message ?? body.message ?? 'Не удалось выполнить запрос'
+    throw new WorkspaceApiError(response.status, code, localizeServerError(response.status, code, message), body.error?.details)
   }
   if (response.status === 204) return undefined as T
   return response.json() as Promise<T>
@@ -85,7 +125,10 @@ export async function getSession(signal?: AbortSignal): Promise<SessionState> {
   // A mocked/custom fetch may resolve even after abort. Never let that late
   // response restore the API identity context after an explicit logout.
   if (signal?.aborted) throw new DOMException('The operation was aborted', 'AbortError')
-  return rememberSession(session)
+  // Merely observing a cookie is not enough to lift an explicit logout fence.
+  // The App does that only after its transition epoch accepts this response.
+  setSessionContext(session)
+  return session
 }
 export async function logout(signal?: AbortSignal): Promise<void> { await request<void>('/api/session', { method: 'DELETE', signal }) }
 /** Used only for the persisted offline-logout marker before normal hydration. */
@@ -193,10 +236,10 @@ export function buildExpenseOperation(userId: string, workspaceId: string, type:
   return { userId, workspaceId, operationId, type, payload, createdAt, status: 'queued' }
 }
 
-async function sendOperations(workspaceId: string, items: WorkspaceOutboxItem[], signal?: AbortSignal): Promise<{ results: SyncResult[]; serverTime: string; workspaceId?: string }> {
+async function sendOperations(workspaceId: string, items: WorkspaceOutboxItem[], signal?: AbortSignal): Promise<{ results: SyncResult[]; serverTime: string; workspaceId: string }> {
   assertMutationsAllowed()
-  const response = await request<{ results: SyncResult[]; serverTime: string; workspaceId?: string }>(workspacePath(workspaceId, '/sync'), { method: 'POST', body: JSON.stringify({ operations: items.map(({ operationId, type, payload }) => ({ operationId, type, payload })) }), signal })
-  if (response.workspaceId !== undefined && response.workspaceId !== workspaceId) throw new WorkspaceApiError(409, 'WORKSPACE_RESPONSE_MISMATCH', 'Ответ синхронизации относится к другому пространству')
+  const response = await request<{ results: SyncResult[]; serverTime: string; workspaceId: string }>(workspacePath(workspaceId, '/sync'), { method: 'POST', body: JSON.stringify({ operations: items.map(({ operationId, type, payload }) => ({ operationId, type, payload })) }), signal })
+  if (response.workspaceId !== workspaceId) throw new WorkspaceApiError(409, 'WORKSPACE_RESPONSE_MISMATCH', 'Ответ синхронизации относится к другому пространству')
   return response
 }
 
@@ -213,24 +256,69 @@ export async function submitExpenseOperation(userId: string, workspaceId: string
     if (!result) return null
     if (result.status === 'applied' || result.status === 'unchanged') await removeMutation(userId, workspaceId, item.operationId)
     else if (result.status === 'conflict') await queueMutation(userId, workspaceId, { ...item, status: 'conflict', error: result.error?.message, current: result.current })
-    else if (result.status === 'error') await removeMutation(userId, workspaceId, item.operationId)
+    else if (result.status === 'error') {
+      await queueMutation(userId, workspaceId, { ...item, status: 'failed', error: result.error?.message })
+      const code = result.error?.code ?? 'SYNC_ERROR'
+      throw new WorkspaceApiError(422, code, localizeServerError(422, code, result.error?.message ?? 'Не удалось применить изменение'))
+    }
     return result
   } catch (error) {
     // Abort and lost responses are deliberately indistinguishable to the
     // outbox: retaining the stable operationId is the only safe retry policy.
-    if (isAbortError(error) || isAuthoritativeWorkspaceError(error)) throw error
+    if (isAbortError(error) || isAuthoritativeWorkspaceError(error) || error instanceof WorkspaceApiError && error.status === 422) throw error
     return null
   }
 }
 
 /** Batch convenience for UI actions; every item remains independently scoped and retryable. */
 export async function submitExpenseOperations(userId: string, workspaceId: string, type: WorkspaceOutboxItem['type'], expenses: Expense[], signal?: AbortSignal): Promise<(SyncResult | null)[]> {
-  return Promise.all(expenses.map((expense) => submitExpenseOperation(userId, workspaceId, type, expense, crypto.randomUUID(), signal)))
+  const snapshot = captureMutationContext(userId)
+  const items = expenses.map((expense) => buildExpenseOperation(userId, workspaceId, type, expense, crypto.randomUUID(), new Date().toISOString()))
+  await queueMutations(userId, workspaceId, items)
+  assertCurrentContext(snapshot)
+  if (typeof navigator !== 'undefined' && !navigator.onLine) return items.map(() => null)
+  let response: { results: SyncResult[]; serverTime: string; workspaceId: string }
+  try { response = await sendOperations(workspaceId, items, signal) }
+  catch (error) {
+    if (isAbortError(error) || isAuthoritativeWorkspaceError(error)) throw error
+    return items.map(() => null)
+  }
+  assertCurrentContext(snapshot)
+  const results = new Map(response.results.map((result) => [result.operationId, result]))
+  const cleanup = items.flatMap((item) => {
+    const result = results.get(item.operationId)
+    if (!result) return []
+    if (result.status === 'applied' || result.status === 'unchanged') return [removeMutation(userId, workspaceId, item.operationId)]
+    return [queueMutation(userId, workspaceId, { ...item, status: result.status === 'conflict' ? 'conflict' : 'failed', error: result.error?.message, current: result.current })]
+  })
+  // A successful server response is authoritative. Failed local cleanup leaves
+  // the original stable operationId in the outbox, so a later sync can safely
+  // retry it without rolling the already-applied UI action back.
+  await Promise.allSettled(cleanup)
+  assertCurrentContext(snapshot)
+  return items.map((item) => results.get(item.operationId) ?? null)
 }
 
-export async function discardOutboxIssues(userId: string, workspaceId: string): Promise<void> {
-  const items = await readOutbox(userId, workspaceId)
+export async function discardOutboxIssues(userId: string, workspaceId: string): Promise<WorkspaceBootstrap> {
+  const snapshot = captureMutationContext(userId)
+  let items = await readOutbox(userId, workspaceId)
+  const queued = items.filter((item) => !item.status || item.status === 'queued').sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+  if (queued.length) {
+    await syncOutboxWithContext(userId, workspaceId, snapshot)
+    assertCurrentContext(snapshot)
+    items = await readOutbox(userId, workspaceId)
+    if (items.some((item) => !item.status || item.status === 'queued')) throw new WorkspaceApiError(503, 'SYNC_PENDING', 'Сначала дождитесь отправки остальных изменений')
+  }
+  // Do not use getBootstrap's offline fallback here. Once an issue is removed,
+  // only an authoritative snapshot can safely replace its optimistic value.
+  const data = await request<WorkspaceBootstrap>(workspacePath(workspaceId, '/bootstrap'))
+  assertCurrentContext(snapshot)
+  if (data.workspaceId !== workspaceId) throw new WorkspaceApiError(409, 'WORKSPACE_RESPONSE_MISMATCH', 'Ответ сервера относится к другому пространству')
+  await cacheBootstrap(userId, workspaceId, data)
+  assertCurrentContext(snapshot)
   await Promise.all(items.filter((item) => item.status === 'conflict' || item.status === 'failed').map((item) => removeMutation(userId, workspaceId, item.operationId)))
+  assertCurrentContext(snapshot)
+  return data
 }
 
 export async function syncOutbox(userId: string, workspaceId: string, signal?: AbortSignal, onProgress?: () => void): Promise<void> {
@@ -241,7 +329,7 @@ async function syncOutboxWithContext(userId: string, workspaceId: string, expect
   const items = (await readOutbox(userId, workspaceId)).filter((item) => !item.status || item.status === 'queued').sort((a, b) => a.createdAt.localeCompare(b.createdAt)).slice(0, 200)
   assertCurrentContext(expectedContext)
   if (!items.length) return
-  let response: { results: SyncResult[]; serverTime: string; workspaceId?: string }
+  let response: { results: SyncResult[]; serverTime: string; workspaceId: string }
   try {
     response = await sendOperations(workspaceId, items, signal)
     assertCurrentContext(expectedContext)

@@ -2,9 +2,9 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import * as accessFlow from './access-flow'
-import { CapabilityScreen, CreateWorkspaceSheet, pagerTabsAt, RecoverySave, useToast, WorkspaceSwitcher } from './App'
+import { CapabilityScreen, CreateWorkspaceSheet, EntryView, fallbackAnalytics, pagerTabsAt, RecoverySave, SettingsView, useToast, WorkspaceSwitcher } from './App'
 import * as workspaceApi from './workspace-api'
-import type { AuthenticatedSession } from './types'
+import type { AuthenticatedSession, WorkspaceBootstrap } from './types'
 
 const prepared = {
   recoveryUrl: `https://example.test/#/recover/${'a'.repeat(43)}`,
@@ -18,6 +18,8 @@ afterEach(() => {
   vi.useRealTimers()
   vi.restoreAllMocks()
   Object.defineProperty(window.navigator, 'onLine', { configurable: true, value: true })
+  Object.defineProperty(window.navigator, 'clipboard', { configurable: true, value: undefined })
+  document.querySelectorAll('[data-test-opener]').forEach((node) => node.remove())
 })
 
 function ToastHarness() {
@@ -54,7 +56,138 @@ describe('pager lazy mounting', () => {
   })
 })
 
+describe('expense card swipe', () => {
+  it('snaps back without changing expense when the pointer gesture is cancelled', () => {
+    vi.useFakeTimers()
+    const setCurrentId = vi.fn()
+    const bootstrap: WorkspaceBootstrap = {
+      workspaceId: 'workspace-a',
+      workspace: { id: 'workspace-a', name: 'Дом', role: 'owner', version: 1, joinedAt: '2026-08-01T00:00:00.000Z' },
+      categories: [{ id: 'products', name: 'Продукты', color: '#758d69', placement: 'main', sortOrder: 0, createdAt: '2026-08-01T00:00:00.000Z', updatedAt: '2026-08-01T00:00:00.000Z', archivedAt: null, version: 1 }],
+      currencies: [{ code: 'RSD', name: 'Сербский динар', symbol: 'дин.', decimals: 2 }],
+      rates: { base: 'RSD', date: '2026-08-10', ratesToRsd: { RSD: 1 } },
+      expenses: [
+        { id: 'newer', amountMinor: 2_000, currency: 'RSD', categoryId: 'products', note: null, occurredAt: '2026-08-10T13:00:00.000Z', createdAt: '2026-08-10T13:00:00.000Z', updatedAt: '2026-08-10T13:00:00.000Z', version: 1, deletedAt: null },
+        { id: 'older', amountMinor: 1_000, currency: 'RSD', categoryId: 'products', note: null, occurredAt: '2026-08-09T13:00:00.000Z', createdAt: '2026-08-09T13:00:00.000Z', updatedAt: '2026-08-09T13:00:00.000Z', version: 1, deletedAt: null },
+      ],
+      defaultAnalyticsCurrency: 'RSD',
+      serverTime: '2026-08-10T14:00:00.000Z',
+    }
+    render(<EntryView
+      userId="user-a"
+      workspaceId="workspace-a"
+      bootstrap={bootstrap}
+      setBootstrap={vi.fn()}
+      currentId="newer"
+      setCurrentId={setCurrentId}
+      refreshPending={vi.fn()}
+      onDraftDirtyChange={vi.fn()}
+      active
+    />)
+    const entry = screen.getByRole('region', { name: 'Ввод суммы' })
+    const track = entry.querySelector<HTMLElement>('.entry-track')!
+
+    fireEvent.pointerDown(entry, { pointerType: 'mouse', button: 0, clientX: 100, clientY: 20 })
+    fireEvent.pointerMove(entry, { pointerType: 'mouse', clientX: 200, clientY: 20 })
+    expect(track.style.transform).toBe('translateX(100px)')
+
+    fireEvent.pointerCancel(entry, { pointerType: 'mouse' })
+    act(() => vi.runAllTimers())
+
+    expect(track.style.transform).toBe('')
+    expect(setCurrentId).not.toHaveBeenCalled()
+  })
+})
+
+describe('offline analytics fallback', () => {
+  it('reports an unavailable source rate and excludes that expense from converted totals', () => {
+    const bootstrap: WorkspaceBootstrap = {
+      workspaceId: 'workspace-a',
+      workspace: { id: 'workspace-a', name: 'Дом', role: 'owner', version: 1, joinedAt: '2026-08-01T00:00:00.000Z' },
+      categories: [{ id: 'products', name: 'Продукты', color: '#758d69', placement: 'main', sortOrder: 0, createdAt: '2026-08-01T00:00:00.000Z', updatedAt: '2026-08-01T00:00:00.000Z', archivedAt: null, version: 1 }],
+      currencies: [
+        { code: 'RSD', name: 'Сербский динар', symbol: 'дин.', decimals: 2 },
+        { code: 'EUR', name: 'Евро', symbol: '€', decimals: 2 },
+      ],
+      rates: { base: 'RSD', date: '2026-08-10', ratesToRsd: { RSD: 1 } },
+      expenses: [
+        { id: 'rsd', amountMinor: 1_000, currency: 'RSD', categoryId: 'products', note: null, occurredAt: '2026-08-10T12:00:00.000Z', createdAt: '2026-08-10T12:00:00.000Z', updatedAt: '2026-08-10T12:00:00.000Z', version: 1, deletedAt: null },
+        { id: 'eur', amountMinor: 2_000, currency: 'EUR', categoryId: 'products', note: null, occurredAt: '2026-08-10T13:00:00.000Z', createdAt: '2026-08-10T13:00:00.000Z', updatedAt: '2026-08-10T13:00:00.000Z', version: 1, deletedAt: null },
+      ],
+      defaultAnalyticsCurrency: 'RSD',
+      serverTime: '2026-08-10T14:00:00.000Z',
+    }
+
+    const analytics = fallbackAnalytics(bootstrap, 'RSD', '2026-08-10', '2026-08-10', null)
+
+    expect(analytics.expenseCount).toBe(2)
+    expect(analytics.convertedCount).toBe(1)
+    expect(analytics.missingCurrencies).toEqual(['EUR'])
+    expect(analytics.totalMinor).toBe(1_000)
+    expect(analytics.daily).toEqual([{ date: '2026-08-10', amountMinor: 1_000, count: 1 }])
+    expect(analytics.categories).toEqual([expect.objectContaining({ categoryId: 'products', amountMinor: 1_000, count: 1 })])
+
+    const withoutTargetRate = fallbackAnalytics({
+      ...bootstrap,
+      currencies: [...bootstrap.currencies, { code: 'USD', name: 'Доллар США', symbol: '$', decimals: 2 }],
+    }, 'USD', '2026-08-10', '2026-08-10', null)
+    expect(withoutTargetRate.convertedCount).toBe(0)
+    expect(withoutTargetRate.missingCurrencies).toEqual(['RSD', 'EUR'])
+    expect(withoutTargetRate.totalMinor).toBe(0)
+  })
+})
+
+describe('settings identity transitions', () => {
+  it('prevents logout while a settings mutation can still return a session', async () => {
+    vi.spyOn(workspaceApi, 'listMembers').mockResolvedValue({ members: [] })
+    vi.spyOn(workspaceApi, 'listSessions').mockResolvedValue({ sessions: [] })
+    vi.spyOn(workspaceApi, 'listInvitations').mockResolvedValue({ invitations: [] })
+    vi.spyOn(workspaceApi, 'createInvitation').mockImplementation(() => new Promise(() => {}))
+    const workspace = { id: 'workspace-a', name: 'Дом', role: 'owner' as const, version: 1, joinedAt: '2026-08-01T00:00:00.000Z' }
+    const user: AuthenticatedSession = {
+      authenticated: true,
+      user: { id: 'user-a', displayName: 'Аня', recoveryConfigured: true, recoveryGeneration: 1 },
+      currentSessionId: 'session-a', currentSessionExpiresAt: '2030-01-01T00:00:00.000Z', serverTime: '2026-08-10T14:00:00.000Z',
+      restrictedToRecovery: false, workspaces: [workspace], legacyWorkspaceId: null,
+    }
+    const bootstrap: WorkspaceBootstrap = {
+      workspaceId: workspace.id, workspace, categories: [],
+      currencies: [{ code: 'RSD', name: 'Сербский динар', symbol: 'дин.', decimals: 2 }],
+      rates: { base: 'RSD', date: '2026-08-10', ratesToRsd: { RSD: 1 } }, expenses: [],
+      defaultAnalyticsCurrency: 'RSD', serverTime: '2026-08-10T14:00:00.000Z',
+    }
+    const logout = vi.fn()
+    render(<SettingsView
+      user={user} workspace={workspace} workspaceId={workspace.id} bootstrap={bootstrap} setBootstrap={vi.fn()}
+      pendingCount={0} refreshPending={vi.fn()} onLogout={logout} theme="light" onThemeChange={vi.fn()}
+      onSession={vi.fn().mockResolvedValue(undefined)} onCreateWorkspace={vi.fn()} online
+    />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Пригласить человека' }))
+
+    const logoutButton = screen.getByRole('button', { name: 'Выйти и удалить локальные данные' }) as HTMLButtonElement
+    await waitFor(() => expect(logoutButton.disabled).toBe(true))
+    fireEvent.click(logoutButton)
+    expect(logout).not.toHaveBeenCalled()
+  })
+})
+
 describe('workspace onboarding controls', () => {
+  it('shows Russian inline validation without invoking native browser messages', () => {
+    const create = vi.fn().mockResolvedValue(undefined)
+    render(<CreateWorkspaceSheet existing={false} onClose={vi.fn()} onCreate={create}/>)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Создать пространство' }))
+    expect(screen.getByRole('alert').textContent).toBe('Введите ваше имя.')
+    expect(screen.getByLabelText('Как вас называть').getAttribute('aria-invalid')).toBe('true')
+
+    fireEvent.change(screen.getByLabelText('Как вас называть'), { target: { value: 'Аня' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Создать пространство' }))
+    expect(screen.getByRole('alert').textContent).toBe('Введите название пространства.')
+    expect(screen.getByLabelText('Название пространства').getAttribute('aria-invalid')).toBe('true')
+    expect(create).not.toHaveBeenCalled()
+  })
+
   it('requires a guest display name before creation', async () => {
     const create = vi.fn().mockResolvedValue(undefined)
     render(<CreateWorkspaceSheet existing={false} onClose={vi.fn()} onCreate={create}/>)
@@ -83,6 +216,8 @@ describe('workspace onboarding controls', () => {
     const select = vi.fn()
     render(<WorkspaceSwitcher active="a" onCreate={vi.fn()} onSelect={select} runtimes={{ a: { workspaceId: 'a', bootstrap: {} as never, source: 'cache', status: 'ready', offline: true, outbox: { total: 0, conflicts: 0, failed: 0 }, requestEpoch: 0 } }} items={[{ id: 'a', name: 'A', role: 'owner', version: 1, joinedAt: '' }, { id: 'b', name: 'B', role: 'member', version: 1, joinedAt: '' }]}/>)
     expect((screen.getByRole('button', { name: /B/ }) as HTMLButtonElement).disabled).toBe(true)
+    expect((screen.getByRole('button', { name: 'Создать пространство' }) as HTMLButtonElement).disabled).toBe(true)
+    expect(screen.getByRole('button', { name: /A/ }).getAttribute('aria-pressed')).toBe('true')
   })
 
   it('shows pending changes and allows switching to a cached workspace offline', () => {
@@ -107,6 +242,101 @@ describe('workspace onboarding controls', () => {
     expect(cached.textContent).toContain('Участник · 3')
     fireEvent.click(cached)
     expect(select).toHaveBeenCalledWith('b')
+  })
+
+  it('exposes the create sheet as a modal, traps Tab and closes it with Escape', async () => {
+    const opener = document.createElement('button')
+    opener.dataset.testOpener = ''
+    opener.textContent = 'Открыть'
+    document.body.append(opener)
+    opener.focus()
+    const close = vi.fn()
+    const view = render(<CreateWorkspaceSheet existing onClose={close} onCreate={vi.fn().mockResolvedValue(undefined)}/>)
+
+    const dialog = screen.getByRole('dialog', { name: 'Создать пространство' })
+    expect(dialog.getAttribute('aria-modal')).toBe('true')
+    const closeButton = screen.getByRole('button', { name: 'Закрыть' })
+    await waitFor(() => expect(document.activeElement).toBe(closeButton))
+
+    const cancel = screen.getByRole('button', { name: 'Отмена' })
+    cancel.focus()
+    fireEvent.keyDown(document, { key: 'Tab' })
+    expect(document.activeElement).toBe(closeButton)
+
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(close).toHaveBeenCalledTimes(1)
+    view.unmount()
+    await waitFor(() => expect(document.activeElement).toBe(opener))
+    opener.remove()
+  })
+
+  it('keeps focus inside while busy changes dismissibility and restores the original opener', async () => {
+    const opener = document.createElement('button')
+    opener.dataset.testOpener = ''
+    opener.textContent = 'Открыть создание'
+    document.body.append(opener)
+    opener.focus()
+    let finishCreate!: () => void
+    const create = vi.fn(() => new Promise<void>((resolve) => { finishCreate = resolve }))
+    const view = render(<CreateWorkspaceSheet existing onClose={vi.fn()} onCreate={create}/>)
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Закрыть' })))
+
+    fireEvent.change(screen.getByLabelText('Название пространства'), { target: { value: 'Дом' } })
+    const submit = screen.getByRole('button', { name: 'Создать пространство' })
+    submit.focus()
+    fireEvent.click(submit)
+    await screen.findByRole('button', { name: 'Создаём…' })
+    await act(async () => { await new Promise<void>((resolve) => requestAnimationFrame(() => resolve())) })
+
+    expect(screen.getByRole('dialog').contains(document.activeElement)).toBe(true)
+    expect(document.activeElement).not.toBe(opener)
+
+    view.unmount()
+    await waitFor(() => expect(document.activeElement).toBe(opener))
+    finishCreate()
+    opener.remove()
+  })
+
+  it('skips a disabled preferred initial-focus target', async () => {
+    const opener = document.createElement('button')
+    opener.dataset.testOpener = ''
+    opener.textContent = 'Открыть пространства'
+    document.body.append(opener)
+    opener.focus()
+    const view = render(<WorkspaceSwitcher
+      active="a"
+      online={false}
+      onCreate={vi.fn()}
+      onSelect={vi.fn()}
+      runtimes={{}}
+      items={[{ id: 'a', name: 'A', role: 'owner', version: 1, joinedAt: '' }]}
+    />)
+
+    expect((screen.getByRole('button', { name: /A/ }) as HTMLButtonElement).disabled).toBe(true)
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Закрыть' })))
+
+    view.unmount()
+    await waitFor(() => expect(document.activeElement).toBe(opener))
+    opener.remove()
+  })
+
+  it('restores shared background state when stacked dialogs unmount together', async () => {
+    const outside = document.createElement('button')
+    outside.textContent = 'Фоновое действие'
+    const originalInert = outside.inert
+    document.body.append(outside)
+    const view = render(<>
+      <CreateWorkspaceSheet existing onClose={vi.fn()} onCreate={vi.fn().mockResolvedValue(undefined)}/>
+      <WorkspaceSwitcher active="a" onCreate={vi.fn()} onSelect={vi.fn()} runtimes={{}} items={[{ id: 'a', name: 'A', role: 'owner', version: 1, joinedAt: '' }]}/>
+    </>)
+    expect(await screen.findAllByRole('dialog', { hidden: true })).toHaveLength(2)
+    expect(outside.inert).toBe(true)
+
+    view.unmount()
+
+    expect(outside.inert).toBe(originalInert)
+    expect(outside.getAttribute('aria-hidden')).toBeNull()
+    outside.remove()
   })
 
   it('requires recovery-save acknowledgement and supports blocking mode', () => {
@@ -149,6 +379,50 @@ describe('workspace onboarding controls', () => {
     expect(screen.getByText(/предыдущая ссылка больше не работает/i)).not.toBeNull()
     fireEvent.click(screen.getByRole('button', { name: 'Готово' }))
     expect(close).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps the original opener through recovery completion and restores focus on close', async () => {
+    const opener = document.createElement('button')
+    opener.textContent = 'Открыть восстановление'
+    document.body.append(opener)
+    opener.focus()
+    const close = vi.fn()
+    const view = render(<RecoverySave prepared={prepared} complete={vi.fn().mockResolvedValue(undefined)} close={close} mode="rotation"/>)
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Скопировать' })))
+
+    fireEvent.click(screen.getByRole('checkbox'))
+    fireEvent.click(screen.getByRole('button', { name: 'Завершить' }))
+    const done = await screen.findByRole('button', { name: 'Готово' })
+    await waitFor(() => expect(document.activeElement).toBe(done))
+    fireEvent.keyDown(document, { key: 'Tab' })
+    expect(document.activeElement).toBe(done)
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(close).toHaveBeenCalledTimes(1)
+
+    view.unmount()
+    await waitFor(() => expect(document.activeElement).toBe(opener))
+    opener.remove()
+  })
+
+  it('confirms that the recovery link was copied', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(window.navigator, 'clipboard', { configurable: true, value: { writeText } })
+    render(<RecoverySave prepared={prepared} complete={vi.fn().mockResolvedValue(undefined)} close={vi.fn()}/>)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Скопировать' }))
+
+    expect((await screen.findByRole('status')).textContent).toBe('Ссылка скопирована')
+    expect(writeText).toHaveBeenCalledWith(prepared.recoveryUrl)
+  })
+
+  it('keeps a visible fallback when clipboard access is unavailable', async () => {
+    Object.defineProperty(window.navigator, 'clipboard', { configurable: true, value: undefined })
+    render(<RecoverySave prepared={prepared} complete={vi.fn().mockResolvedValue(undefined)} close={vi.fn()}/>)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Скопировать' }))
+
+    expect((await screen.findByRole('alert')).textContent).toContain('Копирование недоступно')
+    expect(screen.getByText(prepared.recoveryUrl)).not.toBeNull()
   })
 
   it('retries a transient capability action with the same in-memory token and attempt', async () => {
