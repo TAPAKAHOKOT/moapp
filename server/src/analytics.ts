@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import type { ExpenseRow } from "./expenses.js";
 import { convertMajor, ensureRates } from "./rates.js";
 import { hasWorkspaceMembership, noStore, sendWorkspaceNotFound, workspaceContext } from "./tenant-domain-guard.js";
-import { isCurrency, jsonError, minorDigits } from "./validation.js";
+import { isCalendarDate, isCurrency, jsonError, minorDigits } from "./validation.js";
 
 type Point = { amountMinor: number; count: number };
 
@@ -32,7 +32,7 @@ export async function registerAnalyticsRoutes(app: FastifyInstance): Promise<voi
     const to = q.to ?? today;
     const categoryId = q.categoryId?.trim();
     const target = (q.currency ?? app.config.defaultAnalyticsCurrency).toUpperCase();
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to) || from > to || !isCurrency(target)) {
+    if (!isCalendarDate(from) || !isCalendarDate(to) || from > to || !isCurrency(target)) {
       return reply.code(400).send(jsonError("VALIDATION", "Valid from, to and currency are required"));
     }
 

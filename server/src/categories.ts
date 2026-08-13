@@ -16,6 +16,15 @@ export type CategoryRow = {
   archived_at: string | null;
 };
 
+const FORBIDDEN_NAME_CHARACTERS = /[\p{Cc}\p{Cf}]/u;
+
+function normalizeCategoryName(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.normalize("NFKC").trim();
+  const length = Array.from(normalized).length;
+  return length >= 1 && length <= 80 && !FORBIDDEN_NAME_CHARACTERS.test(normalized) ? normalized : undefined;
+}
+
 export function categoryJson(row: CategoryRow) {
   return {
     id: row.id,
@@ -54,7 +63,8 @@ export async function registerCategoryRoutes(app: FastifyInstance): Promise<void
     const body = request.body as Record<string, unknown>;
     const id = body.id === undefined ? randomUUID() : body.id;
     if (!isUuid(id)) return reply.code(400).send(jsonError("VALIDATION", "id must be a UUID"));
-    if (typeof body.name !== "string" || !body.name.trim() || body.name.trim().length > 80) {
+    const name = normalizeCategoryName(body.name);
+    if (!name) {
       return reply.code(400).send(jsonError("VALIDATION", "name must contain 1-80 characters"));
     }
     if (body.placement !== "main" && body.placement !== "additional") {
@@ -74,7 +84,7 @@ export async function registerCategoryRoutes(app: FastifyInstance): Promise<void
         const existing = app.db.prepare("SELECT * FROM categories WHERE workspace_id=? AND id=?")
           .get(workspaceId, id) as CategoryRow | undefined;
         if (existing) {
-          const compatible = existing.name === body.name!.toString().trim()
+          const compatible = existing.name === name
             && existing.placement === body.placement
             && existing.sort_order === sortOrder
             && existing.color === color;
@@ -84,7 +94,7 @@ export async function registerCategoryRoutes(app: FastifyInstance): Promise<void
         app.db.prepare(`INSERT INTO categories
           (workspace_id,id,name,placement,sort_order,color,version,created_at,updated_at)
           VALUES (?,?,?,?,?,?,1,?,?)`)
-          .run(workspaceId, id, body.name!.toString().trim(), body.placement, sortOrder, color, now, now);
+          .run(workspaceId, id, name, body.placement, sortOrder, color, now, now);
         const row = app.db.prepare("SELECT * FROM categories WHERE workspace_id=? AND id=?")
           .get(workspaceId, id) as CategoryRow;
         return { member: true as const, created: row };
@@ -157,11 +167,11 @@ export async function registerCategoryRoutes(app: FastifyInstance): Promise<void
           .get(workspaceId, id) as CategoryRow | undefined;
         if (!current) return { member: true as const, missing: true as const };
         if (current.version !== body.version) return { member: true as const, conflict: current };
-        const name = body.name === undefined ? current.name : typeof body.name === "string" ? body.name.trim() : "";
+        const name = body.name === undefined ? current.name : normalizeCategoryName(body.name);
         const placement = body.placement === undefined ? current.placement : body.placement;
         const sortOrder = body.sortOrder === undefined ? current.sort_order : Number(body.sortOrder);
         const color = body.color === undefined ? current.color : body.color === null ? null : String(body.color);
-        if (!name || name.length > 80 || (placement !== "main" && placement !== "additional")
+        if (!name || (placement !== "main" && placement !== "additional")
           || !Number.isInteger(sortOrder) || sortOrder < 0 || (color !== null && !/^#[0-9a-f]{6}$/i.test(color))) {
           return { member: true as const, validation: "Invalid category fields" };
         }

@@ -219,8 +219,9 @@ POST /api/legacy-claim { pin, displayName, attemptToken }
   меняются; один browser не может молча заменить другой профиль;
 - active restricted session допускается только если её ID и body attempt точно
   совпадают с текущим pending claim и `pending_expires_at > now`: это idempotent
-  response той же session, без новой row; expiry/mismatch revoke'ит restricted
-  session и не продлевает lease;
+  response той же session, без новой row; mismatch возвращает
+  `CLAIM_IN_PROGRESS` без изменения cookie/session, а expired/invalid restricted
+  session отзывает `optionalAuth` и никогда не продлевает lease;
 - guest может начать `open` claim либо восстановить потерянный cookie/response
   для `claimed_pending` только с тем же attempt hash;
 - доступен только при строке `legacy_claims` в state `open` либо

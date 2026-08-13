@@ -43,13 +43,18 @@ export async function buildTestApp(options: { config?: AppConfig; plugins?: Test
   app.decorate("db", openDatabase(config.databasePath));
   app.decorate("config", config);
   await app.register(cookie, { secret: config.sessionSecret, hook: "onRequest" });
-  await app.register(rateLimit, { global: false });
+  await app.register(rateLimit, {
+    global: false,
+    errorResponseBuilder: () => ({ statusCode: 429, message: "Too many requests; try again later" })
+  });
   await registerAuth(app);
   await registerCoreRoutes(app);
   for (const plugin of options.plugins ?? []) await plugin(app);
   app.setErrorHandler((error, _request, reply) => {
     const status = error.statusCode && error.statusCode >= 400 && error.statusCode < 500 ? error.statusCode : 500;
-    return reply.code(status).send(jsonError(status === 500 ? "INTERNAL" : "REQUEST_ERROR", status === 500 ? "Internal server error" : error.message));
+    const code = status === 500 ? "INTERNAL" : status === 429 ? "RATE_LIMITED" : "REQUEST_ERROR";
+    const message = status === 500 ? "Internal server error" : status === 429 ? "Too many requests; try again later" : error.message;
+    return reply.code(status).send(jsonError(code, message));
   });
   app.addHook("onClose", async () => app.db.close());
   await app.ready();

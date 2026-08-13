@@ -26,15 +26,19 @@ export function configFromEnv(): AppConfig {
   const pin = process.env.APP_PIN?.trim() || undefined;
   const sessionSecret = required("SESSION_SECRET");
   if (sessionSecret.length < 32) throw new Error("SESSION_SECRET must be at least 32 characters");
+  const invitationTtlHours = positiveInteger("INVITATION_TTL_HOURS", 72);
+  if (invitationTtlHours < 24 || invitationTtlHours > 168) {
+    throw new Error("INVITATION_TTL_HOURS must be between 24 and 168");
+  }
   return {
     databasePath: process.env.DATABASE_PATH ?? "/data/moapp.sqlite",
     ...(pin === undefined ? {} : { pin }),
     sessionSecret,
     sessionTtlDays: positiveInteger("SESSION_TTL_DAYS", 30),
-    secureCookies: process.env.NODE_ENV !== "test",
+    secureCookies: process.env.NODE_ENV === "production",
     appOrigin: configuredOrigin(),
     access: {
-      invitationTtlHours: positiveInteger("INVITATION_TTL_HOURS", 72),
+      invitationTtlHours,
       invitationMinTtlHours: 24,
       invitationMaxTtlHours: 168,
       maxActiveInvitations: positiveInteger("MAX_ACTIVE_INVITATIONS", 20),

@@ -1,181 +1,149 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { buildApp } from "../src/app.js";
+import { testConfig } from "./test-app.js";
 
-const app = await buildApp({
-  databasePath: ":memory:", pin: "2468", sessionSecret: "a-test-secret-that-is-definitely-longer-than-32-chars",
-  sessionTtlDays: 30, secureCookies: false, frankfurterUrl: "https://example.invalid/v2", defaultAnalyticsCurrency: "RSD"
-}, { logger: false, scheduler: false });
+const config = testConfig({ appOrigin: "https://moapp.test", secureCookies: false });
+const app = await buildApp(config, { logger: false, scheduler: false });
+const origin = { origin: config.appOrigin };
 
-let cookie = "";
-before(async () => { await app.ready(); });
-after(async () => { await app.close(); });
+type Identity = {
+  session: {
+    user: { id: string };
+    currentSessionId: string;
+  };
+  cookie: string;
+};
 
-test("health is public and auth is required", async () => {
+let owner: Identity;
+let workspaceId: string;
+
+before(async () => app.ready());
+after(async () => app.close());
+
+function cookieFrom(response: { headers: Record<string, string | string[] | undefined> }): string {
+  const value = response.headers["set-cookie"];
+  assert.equal(typeof value, "string");
+  return value.split(";", 1)[0]!;
+}
+
+function expectedContext(identity: Identity) {
+  return {
+    cookie: identity.cookie,
+    "x-moapp-expected-user-id": identity.session.user.id,
+    "x-moapp-expected-session-id": identity.session.currentSessionId
+  };
+}
+
+async function createIdentity(displayName: string, forwardedFor: string): Promise<Identity> {
+  const response = await app.inject({
+    method: "POST",
+    url: "/api/identity",
+    headers: { ...origin, "x-forwarded-for": forwardedFor },
+    payload: { displayName }
+  });
+  assert.equal(response.statusCode, 201, response.body);
+  return { session: response.json(), cookie: cookieFrom(response) };
+}
+
+function assertSecurityHeaders(headers: Record<string, string | string[] | undefined>): void {
+  assert.equal(headers["referrer-policy"], "no-referrer");
+  assert.equal(headers["x-content-type-options"], "nosniff");
+  assert.match(String(headers["content-security-policy"]), /frame-ancestors 'none'/);
+  assert.equal(headers["strict-transport-security"], "max-age=31536000; includeSubDomains");
+}
+
+test("production health is public and all responses carry security headers", async () => {
   const health = await app.inject({ method: "GET", url: "/api/health" });
-  assert.equal(health.statusCode, 200);
+  assert.equal(health.statusCode, 200, health.body);
   assert.equal(health.json().status, "ok");
+  assert.equal(health.headers["cache-control"], undefined);
+  assertSecurityHeaders(health.headers);
+
   const heartbeat = app.db.prepare("SELECT value FROM app_meta WHERE key='backup_heartbeat'").get() as { value: string };
   assert.ok(!Number.isNaN(Date.parse(heartbeat.value)));
-  assert.equal((await app.inject({ method: "GET", url: "/api/bootstrap" })).statusCode, 401);
 });
 
-test("shared PIN creates a signed session", async () => {
-  assert.equal((await app.inject({ method: "POST", url: "/api/session", payload: { pin: "wrong" } })).statusCode, 401);
-  const response = await app.inject({ method: "POST", url: "/api/session", payload: { pin: "2468" } });
-  assert.equal(response.statusCode, 200);
-  cookie = response.headers["set-cookie"]!.split(";")[0]!;
-  assert.match(cookie, /^moapp_session=/);
-  assert.equal((await app.inject({ method: "GET", url: "/api/session", headers: { cookie } })).statusCode, 200);
-});
+test("guest session and identity-to-scoped-workspace flow are wired in buildApp", async () => {
+  const guest = await app.inject({ method: "GET", url: "/api/session" });
+  assert.equal(guest.statusCode, 200, guest.body);
+  assert.equal(guest.json().authenticated, false);
+  assert.deepEqual(guest.json().workspaces, []);
+  assert.equal(guest.headers["cache-control"], "private, no-store");
 
-test("bootstrap contains seeded categories", async () => {
-  const response = await app.inject({ method: "GET", url: "/api/bootstrap", headers: { cookie } });
-  assert.equal(response.statusCode, 200);
-  const names = response.json().categories.map((category: { name: string }) => category.name);
-  assert.deepEqual(names, ["Продукты", "Eating out", "Для дома", "Вафля", "Развлечения", "Подписки", "Прочее"]);
-  assert.equal(response.json().rates.base, "RSD");
-  assert.equal(response.json().rates.ratesToRsd.RSD, 1);
-  assert.ok(response.json().currencies.some((currency: { code: string }) => currency.code === "EUR"));
-});
-
-test("expense create is idempotent and updates use optimistic versions", async () => {
-  const id = randomUUID();
-  const payload = { id, amountMinor: 12500, currency: "RSD", categoryId: "products", occurredAt: "2026-08-03T12:00:00.000Z", note: null };
-  const created = await app.inject({ method: "POST", url: "/api/expenses", headers: { cookie }, payload });
-  assert.equal(created.statusCode, 201);
-  assert.equal(created.json().version, 1);
-  assert.equal((await app.inject({ method: "POST", url: "/api/expenses", headers: { cookie }, payload })).statusCode, 200);
-  const updated = await app.inject({ method: "PATCH", url: `/api/expenses/${id}`, headers: { cookie }, payload: { amountMinor: 13000, version: 1 } });
-  assert.equal(updated.statusCode, 200);
-  assert.equal(updated.json().version, 2);
-  const conflict = await app.inject({ method: "PATCH", url: `/api/expenses/${id}`, headers: { cookie }, payload: { amountMinor: 14000, version: 1 } });
-  assert.equal(conflict.statusCode, 409);
-  assert.equal(conflict.json().error.code, "VERSION_CONFLICT");
-});
-
-test("lost sync responses can be replayed for create, update and delete", async () => {
-  const id = randomUUID();
-  const create = { operations: [{ operationId: randomUUID(), type: "createExpense", payload: { id, amountMinor: 999, currency: "EUR", categoryId: "other", occurredAt: "2026-08-03T13:00:00.000Z" } }] };
-  const created = await app.inject({ method: "POST", url: "/api/sync", headers: { cookie }, payload: create });
-  assert.equal(created.statusCode, 200);
-  assert.equal(created.json().results[0].status, "applied");
-  assert.equal(created.json().results[0].expense.version, 1);
-  const replayedCreate = await app.inject({ method: "POST", url: "/api/sync", headers: { cookie }, payload: create });
-  assert.equal(replayedCreate.json().results[0].replayed, true);
-  assert.equal(replayedCreate.json().results[0].expense.version, 1);
-
-  const update = { operations: [{ operationId: randomUUID(), type: "updateExpense", payload: { id, amountMinor: 1500, version: 1 } }] };
-  const updated = await app.inject({ method: "POST", url: "/api/sync", headers: { cookie }, payload: update });
-  assert.equal(updated.json().results[0].status, "applied");
-  assert.equal(updated.json().results[0].expense.version, 2);
-  assert.equal(updated.json().results[0].expense.amountMinor, 1500);
-  const replayedUpdate = await app.inject({ method: "POST", url: "/api/sync", headers: { cookie }, payload: update });
-  assert.equal(replayedUpdate.json().results[0].replayed, true);
-  assert.equal(replayedUpdate.json().results[0].expense.version, 2);
-
-  const remove = { operations: [{ operationId: randomUUID(), type: "deleteExpense", payload: { id, version: 2 } }] };
-  const removed = await app.inject({ method: "POST", url: "/api/sync", headers: { cookie }, payload: remove });
-  assert.equal(removed.json().results[0].status, "applied");
-  assert.equal(removed.json().results[0].expense.version, 3);
-  assert.ok(removed.json().results[0].expense.deletedAt);
-  const replayedDelete = await app.inject({ method: "POST", url: "/api/sync", headers: { cookie }, payload: remove });
-  assert.equal(replayedDelete.json().results[0].replayed, true);
-  assert.equal(replayedDelete.json().results[0].expense.version, 3);
-});
-
-test("categories can be created, reordered and archived", async () => {
-  const id = randomUUID();
-  const created = await app.inject({ method: "POST", url: "/api/categories", headers: { cookie }, payload: { id, name: "Здоровье", placement: "additional", sortOrder: 5, color: "#44AA88" } });
-  assert.equal(created.statusCode, 201);
-  const retry = await app.inject({ method: "POST", url: "/api/categories", headers: { cookie }, payload: { id, name: "Здоровье", placement: "additional", sortOrder: 5, color: "#44AA88" } });
-  assert.equal(retry.statusCode, 200);
-  assert.equal(retry.json().id, id);
-  const incompatible = await app.inject({ method: "POST", url: "/api/categories", headers: { cookie }, payload: { id, name: "Другое имя", placement: "additional", sortOrder: 5, color: "#44AA88" } });
-  assert.equal(incompatible.statusCode, 409);
-  assert.equal(incompatible.json().error.code, "IDEMPOTENCY_CONFLICT");
-  const list = await app.inject({ method: "GET", url: "/api/categories", headers: { cookie } });
-  const ids = list.json().categories.map((category: { id: string }) => category.id).reverse();
-  assert.equal((await app.inject({ method: "PUT", url: "/api/categories/order", headers: { cookie }, payload: { ids } })).statusCode, 200);
-  const current = (await app.inject({ method: "GET", url: "/api/categories", headers: { cookie } })).json().categories.find((c: { id: string }) => c.id === id);
-  assert.equal((await app.inject({ method: "DELETE", url: `/api/categories/${id}`, headers: { cookie }, payload: { version: current.version } })).statusCode, 204);
-});
-
-test("analytics groups UTC timestamps by the Belgrade calendar day", async () => {
-  const id = randomUUID();
+  owner = await createIdentity("Production Owner", "192.0.2.10");
+  workspaceId = randomUUID();
   const created = await app.inject({
     method: "POST",
-    url: "/api/expenses",
-    headers: { cookie },
-    payload: {
-      id,
-      amountMinor: 4200,
-      currency: "RSD",
-      categoryId: "products",
-      occurredAt: "2026-08-03T22:30:00.000Z",
-      note: null
-    }
+    url: "/api/workspaces",
+    headers: { ...origin, ...expectedContext(owner) },
+    payload: { id: workspaceId, name: "Дом" }
   });
-  assert.equal(created.statusCode, 201);
+  assert.equal(created.statusCode, 201, created.body);
+  assert.equal(created.json().workspace.role, "owner");
+  assert.equal(created.headers["cache-control"], "private, no-store");
 
-  const analytics = await app.inject({
+  const bootstrap = await app.inject({
     method: "GET",
-    url: "/api/analytics?from=2026-08-04&to=2026-08-04&currency=RSD",
-    headers: { cookie }
+    url: `/api/workspaces/${workspaceId}/bootstrap`,
+    headers: expectedContext(owner)
   });
-  assert.equal(analytics.statusCode, 200);
-  assert.equal(analytics.json().totalMinor, 4200);
-  assert.equal(analytics.json().daily[0].date, "2026-08-04");
-
-  const otherId = randomUUID();
-  assert.equal((await app.inject({
-    method: "POST",
-    url: "/api/expenses",
-    headers: { cookie },
-    payload: {
-      id: otherId,
-      amountMinor: 1800,
-      currency: "RSD",
-      categoryId: "other",
-      occurredAt: "2026-08-04T10:00:00.000Z",
-      note: null
-    }
-  })).statusCode, 201);
-  const products = await app.inject({
-    method: "GET",
-    url: "/api/analytics?from=2026-08-04&to=2026-08-04&currency=RSD&categoryId=products",
-    headers: { cookie }
-  });
-  assert.equal(products.statusCode, 200);
-  assert.equal(products.json().totalMinor, 4200);
-  assert.equal(products.json().expenseCount, 1);
-  assert.deepEqual(products.json().categories.map((category: { categoryId: string }) => category.categoryId), ["products"]);
+  assert.equal(bootstrap.statusCode, 200, bootstrap.body);
+  assert.equal(bootstrap.json().workspaceId, workspaceId);
+  assert.equal(bootstrap.json().workspace.id, workspaceId);
+  assert.equal(bootstrap.json().categories.length, 7);
+  assert.deepEqual(bootstrap.json().expenses, []);
+  assert.equal(bootstrap.headers["cache-control"], "private, no-store");
+  assertSecurityHeaders(bootstrap.headers);
 });
 
-test("changing APP_PIN revokes sessions while retaining SESSION_SECRET", async () => {
-  const directory = mkdtempSync(join(tmpdir(), "moapp-pin-test-"));
-  const databasePath = join(directory, "moapp.sqlite");
-  const shared = {
-    databasePath, sessionSecret: "the-same-session-secret-longer-than-thirty-two-characters",
-    sessionTtlDays: 30, secureCookies: false, frankfurterUrl: "https://example.invalid/v2", defaultAnalyticsCurrency: "RSD"
-  };
-  try {
-    const oldApp = await buildApp({ ...shared, pin: "1111" }, { logger: false, scheduler: false });
-    const login = await oldApp.inject({ method: "POST", url: "/api/session", payload: { pin: "1111" } });
-    const oldCookie = login.headers["set-cookie"]!.split(";")[0]!;
-    assert.equal((await oldApp.inject({ method: "GET", url: "/api/session", headers: { cookie: oldCookie } })).statusCode, 200);
-    await oldApp.close();
+test("production build exposes access routes and canonical capability URLs", async () => {
+  const invitation = await app.inject({
+    method: "POST",
+    url: `/api/workspaces/${workspaceId}/invitations`,
+    headers: { ...origin, host: "attacker.example", ...expectedContext(owner) },
+    payload: {}
+  });
+  assert.equal(invitation.statusCode, 201, invitation.body);
+  assert.equal(invitation.headers["cache-control"], "private, no-store");
+  assert.match(invitation.json().url, new RegExp(`^${config.appOrigin}/#/join/[A-Za-z0-9_-]{43}$`));
+  assert.doesNotMatch(invitation.json().url, /attacker\.example/);
+});
 
-    const newApp = await buildApp({ ...shared, pin: "2222" }, { logger: false, scheduler: false });
-    assert.equal((await newApp.inject({ method: "GET", url: "/api/session", headers: { cookie: oldCookie } })).statusCode, 401);
-    assert.equal((await newApp.inject({ method: "POST", url: "/api/session", payload: { pin: "1111" } })).statusCode, 401);
-    assert.equal((await newApp.inject({ method: "POST", url: "/api/session", payload: { pin: "2222" } })).statusCode, 200);
-    await newApp.close();
-  } finally {
-    rmSync(directory, { recursive: true, force: true });
+test("foreign workspace access and stale expected context fail closed", async () => {
+  const foreign = await createIdentity("Foreign User", "192.0.2.11");
+  const foreignRead = await app.inject({
+    method: "GET",
+    url: `/api/workspaces/${workspaceId}/bootstrap`,
+    headers: expectedContext(foreign)
+  });
+  assert.equal(foreignRead.statusCode, 404, foreignRead.body);
+  assert.equal(foreignRead.json().error.code, "WORKSPACE_NOT_FOUND");
+
+  const stale = await app.inject({
+    method: "GET",
+    url: `/api/workspaces/${workspaceId}/bootstrap`,
+    headers: {
+      ...expectedContext(owner),
+      "x-moapp-expected-session-id": randomUUID()
+    }
+  });
+  assert.equal(stale.statusCode, 409, stale.body);
+  assert.equal(stale.json().error.code, "SESSION_CONTEXT_CHANGED");
+  assert.equal(stale.headers["cache-control"], "private, no-store");
+});
+
+test("legacy PIN and unscoped API routes return upgrade-required", async () => {
+  const requests = [
+    app.inject({ method: "POST", url: "/api/session", headers: origin, payload: { pin: config.pin } }),
+    app.inject({ method: "POST", url: "/api/auth/login", headers: origin, payload: { pin: config.pin } }),
+    app.inject({ method: "GET", url: "/api/bootstrap" }),
+    app.inject({ method: "GET", url: "/api/expenses" })
+  ];
+  for (const response of await Promise.all(requests)) {
+    assert.equal(response.statusCode, 410, response.body);
+    assert.equal(response.json().error.code, "UPGRADE_REQUIRED");
+    assert.equal(response.headers["cache-control"], "private, no-store");
   }
 });

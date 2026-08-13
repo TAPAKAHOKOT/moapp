@@ -90,8 +90,9 @@ export function revokeSessionInTransaction(db: Database, sessionId: string, now 
     WHERE revoked_at IS NULL AND expires_at>? AND (
       (created_by_session_id=? AND kind='device_link')
       OR (created_by_session_id=? AND kind='invitation' AND consumed_at IS NULL)
+      OR (created_by_session_id=? AND kind='recovery_rotation' AND consumed_at IS NULL)
       OR (accepted_session_id=? AND kind='device_link')
-    )`).run(now, now, sessionId, sessionId, sessionId);
+    )`).run(now, now, sessionId, sessionId, sessionId, sessionId);
   return revoked.changes > 0;
 }
 

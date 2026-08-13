@@ -34,7 +34,7 @@ type AccessTokenRow = {
   revoked_at: string | null;
 };
 
-type RateBucket = { startedAt: number; count: number };
+type RateBucket = { expiresAt: number; count: number };
 
 const MAX_RATE_BUCKETS = 10_000;
 
@@ -98,7 +98,7 @@ function rateLimit(
 ): boolean {
   if (buckets.size >= MAX_RATE_BUCKETS && !buckets.has(key)) {
     for (const [bucketKey, value] of buckets) {
-      if (value.startedAt + windowMs <= now) buckets.delete(bucketKey);
+      if (value.expiresAt <= now) buckets.delete(bucketKey);
     }
     if (buckets.size >= MAX_RATE_BUCKETS) {
       const oldest = buckets.keys().next().value as string | undefined;
@@ -106,9 +106,11 @@ function rateLimit(
     }
   }
   const current = buckets.get(key);
-  const bucket = !current || current.startedAt + windowMs <= now ? { startedAt: now, count: 0 } : current;
+  const bucket = !current || current.expiresAt <= now
+    ? { expiresAt: now + windowMs, count: 0 }
+    : current;
   if (bucket.count >= max) {
-    const retryAfter = Math.max(1, Math.ceil((bucket.startedAt + windowMs - now) / 1000));
+    const retryAfter = Math.max(1, Math.ceil((bucket.expiresAt - now) / 1000));
     void reply.header("Retry-After", String(retryAfter));
     void fail(reply, 429, "RATE_LIMITED", "Too many requests; try again later");
     return false;
@@ -186,6 +188,9 @@ export async function registerAccessRoutes(app: FastifyInstance): Promise<void> 
     const expiresAt = new Date(now.getTime() + ttlHours * 3_600_000).toISOString();
     const id = randomUUID();
     const outcome = app.db.transaction(() => {
+      const session = app.db.prepare(`SELECT 1 FROM sessions WHERE id=? AND user_id=? AND kind='normal'
+        AND revoked_at IS NULL AND expires_at>?`).get(request.auth!.sessionId, request.auth!.userId, createdAt);
+      if (!session) return "unauthorized" as const;
       const workspace = app.db.prepare("SELECT owner_user_id FROM workspaces WHERE id=?").get(workspaceId) as Pick<WorkspaceRow, "owner_user_id"> | undefined;
       if (!workspace || workspace.owner_user_id !== request.auth!.userId) return "forbidden" as const;
       const count = app.db.prepare(`SELECT count(*) AS count FROM access_tokens
@@ -200,6 +205,7 @@ export async function registerAccessRoutes(app: FastifyInstance): Promise<void> 
         .run(id, secretHash(token), workspaceId, request.auth!.userId, request.auth!.sessionId, createdAt, expiresAt);
       return "created" as const;
     })();
+    if (outcome === "unauthorized") return fail(reply, 401, "UNAUTHORIZED", "The authorizing session is no longer active");
     if (outcome === "forbidden") return fail(reply, 403, "FORBIDDEN", "Only the workspace owner can create invitations");
     if (outcome === "limit") {
       void reply.header("Retry-After", "3600");
@@ -438,6 +444,11 @@ export async function registerAccessRoutes(app: FastifyInstance): Promise<void> 
     const now = nowDate.toISOString();
     const completionHash = secretHash((request.body as { completionToken: string }).completionToken);
     const outcome = app.db.transaction(() => {
+      const activeSession = app.db.prepare(`SELECT 1 FROM sessions WHERE id=? AND user_id=? AND kind=?
+        AND revoked_at IS NULL AND expires_at>?`).get(
+        request.auth!.sessionId, request.auth!.userId, request.auth!.sessionKind, now
+      );
+      if (!activeSession) return { kind: "unauthorized" as const };
       const row = app.db.prepare(`SELECT * FROM access_tokens WHERE kind='recovery_rotation' AND revoke_sessions=0
         AND token_hash=? AND target_user_id=? AND created_by_user_id=? AND created_by_session_id=?
         AND consumed_at IS NULL AND revoked_at IS NULL AND expires_at>?`)
@@ -460,6 +471,7 @@ export async function registerAccessRoutes(app: FastifyInstance): Promise<void> 
       const session = createSession(app.db, app.config, { userId: request.auth!.userId, userAgent: request.headers["user-agent"], now: nowDate });
       return { kind: "legacy" as const, session };
     })();
+    if (outcome.kind === "unauthorized") return fail(reply, 401, "UNAUTHORIZED", "The authorizing session is no longer active");
     if (outcome.kind === "invalid") return sendLinkInvalid(reply);
     if (outcome.kind === "stale") return fail(reply, 409, "ROTATION_STALE", "Another recovery rotation has already completed");
     if (outcome.kind === "legacy") {

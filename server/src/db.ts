@@ -71,7 +71,7 @@ const seeds = [
   ["other", "Прочее", "additional", 4, "#A8A8A8"]
 ] as const;
 
-const LATEST_SCHEMA_VERSION = 3;
+const LATEST_SCHEMA_VERSION = 4;
 
 type TableCount = {
   categories: number;
@@ -243,6 +243,7 @@ function migrateToVersion3(
         OR (state = 'closed' AND attempt_hash IS NULL AND pending_session_id IS NULL AND pending_expires_at IS NULL)
       )
     );
+    CREATE UNIQUE INDEX legacy_claims_singleton_idx ON legacy_claims((1));
 
     CREATE TABLE categories_new (
       workspace_id TEXT NOT NULL REFERENCES workspaces(id),
@@ -357,7 +358,8 @@ export function openDatabase(path: string): Database.Database {
         if (db.prepare("SELECT 1 FROM schema_migrations WHERE version = ?").get(version)) continue;
         const appliedAt = new Date().toISOString();
         if (version <= migrations.length) db.exec(migrations[i]!);
-        else migrateToVersion3(db, wasLegacyInstallation, legacyUserId, legacyWorkspaceId, appliedAt);
+        else if (version === 3) migrateToVersion3(db, wasLegacyInstallation, legacyUserId, legacyWorkspaceId, appliedAt);
+        else if (version === 4) db.exec("CREATE UNIQUE INDEX IF NOT EXISTS legacy_claims_singleton_idx ON legacy_claims((1))");
         db.prepare("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)").run(version, appliedAt);
       }
     });

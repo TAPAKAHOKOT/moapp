@@ -28,6 +28,7 @@ export function sendLinkInvalid(reply: FastifyReply): FastifyReply {
 export function cleanupExpiredAccessRows(db: Database, now = new Date().toISOString()): {
   accessRows: number;
   sessions: number;
+  users: number;
 } {
   return db.transaction(() => {
     const accessRows = db.prepare("DELETE FROM access_tokens WHERE expires_at<=?").run(now).changes;
@@ -40,6 +41,16 @@ export function cleanupExpiredAccessRows(db: Database, now = new Date().toISOStr
       AND NOT EXISTS (
         SELECT 1 FROM legacy_claims l WHERE l.pending_session_id=sessions.id
       )`).run(now, now).changes;
-    return { accessRows, sessions };
+    const orphanPredicate = `u.recovery_token_hash IS NULL
+      AND NOT EXISTS (SELECT 1 FROM memberships m WHERE m.user_id=u.id)
+      AND NOT EXISTS (SELECT 1 FROM sessions s WHERE s.user_id=u.id)
+      AND NOT EXISTS (SELECT 1 FROM legacy_claims l WHERE l.owner_user_id=u.id)
+      AND NOT EXISTS (SELECT 1 FROM workspaces w WHERE w.owner_user_id=u.id)
+      AND NOT EXISTS (SELECT 1 FROM access_tokens a WHERE a.target_user_id=u.id OR a.created_by_user_id=u.id)`;
+    db.prepare(`UPDATE memberships SET added_by_user_id=NULL WHERE added_by_user_id IN (
+      SELECT u.id FROM users u WHERE ${orphanPredicate}
+    )`).run();
+    const users = db.prepare(`DELETE FROM users AS u WHERE ${orphanPredicate}`).run().changes;
+    return { accessRows, sessions, users };
   })();
 }
