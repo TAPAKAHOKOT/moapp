@@ -292,6 +292,44 @@ test("tenant composite keys allow same IDs but reject cross-workspace category r
   }
 });
 
+test("access token purpose constraints reject hybrid recovery and cross-user device rows", () => {
+  const fixture = temporaryDatabase();
+  try {
+    const db = openDatabase(fixture.path);
+    const ownerId = randomUUID();
+    const otherUserId = randomUUID();
+    const workspaceId = randomUUID();
+    const now = "2026-02-01T00:00:00.000Z";
+    createWorkspace(db, workspaceId, ownerId, "A");
+    db.prepare("INSERT INTO users(id,display_name,created_at,updated_at) VALUES (?,?,?,?)")
+      .run(otherUserId, "Other", now, now);
+    const sessionId = randomUUID();
+    db.prepare(`INSERT INTO sessions
+      (id,token_hash,user_id,kind,label,created_at,last_seen_at,expires_at)
+      VALUES (?,?,?,'normal','Test',?,?,?)`)
+      .run(sessionId, "session-hash", ownerId, now, now, "2027-02-01T00:00:00.000Z");
+
+    const insert = db.prepare(`INSERT INTO access_tokens
+      (id,kind,token_hash,workspace_id,target_user_id,created_by_user_id,created_by_session_id,
+       replacement_token_hash,expected_generation,revoke_sessions,accept_attempt_hash,
+       accepted_session_id,created_at,expires_at,consumed_at,revoked_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,NULL)`);
+
+    assert.throws(() => insert.run(
+      randomUUID(), "recovery_rotation", "hybrid-recovery", null, ownerId, null,
+      sessionId, "replacement-hash", 0, 0, null, null, now, "2026-02-01T00:30:00.000Z"
+    ), /CHECK constraint failed/);
+    assert.throws(() => insert.run(
+      randomUUID(), "device_link", "cross-user-device", null, otherUserId, ownerId,
+      sessionId, null, null, 0, null, null, now, "2026-02-01T00:15:00.000Z"
+    ), /CHECK constraint failed/);
+
+    db.close();
+  } finally {
+    rmSync(fixture.directory, { recursive: true, force: true });
+  }
+});
+
 test("a copy failure rolls v3 back and leaves a retryable v2 database", () => {
   const fixture = temporaryDatabase();
   try {

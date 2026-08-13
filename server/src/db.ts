@@ -208,6 +208,7 @@ function migrateToVersion3(
         (kind = 'device_link'
           AND workspace_id IS NULL AND target_user_id IS NOT NULL
           AND created_by_user_id IS NOT NULL AND created_by_session_id IS NOT NULL
+          AND created_by_user_id = target_user_id
           AND replacement_token_hash IS NULL AND expected_generation IS NULL
           AND revoke_sessions = 0
           AND ((consumed_at IS NULL AND accept_attempt_hash IS NULL AND accepted_session_id IS NULL)
@@ -217,7 +218,8 @@ function migrateToVersion3(
           AND workspace_id IS NULL AND target_user_id IS NOT NULL
           AND replacement_token_hash IS NOT NULL AND expected_generation IS NOT NULL
           AND accept_attempt_hash IS NULL AND accepted_session_id IS NULL
-          AND ((revoke_sessions = 0 AND created_by_user_id = target_user_id AND created_by_session_id IS NOT NULL)
+          AND ((revoke_sessions = 0 AND created_by_user_id IS NOT NULL
+              AND created_by_user_id = target_user_id AND created_by_session_id IS NOT NULL)
             OR (revoke_sessions = 1 AND created_by_user_id IS NULL AND created_by_session_id IS NULL)))
       )
     );
