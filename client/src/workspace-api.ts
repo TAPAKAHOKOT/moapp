@@ -33,6 +33,35 @@ function rememberSession<T extends SessionState>(session: T): T { setSessionCont
 function assertMutationsAllowed() { if (mutationsBlocked) throw new WorkspaceApiError(410, 'UPGRADE_REQUIRED', 'Нужно обновить приложение') }
 function workspacePath(workspaceId: string, suffix = '') { return `/api/workspaces/${encodeURIComponent(workspaceId)}${suffix}` }
 
+function sessionContextChanged(): WorkspaceApiError {
+  return new WorkspaceApiError(409, 'SESSION_CONTEXT_CHANGED', 'Активная сессия изменилась во время запроса')
+}
+
+function sameContext(left: ExpectedContext | null, right: ExpectedContext | null): boolean {
+  return left?.user.id === right?.user.id && left?.currentSessionId === right?.currentSessionId
+}
+
+function assertCurrentContext(snapshot: ExpectedContext | null): void {
+  if (!sameContext(snapshot, context)) throw sessionContextChanged()
+}
+
+function captureMutationContext(userId: string): ExpectedContext {
+  if (!context || context.user.id !== userId) throw sessionContextChanged()
+  return context
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === 'AbortError'
+}
+
+function isAuthoritativeWorkspaceError(error: unknown): boolean {
+  return error instanceof WorkspaceApiError && (
+    error.status === 401 || error.status === 409 ||
+    (error.status === 404 && error.code === 'WORKSPACE_NOT_FOUND') ||
+    (error.status === 410 && error.code === 'UPGRADE_REQUIRED')
+  )
+}
+
 export async function request<T>(url: string, options: RequestOptions = {}): Promise<T> {
   const { suppressExpectedContext = false, headers: suppliedHeaders, ...init } = options
   const headers = new Headers(suppliedHeaders)
@@ -52,7 +81,11 @@ export async function request<T>(url: string, options: RequestOptions = {}): Pro
 
 // Identity/session. GET /session deliberately does not send stale-tab headers.
 export async function getSession(signal?: AbortSignal): Promise<SessionState> {
-  return rememberSession(await request<SessionState>('/api/session', { signal, suppressExpectedContext: true }))
+  const session = await request<SessionState>('/api/session', { signal, suppressExpectedContext: true })
+  // A mocked/custom fetch may resolve even after abort. Never let that late
+  // response restore the API identity context after an explicit logout.
+  if (signal?.aborted) throw new DOMException('The operation was aborted', 'AbortError')
+  return rememberSession(session)
 }
 export async function logout(signal?: AbortSignal): Promise<void> { await request<void>('/api/session', { method: 'DELETE', signal }) }
 /** Used only for the persisted offline-logout marker before normal hydration. */
@@ -110,14 +143,23 @@ export async function legacyClaim(pin: string, displayName: string, attemptToken
 
 // Tenant-scoped domain API.  Workspace ID is deliberately the first argument.
 export async function getBootstrap(workspaceId: string, signal?: AbortSignal): Promise<{ data: WorkspaceBootstrap; offline: boolean }> {
+  const snapshot = context
   try {
     const data = await request<WorkspaceBootstrap>(workspacePath(workspaceId, '/bootstrap'), { signal })
+    assertCurrentContext(snapshot)
     if (data.workspaceId !== workspaceId) throw new WorkspaceApiError(409, 'WORKSPACE_RESPONSE_MISMATCH', 'Ответ сервера относится к другому пространству')
-    if (context) await cacheBootstrap(context.user.id, workspaceId, data)
+    if (snapshot) {
+      await cacheBootstrap(snapshot.user.id, workspaceId, data)
+      assertCurrentContext(snapshot)
+    }
     return { data, offline: false }
   } catch (error) {
-    if (error instanceof WorkspaceApiError && (error.status === 401 || isSessionContextChanged(error))) throw error
-    const cached = context ? await readCachedBootstrap(context.user.id, workspaceId) : undefined
+    // These responses are authoritative access changes, not offline failures.
+    // Falling back to a cached bootstrap here would keep a removed workspace
+    // visible or let a stale tab render data for the wrong session.
+    if (isAbortError(error) || isAuthoritativeWorkspaceError(error)) throw error
+    const cached = snapshot ? await readCachedBootstrap(snapshot.user.id, workspaceId) : undefined
+    assertCurrentContext(snapshot)
     if (cached?.workspaceId === workspaceId) return { data: cached, offline: true }
     throw error
   }
@@ -128,8 +170,16 @@ export function createExpense(workspaceId: string, expense: Omit<Expense, 'creat
 export function updateExpense(workspaceId: string, expenseId: string, update: Partial<Expense> & Pick<Expense, 'version'>, signal?: AbortSignal) { assertMutationsAllowed(); return request<Expense>(workspacePath(workspaceId, `/expenses/${encodeURIComponent(expenseId)}`), { method: 'PATCH', body: JSON.stringify(update), signal }) }
 export async function deleteExpense(workspaceId: string, expenseId: string, version: number, signal?: AbortSignal): Promise<void> { assertMutationsAllowed(); return request<void>(workspacePath(workspaceId, `/expenses/${encodeURIComponent(expenseId)}`), { method: 'DELETE', body: JSON.stringify({ version }), signal }) }
 export function listCategories(workspaceId: string, signal?: AbortSignal) { return request<{ categories: Category[] }>(workspacePath(workspaceId, '/categories'), { signal }) }
-export function createCategory(workspaceId: string, category: Omit<Category, 'version' | 'archivedAt'>, signal?: AbortSignal) { assertMutationsAllowed(); return request<Category>(workspacePath(workspaceId, '/categories'), { method: 'POST', body: JSON.stringify(category), signal }) }
-export function updateCategory(workspaceId: string, categoryId: string, update: Partial<Category> & Pick<Category, 'version'>, signal?: AbortSignal) { assertMutationsAllowed(); return request<Category>(workspacePath(workspaceId, `/categories/${encodeURIComponent(categoryId)}`), { method: 'PATCH', body: JSON.stringify(update), signal }) }
+export function createCategory(workspaceId: string, category: Omit<Category, 'version' | 'createdAt' | 'updatedAt' | 'archivedAt'>, signal?: AbortSignal) {
+  assertMutationsAllowed()
+  const { id, name, placement, sortOrder, color } = category
+  return request<Category>(workspacePath(workspaceId, '/categories'), { method: 'POST', body: JSON.stringify({ id, name, placement, sortOrder, color }), signal })
+}
+export function updateCategory(workspaceId: string, categoryId: string, update: Partial<Category> & Pick<Category, 'version'>, signal?: AbortSignal) {
+  assertMutationsAllowed()
+  const { name, placement, sortOrder, color, archivedAt, version } = update
+  return request<Category>(workspacePath(workspaceId, `/categories/${encodeURIComponent(categoryId)}`), { method: 'PATCH', body: JSON.stringify({ name, placement, sortOrder, color, archivedAt, version }), signal })
+}
 export async function deleteCategory(workspaceId: string, categoryId: string, version: number, signal?: AbortSignal): Promise<void> { assertMutationsAllowed(); return request<void>(workspacePath(workspaceId, `/categories/${encodeURIComponent(categoryId)}`), { method: 'DELETE', body: JSON.stringify({ version }), signal }) }
 export function reorderCategories(workspaceId: string, ids: string[], signal?: AbortSignal) { assertMutationsAllowed(); return request<{ categories: Category[] }>(workspacePath(workspaceId, '/categories/order'), { method: 'PUT', body: JSON.stringify({ ids }), signal }) }
 export function getAnalytics(workspaceId: string, from: string, to: string, currency: string, categoryId?: string, signal?: AbortSignal) {
@@ -151,11 +201,14 @@ async function sendOperations(workspaceId: string, items: WorkspaceOutboxItem[],
 }
 
 export async function submitExpenseOperation(userId: string, workspaceId: string, type: WorkspaceOutboxItem['type'], expense: Expense, operationId = crypto.randomUUID(), signal?: AbortSignal): Promise<SyncResult | null> {
+  const snapshot = captureMutationContext(userId)
   const item = buildExpenseOperation(userId, workspaceId, type, expense, operationId, new Date().toISOString())
   await queueMutation(userId, workspaceId, item)
+  assertCurrentContext(snapshot)
   if (typeof navigator !== 'undefined' && !navigator.onLine) return null
   try {
     const response = await sendOperations(workspaceId, [item], signal)
+    assertCurrentContext(snapshot)
     const result = response.results.find((candidate) => candidate.operationId === item.operationId)
     if (!result) return null
     if (result.status === 'applied' || result.status === 'unchanged') await removeMutation(userId, workspaceId, item.operationId)
@@ -165,17 +218,39 @@ export async function submitExpenseOperation(userId: string, workspaceId: string
   } catch (error) {
     // Abort and lost responses are deliberately indistinguishable to the
     // outbox: retaining the stable operationId is the only safe retry policy.
-    if (isSessionContextChanged(error)) throw error
+    if (isAbortError(error) || isAuthoritativeWorkspaceError(error)) throw error
     return null
   }
 }
 
+/** Batch convenience for UI actions; every item remains independently scoped and retryable. */
+export async function submitExpenseOperations(userId: string, workspaceId: string, type: WorkspaceOutboxItem['type'], expenses: Expense[], signal?: AbortSignal): Promise<(SyncResult | null)[]> {
+  return Promise.all(expenses.map((expense) => submitExpenseOperation(userId, workspaceId, type, expense, crypto.randomUUID(), signal)))
+}
+
+export async function discardOutboxIssues(userId: string, workspaceId: string): Promise<void> {
+  const items = await readOutbox(userId, workspaceId)
+  await Promise.all(items.filter((item) => item.status === 'conflict' || item.status === 'failed').map((item) => removeMutation(userId, workspaceId, item.operationId)))
+}
+
 export async function syncOutbox(userId: string, workspaceId: string, signal?: AbortSignal, onProgress?: () => void): Promise<void> {
+  await syncOutboxWithContext(userId, workspaceId, captureMutationContext(userId), signal, onProgress)
+}
+
+async function syncOutboxWithContext(userId: string, workspaceId: string, expectedContext: ExpectedContext, signal?: AbortSignal, onProgress?: () => void): Promise<void> {
   const items = (await readOutbox(userId, workspaceId)).filter((item) => !item.status || item.status === 'queued').sort((a, b) => a.createdAt.localeCompare(b.createdAt)).slice(0, 200)
+  assertCurrentContext(expectedContext)
   if (!items.length) return
   let response: { results: SyncResult[]; serverTime: string; workspaceId?: string }
-  try { response = await sendOperations(workspaceId, items, signal) } catch (error) { if (isSessionContextChanged(error)) throw error; return }
+  try {
+    response = await sendOperations(workspaceId, items, signal)
+    assertCurrentContext(expectedContext)
+  } catch (error) {
+    if (isAbortError(error) || isAuthoritativeWorkspaceError(error)) throw error
+    return
+  }
   for (const result of response.results) {
+    assertCurrentContext(expectedContext)
     const item = items.find((candidate) => candidate.operationId === result.operationId)
     if (!item) continue
     if (result.status === 'applied' || result.status === 'unchanged') await removeMutation(userId, workspaceId, item.operationId)
@@ -186,6 +261,12 @@ export async function syncOutbox(userId: string, workspaceId: string, signal?: A
 
 /** Active workspace first, then every other workspace with queued operations. */
 export async function syncAllWorkspaces(userId: string, workspaces: readonly WorkspaceSummary[], activeWorkspaceId: string | null, signal?: AbortSignal, onProgress?: (workspaceId: string) => void): Promise<void> {
+  const snapshot = captureMutationContext(userId)
   const ordered = [...workspaces].sort((a, b) => Number(b.id === activeWorkspaceId) - Number(a.id === activeWorkspaceId))
-  for (const workspace of ordered) { await syncOutbox(userId, workspace.id, signal); onProgress?.(workspace.id) }
+  for (const workspace of ordered) {
+    assertCurrentContext(snapshot)
+    await syncOutboxWithContext(userId, workspace.id, snapshot, signal)
+    assertCurrentContext(snapshot)
+    onProgress?.(workspace.id)
+  }
 }

@@ -1,7 +1,7 @@
 {
   "name": "Moapp — расходы",
   "short_name": "Moapp",
-  "description": "Общий минималистичный трекер расходов",
+  "description": "Учёт расходов в ваших пространствах",
   "lang": "ru",
   "start_url": "/",
   "display": "standalone",

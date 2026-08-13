@@ -5,8 +5,9 @@ vi.mock('./workspace-offline', () => ({
   readCachedBootstrap: vi.fn(), readCachedProfile: vi.fn(),
 }))
 
-import { beginWorkspaceRequest, createAppState, createIdentityCoordinator, finishWorkspaceRequest, hydrateAppState, updateWorkspace } from './app-state'
-import type { AuthenticatedSession } from './types'
+import { beginWorkspaceRequest, chooseCachedWorkspace, closeCapability, createAppState, createIdentityCoordinator, createLoggedOutState, finishWorkspaceRequest, hydrateAppState, openLegacyClaim, updateWorkspace } from './app-state'
+import { readCachedBootstrap } from './workspace-offline'
+import type { AuthenticatedSession, GuestSession, WorkspaceRuntime, WorkspaceSummary } from './types'
 
 function memoryStorage(): Storage {
   const data = new Map<string, string>()
@@ -19,6 +20,20 @@ function memoryStorage(): Storage {
 const session = (userId: string, sessionId = 'session'): AuthenticatedSession => ({
   authenticated: true, user: { id: userId, displayName: userId, recoveryConfigured: false, recoveryGeneration: 0 }, currentSessionId: sessionId,
   currentSessionExpiresAt: '2030-01-01T00:00:00.000Z', serverTime: '2026-01-01T00:00:00.000Z', restrictedToRecovery: false, workspaces: [], legacyWorkspaceId: null,
+})
+
+const guest = (legacyClaimAvailable = false): GuestSession => ({
+  authenticated: false, user: null, workspaces: [], legacyClaimAvailable,
+  serverTime: '2026-01-01T00:00:00.000Z',
+})
+
+const workspace = (id: string): WorkspaceSummary => ({
+  id, name: id, role: 'owner', version: 1, joinedAt: '2026-01-01T00:00:00.000Z',
+})
+
+const cachedRuntime = (workspaceId: string): WorkspaceRuntime => ({
+  workspaceId, bootstrap: { workspaceId } as WorkspaceRuntime['bootstrap'], source: 'cache', status: 'ready',
+  offline: true, outbox: { total: 0, conflicts: 0, failed: 0 }, requestEpoch: 0,
 })
 
 beforeEach(() => { vi.stubGlobal('localStorage', memoryStorage()); vi.stubGlobal('window', new EventTarget()); vi.stubGlobal('BroadcastChannel', undefined) })
@@ -47,6 +62,34 @@ describe('workspace runtime race isolation', () => {
     expect(state.runtimes).toEqual({})
   })
 
+  it('keeps a clean legacy browser on the guest screen until it explicitly starts a claim', async () => {
+    const state = await hydrateAppState(guest(true))
+    expect(state.phase).toBe('guest')
+    expect(openLegacyClaim(state).phase).toBe('legacy-claim')
+  })
+
+  it('drops every renderable workspace value immediately when logging out', () => {
+    const state = createLoggedOutState()
+    expect(state).toMatchObject({ phase: 'known-user-locked', session: null, activeWorkspaceId: null, runtimes: {}, capability: null })
+  })
+
+  it('recalculates the phase when a capability flow is closed', async () => {
+    const state = await hydrateAppState(guest(true), { kind: 'invite', token: 'token' })
+    expect(state.phase).toBe('capability')
+    expect(closeCapability(state)).toMatchObject({ phase: 'guest', capability: null })
+  })
+
+  it('uses a cached membership instead of a stale saved workspace selection', async () => {
+    localStorage.setItem('moapp:v2:active-workspace:user', 'uncached')
+    const workspaces = [workspace('uncached'), workspace('cached')]
+    const selected = chooseCachedWorkspace('user', workspaces, { cached: cachedRuntime('cached') })
+    expect(selected).toBe('cached')
+
+    vi.mocked(readCachedBootstrap).mockImplementation(async (_userId, workspaceId) => workspaceId === 'cached' ? { workspaceId } as never : undefined)
+    const state = await hydrateAppState({ ...session('user'), workspaces })
+    expect(state.activeWorkspaceId).toBe('uncached')
+  })
+
   it('uses the shared storage epoch when a newly opened tab announces identity', () => {
     localStorage.setItem('moapp:v2:identity-epoch', JSON.stringify({ epoch: 5, userId: 'old', sessionId: 'old-session' }))
     const foreignIdentity = vi.fn()
@@ -58,5 +101,15 @@ describe('workspace runtime race isolation', () => {
     expect(JSON.parse(localStorage.getItem('moapp:v2:identity-epoch')!).epoch).toBe(6)
     expect(foreignIdentity).toHaveBeenCalledTimes(1)
     existing.dispose(); newer.dispose()
+  })
+
+  it('forces workspace reload when connectivity returns', () => {
+    const refresh = vi.fn(async () => {})
+    const coordinator = createIdentityCoordinator({ refresh, abortNetwork: vi.fn(), stopSync: vi.fn(), onForeignIdentity: vi.fn(), intervalMs: 60_000 })
+
+    window.dispatchEvent(new Event('online'))
+
+    expect(refresh).toHaveBeenCalledWith(true)
+    coordinator.dispose()
   })
 })
