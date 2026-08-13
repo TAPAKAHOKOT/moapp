@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import { noStore, requireMutationOrigin } from "./tenant-domain-guard.js";
 import { isCurrency, jsonError } from "./validation.js";
 
 type FrankfurterRate = { date: string; base: string; quote: string; rate: number };
@@ -58,15 +59,18 @@ export async function ensureRates(app: FastifyInstance, from: string, to: string
 }
 
 export async function registerRateRoutes(app: FastifyInstance): Promise<void> {
-  app.get("/api/rates/status", { preHandler: app.requireAuth }, async () => {
+  app.get("/api/rates/status", { preHandler: app.requireAuth, onSend: noStore }, async () => {
     const state = app.db.prepare("SELECT MAX(rate_date) rateDate,MAX(fetched_at) fetchedAt,COUNT(*) count FROM exchange_rates").get();
     return state;
   });
-  app.post("/api/rates/refresh", { preHandler: app.requireAuth }, async (_request, reply) => {
+  app.post("/api/rates/refresh", {
+    preHandler: [app.requireAuth, (request, reply) => requireMutationOrigin(app, request, reply)],
+    onSend: noStore
+  }, async (_request, reply) => {
     try { return await refreshRates(app); }
     catch (error) { return reply.code(502).send(jsonError("RATES_UNAVAILABLE", "Could not update exchange rates", String(error))); }
   });
-  app.get("/api/rates/convert", { preHandler: app.requireAuth }, async (request, reply) => {
+  app.get("/api/rates/convert", { preHandler: app.requireAuth, onSend: noStore }, async (request, reply) => {
     const q = request.query as { amount?: string; from?: string; to?: string; date?: string };
     const from = q.from?.toUpperCase(), to = q.to?.toUpperCase(), amount = Number(q.amount);
     const date = q.date ?? new Date().toISOString().slice(0, 10);
