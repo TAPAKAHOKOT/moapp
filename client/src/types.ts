@@ -77,3 +77,117 @@ export type AnalyticsData = {
   weekdays: { weekday: number; amountMinor: number; count: number }[]
   calendar: { date: string; amountMinor: number; count: number }[]
 }
+
+// Account-spaces types intentionally do not extend the temporary legacy
+// Session/Bootstrap/OutboxItem aliases above.  Plan 06 switches the UI to these
+// contracts atomically, after which the legacy aliases can be removed.
+export type UserProfile = {
+  id: string
+  displayName: string
+  recoveryConfigured: boolean
+  recoveryGeneration: number
+}
+
+export type WorkspaceSummary = {
+  id: string
+  name: string
+  role: 'owner' | 'member'
+  version: number
+  joinedAt: string
+}
+
+export type AuthenticatedSession = {
+  authenticated: true
+  user: UserProfile
+  currentSessionId: string
+  currentSessionExpiresAt: string
+  serverTime: string
+  restrictedToRecovery: boolean
+  workspaces: WorkspaceSummary[]
+  legacyWorkspaceId: string | null
+}
+
+export type GuestSession = {
+  authenticated: false
+  user: null
+  workspaces: []
+  legacyClaimAvailable: boolean
+  serverTime: string
+}
+
+export type SessionState = AuthenticatedSession | GuestSession
+
+export type Participant = {
+  userId: string
+  displayName: string
+  role: 'owner' | 'member'
+  joinedAt: string
+  isCurrentUser: boolean
+}
+
+export type DeviceSession = {
+  id: string
+  label: string
+  createdAt: string
+  lastSeenAt: string
+  expiresAt: string
+  current: boolean
+}
+
+export type InvitationMetadata = {
+  id: string
+  workspaceId: string
+  expiresAt: string
+  createdAt: string
+}
+
+export type InvitationPreview = {
+  kind: 'invitation'
+  workspace: Pick<WorkspaceSummary, 'id' | 'name'>
+  expiresAt: string
+}
+
+export type DeviceLinkMetadata = { id: string; expiresAt: string }
+export type DeviceLinkPreview = { kind: 'device'; targetUserId: string; displayName: string; expiresAt: string }
+export type RecoveryPreview = { kind: 'recovery'; targetUserId: string; displayName: string }
+export type RecoveryPrepareResponse = { recoveryUrl: string; completionToken: string; expiresAt: string; nextGeneration: number }
+
+export type WorkspaceBootstrap = {
+  workspaceId: string
+  workspace: WorkspaceSummary
+  expenses: Expense[]
+  categories: Category[]
+  currencies: Currency[]
+  rates: RateSnapshot
+  defaultAnalyticsCurrency: string
+  serverTime: string
+}
+
+export type WorkspaceOutboxItem = {
+  userId: string
+  workspaceId: string
+  operationId: string
+  type: 'createExpense' | 'updateExpense' | 'deleteExpense'
+  payload: Record<string, unknown>
+  createdAt: string
+  status?: 'queued' | 'conflict' | 'failed'
+  error?: string
+  current?: Expense
+}
+
+export type OutboxStats = { total: number; conflicts: number; failed: number }
+
+export type WorkspaceRuntime = {
+  workspaceId: string
+  bootstrap: WorkspaceBootstrap | null
+  source: 'cache' | 'network' | null
+  status: 'idle' | 'loading' | 'ready' | 'error'
+  offline: boolean
+  outbox: OutboxStats
+  requestEpoch: number
+}
+
+export type CapabilityIntent =
+  | { kind: 'invite'; token: string }
+  | { kind: 'device'; token: string }
+  | { kind: 'recovery'; token: string }
