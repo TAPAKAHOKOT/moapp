@@ -6,10 +6,11 @@ import {
 import type { ChartOptions } from 'chart.js'
 import { Bar, Doughnut, Line } from 'react-chartjs-2'
 import {
-  ApiError, createCategory, discardOutboxIssues, getAnalytics, getBootstrap, getSession, login, logout,
+  ApiError, blockServerMutations, createCategory, discardOutboxIssues, getAnalytics, getBootstrap, getSession, isUpgradeRequired, login, logout,
   reorderCategories, submitExpenseOperation, submitExpenseOperations, syncOutbox, updateCategory,
 } from './api'
-import { cacheBootstrap, outboxStats, readCachedBootstrap } from './offline'
+import { cacheBootstrap, outboxStats, readCachedBootstrap, waitForOfflineWrites } from './offline'
+import { monitorServiceWorkerUpdates } from './service-worker-update'
 import type { AnalyticsData, Bootstrap, Category, Currency, Expense } from './types'
 import { amountToMinor, applyKeypad, convertExpense, countCalendarWeekdays, isoToLocalInput, localDateKey, localInputToIso, monthDateRange, shiftDateKey, swipeDirection, weekdayFromDateKey, weekDateRange } from './utils'
 
@@ -99,6 +100,14 @@ function ConfirmSheet({ confirmation, onCancel }: { confirmation: Confirmation; 
   </div>
 }
 
+function UpgradeScreen({ waiting, dirty, onUpdate }: { waiting: boolean; dirty: boolean; onUpdate: () => void }) {
+  return <main className="error-state upgrade-screen">
+    <div className="brand-mark" aria-hidden="true">m</div>
+    <div><p className="eyebrow">Обновление</p><h1>Нужно обновить приложение</h1><p>Локальные расходы и очередь синхронизации сохранены. Обновите приложение, чтобы продолжить.</p>{dirty && <p>Сначала завершите или отмените несохранённый черновик — страница не будет перезагружена, пока он открыт.</p>}</div>
+    <button className="primary" disabled={!waiting || dirty} onClick={onUpdate}>{waiting ? 'Обновить' : 'Ищем обновление…'}</button>
+  </main>
+}
+
 function money(amountMinor: number, currency: string, currencies: Currency[]) {
   const decimals = currencies.find((item) => item.code === currency)?.decimals ?? 2
   return new Intl.NumberFormat('ru-RU', { style: 'currency', currency, maximumFractionDigits: decimals }).format(amountMinor / 10 ** decimals)
@@ -114,7 +123,7 @@ function inputFromExpense(expense: Expense, currencies: Currency[]) {
   }
 }
 
-function PinScreen({ onSuccess }: { onSuccess: () => void }) {
+function PinScreen({ onSuccess, onUpgradeRequired }: { onSuccess: () => void; onUpgradeRequired: () => void }) {
   const [pin, setPin] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
@@ -129,7 +138,10 @@ function PinScreen({ onSuccess }: { onSuccess: () => void }) {
     if (!pin) return
     setBusy(true); setError('')
     try { await login(pin); onSuccess() }
-    catch { setPin(''); setError('Не подошёл. Попробуйте ещё раз.') }
+    catch (error) {
+      if (isUpgradeRequired(error)) { onUpgradeRequired(); return }
+      setPin(''); setError('Не подошёл. Попробуйте ещё раз.')
+    }
     finally { setBusy(false) }
   }
   return <main className="pin-screen">
@@ -205,8 +217,8 @@ function CategorySheet({ categories, selectedId, onClose, onPick }: { categories
   </section></div>
 }
 
-function EntryView({ bootstrap, setBootstrap, currentId, setCurrentId, refreshPending }: {
-  bootstrap: Bootstrap; setBootstrap: React.Dispatch<React.SetStateAction<Bootstrap>>; currentId: string | null; setCurrentId: (id: string | null) => void; refreshPending: () => void
+function EntryView({ bootstrap, setBootstrap, currentId, setCurrentId, refreshPending, onDraftDirtyChange }: {
+  bootstrap: Bootstrap; setBootstrap: React.Dispatch<React.SetStateAction<Bootstrap>>; currentId: string | null; setCurrentId: (id: string | null) => void; refreshPending: () => void; onDraftDirtyChange: (dirty: boolean) => void
 }) {
   const activeExpenses = useMemo(() => bootstrap.expenses.filter((item) => !item.deletedAt).sort((a, b) => b.occurredAt.localeCompare(a.occurredAt)), [bootstrap.expenses])
   const currentIndex = currentId ? activeExpenses.findIndex((item) => item.id === currentId) : -1
@@ -497,7 +509,8 @@ function EntryView({ bootstrap, setBootstrap, currentId, setCurrentId, refreshPe
   const currentCategory = current ? bootstrap.categories.find((item) => item.id === current.categoryId) : undefined
   // Категорию из «Другого» показываем на самой кнопке «Другое»: добавлять её в сетку нельзя — та переносится на вторую строку и дёргает раскладку.
   const otherFace = currentCategory && !main.some((item) => item.id === currentCategory.id) ? currentCategory : null
-  const dirty = current ? JSON.stringify(form) !== JSON.stringify(inputFromExpense(current, bootstrap.currencies)) : false
+  const dirty = current ? JSON.stringify(form) !== JSON.stringify(inputFromExpense(current, bootstrap.currencies)) : Boolean(form.amount || form.note || form.occurredAt)
+  useEffect(() => { onDraftDirtyChange(dirty) }, [dirty, onDraftDirtyChange])
   const categoryHint = !ready ? 'Сначала введите сумму' : dirty ? 'Выберите категорию, чтобы сохранить' : 'Категория'
   return <section ref={entryRef} className={`entry-view${current ? ' editing' : ''}`} onPointerDown={swipeStart} onPointerMove={swipeMove} onPointerUpCapture={swipeEnd} onPointerCancel={swipeCancel}>
     <div className="swipe-area">
@@ -708,6 +721,9 @@ export default function App() {
   const [offline,setOffline]=useState(!navigator.onLine)
   const [pending,setPending]=useState({total:0,conflicts:0,failed:0})
   const [error,setError]=useState('')
+  const [upgradeRequired,setUpgradeRequired]=useState(false)
+  const [updateWaiting,setUpdateWaiting]=useState(false)
+  const [draftDirty,setDraftDirty]=useState(false)
   const [theme,setTheme]=useState<Theme>(()=>localStorage.getItem('moapp:theme')==='dark'?'dark':'light')
   const [confirm,setConfirm]=useState<Confirmation|null>(null)
   const pagerRef=useRef<HTMLDivElement>(null)
@@ -715,19 +731,24 @@ export default function App() {
   // Аналитика с четырьмя графиками монтируется сразу после первой отрисовки: к моменту свайпа она уже готова.
   const [chartsReady,setChartsReady]=useState(false)
   const refreshPending=()=>outboxStats().then(setPending)
-  const load=async()=>{setError('');try{let stats=await outboxStats();setPending(stats);if(navigator.onLine&&stats.total&&!stats.conflicts&&!stats.failed){await syncOutbox(refreshPending);stats=await outboxStats();setPending(stats)}if(stats.conflicts||stats.failed){const cached=await readCachedBootstrap();if(cached){setBootstrap(cached);setOffline(!navigator.onLine);return}}const result=await getBootstrap();setBootstrap(result.data);setOffline(result.offline);refreshPending()}catch(error){if(error instanceof ApiError&&error.status===401){localStorage.removeItem('moapp:known-session');setAuth('locked');return}setError('Не удалось загрузить данные. Откройте приложение один раз с интернетом.')}}
+  const requireUpgrade=useCallback(()=>{blockServerMutations();setUpgradeRequired(true)},[])
+  const load=async()=>{setError('');try{let stats=await outboxStats();setPending(stats);if(navigator.onLine&&stats.total&&!stats.conflicts&&!stats.failed){await syncOutbox(refreshPending);stats=await outboxStats();setPending(stats)}if(stats.conflicts||stats.failed){const cached=await readCachedBootstrap();if(cached){setBootstrap(cached);setOffline(!navigator.onLine);return}}const result=await getBootstrap();setBootstrap(result.data);setOffline(result.offline);refreshPending()}catch(error){if(isUpgradeRequired(error)){requireUpgrade();return}if(error instanceof ApiError&&error.status===401){localStorage.removeItem('moapp:known-session');setAuth('locked');return}setError('Не удалось загрузить данные. Откройте приложение один раз с интернетом.')}}
   useEffect(()=>{getSession().then((s)=>setAuth(s.authenticated?'ok':'locked')).catch((error)=>setAuth(error instanceof ApiError&&error.status===401?'locked':localStorage.getItem('moapp:known-session')?'ok':'locked'))},[])
   useEffect(()=>{if(auth==='ok')load()},[auth]) // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(()=>{if(bootstrap)void cacheBootstrap(bootstrap)},[bootstrap])
-  useEffect(()=>{const online=()=>{setOffline(false);load()};const off=()=>setOffline(true);const unauthorized=()=>{localStorage.removeItem('moapp:known-session');setAuth('locked')};window.addEventListener('online',online);window.addEventListener('offline',off);window.addEventListener('moapp:unauthorized',unauthorized);return()=>{window.removeEventListener('online',online);window.removeEventListener('offline',off);window.removeEventListener('moapp:unauthorized',unauthorized)}},[]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(()=>{const online=()=>{setOffline(false);load()};const off=()=>setOffline(true);const unauthorized=()=>{localStorage.removeItem('moapp:known-session');setAuth('locked')};window.addEventListener('online',online);window.addEventListener('offline',off);window.addEventListener('moapp:unauthorized',unauthorized);window.addEventListener('moapp:upgrade-required',requireUpgrade);return()=>{window.removeEventListener('online',online);window.removeEventListener('offline',off);window.removeEventListener('moapp:unauthorized',unauthorized);window.removeEventListener('moapp:upgrade-required',requireUpgrade)}},[requireUpgrade]) // eslint-disable-line react-hooks/exhaustive-deps
+  const updateMonitor=useRef<ReturnType<typeof monitorServiceWorkerUpdates>>(undefined)
+  useEffect(()=>{const monitor=monitorServiceWorkerUpdates({onWaiting:()=>setUpdateWaiting(true),onControllerChange:()=>{void waitForOfflineWrites().then(()=>window.location.reload())}});updateMonitor.current=monitor;void monitor.checkForUpdate();return()=>monitor.dispose()},[])
   useEffect(()=>{const id=setTimeout(()=>setChartsReady(true),150);return()=>clearTimeout(id)},[])
   useEffect(()=>{document.documentElement.dataset.theme=theme;document.documentElement.style.colorScheme=theme;localStorage.setItem('moapp:theme',theme)},[theme])
   useEffect(()=>{const node=pagerRef.current;if(!node||!node.clientWidth)return;const left=tabs.findIndex((item)=>item.id===tab)*node.clientWidth;if(Math.abs(node.scrollLeft-left)>4)node.scrollTo({left,behavior:'smooth'})},[tab])
   // Панель браузера меняет высоту и ширину вьюпорта — страницу нужно вернуть точно на место без анимации.
   useEffect(()=>{const snap=()=>{const node=pagerRef.current;if(!node||!node.clientWidth)return;node.scrollLeft=tabs.findIndex((item)=>item.id===tab)*node.clientWidth};window.addEventListener('resize',snap);return()=>window.removeEventListener('resize',snap)},[tab])
   const onPagerScroll=()=>{const node=pagerRef.current;if(!node||!node.clientWidth)return;clearTimeout(settleTimer.current);settleTimer.current=setTimeout(()=>{const next=tabs[Math.round(node.scrollLeft/node.clientWidth)]?.id;if(next&&next!==tab)setTab(next)},90)}
+  const activateUpdate=async()=>{if(draftDirty)return;await waitForOfflineWrites();if(!updateMonitor.current?.activateWaiting())void updateMonitor.current?.checkForUpdate()}
   if(auth==='checking')return <div className="splash"><div className="brand-mark">m</div></div>
-  if(auth==='locked')return <PinScreen onSuccess={()=>setAuth('ok')}/>
+  if(upgradeRequired&&!draftDirty)return <UpgradeScreen waiting={updateWaiting} dirty={false} onUpdate={()=>void activateUpdate()}/>
+  if(auth==='locked')return <PinScreen onSuccess={()=>setAuth('ok')} onUpgradeRequired={requireUpgrade}/>
   if(error)return <><div className="splash"><div className="brand-mark">m</div><p>Ожидаем подключение…</p></div><button className="toast toast-error toast-action" role="alert" onClick={load}>{error} · Повторить</button></>
   if(!bootstrap)return <div className="splash"><div className="brand-mark">m</div><p>Загружаем расходы…</p></div>
   const updateBootstrap = setBootstrap as React.Dispatch<React.SetStateAction<Bootstrap>>
@@ -735,9 +756,9 @@ export default function App() {
   const resolveIssues=()=>setConfirm({title:'Отбросить локальные изменения?',body:'Конфликтующие правки из очереди будут удалены, а расходы загружены с сервера заново.',label:'Отбросить',run:async()=>{await discardOutboxIssues();await load()}})
   const signOut=()=>setConfirm({title:'Выйти из приложения?',body:'С этого устройства будут удалены сохранённые расходы и очередь синхронизации. Данные на сервере останутся.',label:'Выйти',run:async()=>{await logout();setBootstrap(null);setAuth('locked')}})
   return <div className="app-shell">
-    {(offline||pending.total>0)&&(pending.conflicts||pending.failed?<button className="sync-status attention" onClick={resolveIssues}><span>{pending.conflicts?`Конфликт: ${pending.conflicts} · решить`:`Ошибка: ${pending.failed} · решить`}</span><i/></button>:<div className="sync-status"><span>{offline?'Офлайн':`Синхронизация: ${pending.total}`}</span><i/></div>)}
+    {upgradeRequired&&draftDirty?<div className="sync-status attention"><span>Нужно обновить · завершите или отмените черновик</span><i/></div>:updateWaiting?<button className="sync-status attention" onClick={()=>void activateUpdate()}><span>Доступно обновление · обновить</span><i/></button>:(offline||pending.total>0)&&(pending.conflicts||pending.failed?<button className="sync-status attention" onClick={resolveIssues}><span>{pending.conflicts?`Конфликт: ${pending.conflicts} · решить`:`Ошибка: ${pending.failed} · решить`}</span><i/></button>:<div className="sync-status"><span>{offline?'Офлайн':`Синхронизация: ${pending.total}`}</span><i/></div>)}
     <main className="pager" ref={pagerRef} onScroll={onPagerScroll}>
-      <div className="page-slot"><EntryView bootstrap={bootstrap} setBootstrap={updateBootstrap} currentId={currentId} setCurrentId={setCurrentId} refreshPending={refreshPending}/></div>
+      <div className="page-slot"><EntryView bootstrap={bootstrap} setBootstrap={updateBootstrap} currentId={currentId} setCurrentId={setCurrentId} refreshPending={refreshPending} onDraftDirtyChange={setDraftDirty}/></div>
       <div className="page-slot"><HistoryView bootstrap={bootstrap} setBootstrap={updateBootstrap} edit={edit} refreshPending={refreshPending}/></div>
       <div className="page-slot">{chartsReady&&<AnalyticsView bootstrap={bootstrap} theme={theme}/>}</div>
       <div className="page-slot"><SettingsView bootstrap={bootstrap} setBootstrap={updateBootstrap} refreshPending={refreshPending} onLogout={signOut} theme={theme} onThemeChange={setTheme}/></div>

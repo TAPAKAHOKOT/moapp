@@ -2,9 +2,23 @@ import { cacheBootstrap, clearOfflineData, queueMutation, readCachedBootstrap, r
 import type { AnalyticsData, Bootstrap, Category, Currency, Expense, OutboxItem, RateSnapshot, Session, SyncResult } from './types'
 
 type ErrorEnvelope = { error?: { code?: string; message?: string; details?: unknown }; message?: string }
+let serverMutationsBlocked = false
 
 export class ApiError extends Error {
   constructor(public status: number, public code: string, message: string, public details?: unknown) { super(message) }
+}
+
+export const isUpgradeRequired = (error: unknown): error is ApiError => error instanceof ApiError && error.status === 410 && error.code === 'UPGRADE_REQUIRED'
+export const blockServerMutations = () => { serverMutationsBlocked = true }
+
+function requireMutationsAllowed() {
+  if (serverMutationsBlocked) throw new ApiError(410, 'UPGRADE_REQUIRED', 'Нужно обновить приложение')
+}
+
+function notifyApiError(error: ApiError) {
+  if (typeof window === 'undefined') return
+  if (error.status === 401) window.dispatchEvent(new Event('moapp:unauthorized'))
+  if (isUpgradeRequired(error)) window.dispatchEvent(new Event('moapp:upgrade-required'))
 }
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
@@ -17,7 +31,7 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
     const body = await response.json().catch(() => ({})) as ErrorEnvelope
     const error = body.error
     const parsed = new ApiError(response.status, error?.code || 'REQUEST_ERROR', error?.message || body.message || 'Не удалось выполнить запрос', error?.details)
-    if (response.status === 401) window.dispatchEvent(new Event('moapp:unauthorized'))
+    notifyApiError(parsed)
     throw parsed
   }
   if (response.status === 204) return undefined as T
@@ -32,7 +46,10 @@ export async function login(pin: string): Promise<void> {
 }
 
 export async function logout(): Promise<void> {
-  try { await request('/api/session', { method: 'DELETE' }) } catch { /* local logout must also work offline */ }
+  try { await request('/api/session', { method: 'DELETE' }) } catch (error) {
+    // A cutover response is not an offline logout: preserve cached data for the update.
+    if (isUpgradeRequired(error)) throw error
+  }
   localStorage.removeItem('moapp:known-session')
   localStorage.removeItem('moapp:last-currency')
   localStorage.removeItem('moapp:analytics-currency')
@@ -46,7 +63,7 @@ export async function getBootstrap(): Promise<{ data: Bootstrap; offline: boolea
     await cacheBootstrap(data)
     return { data, offline: false }
   } catch (error) {
-    if (error instanceof ApiError && error.status === 401) throw error
+    if ((error instanceof ApiError && error.status === 401) || isUpgradeRequired(error)) throw error
     const cached = await readCachedBootstrap()
     if (cached) return { data: cached, offline: true }
     throw error
@@ -54,6 +71,7 @@ export async function getBootstrap(): Promise<{ data: Bootstrap; offline: boolea
 }
 
 async function sendOperations(items: OutboxItem[]) {
+  requireMutationsAllowed()
   return request<{ results: SyncResult[]; serverTime: string }>('/api/sync', {
     method: 'POST', body: JSON.stringify({ operations: items.map(({ operationId, type, payload }) => ({ operationId, type, payload })) }),
   })
@@ -82,23 +100,23 @@ export async function submitExpenseOperations(type: OutboxItem['type'], expenses
     let response: Awaited<ReturnType<typeof sendOperations>>
     try { response = await sendOperations(chunk) }
     catch (error) {
-      if (error instanceof TypeError) return [...results, ...items.slice(offset).map(() => null)]
-      const remaining = items.slice(offset)
-      await Promise.all(remaining.map((item) => removeMutation(item.operationId)))
-      const message = error instanceof ApiError ? error.message : 'Изменение отклонено'
-      return [...results, ...remaining.map((item) => ({ operationId:item.operationId,status:'error' as const,error:{code:'REQUEST_ERROR',message} }))]
+      // A request may have reached the server even when its response was lost. Retain its operationId for replay.
+      return [...results, ...items.slice(offset).map(() => null)]
     }
+    if (!response || !Array.isArray(response.results)) return [...results, ...items.slice(offset).map(() => null)]
     for (const item of chunk) {
       const result = response.results.find((candidate) => candidate.operationId === item.operationId)
       if (!result) {
-        await removeMutation(item.operationId)
-        results.push({ operationId:item.operationId,status:'error',error:{code:'INVALID_RESPONSE',message:'Сервер вернул пустой результат'} })
+        // A partial/malformed response proves nothing about this operation.
+        results.push(null)
       } else if (result.status === 'applied' || result.status === 'unchanged') {
         await removeMutation(item.operationId); results.push(result)
       } else if (result.status === 'conflict') {
         await queueMutation({ ...item, status:'conflict', error:result.error?.message, current:result.current }); results.push(result)
-      } else {
+      } else if (result.status === 'error') {
         await removeMutation(item.operationId); results.push(result)
+      } else {
+        results.push(null)
       }
     }
   }
@@ -108,7 +126,9 @@ export async function submitExpenseOperations(type: OutboxItem['type'], expenses
 export async function syncOutbox(onProgress?: () => void) {
   const items = (await readOutbox()).filter((item) => !item.status || item.status === 'queued').sort((a, b) => a.createdAt.localeCompare(b.createdAt)).slice(0, 200)
   if (!items.length) return
-  const response = await sendOperations(items)
+  let response: Awaited<ReturnType<typeof sendOperations>>
+  try { response = await sendOperations(items) } catch { return }
+  if (!response || !Array.isArray(response.results)) return
   for (const result of response.results) {
     const item = items.find((candidate) => candidate.operationId === result.operationId)
     if (!item) continue
@@ -129,14 +149,17 @@ function requireOnline() {
 
 export async function createCategory(category: Category) {
   requireOnline()
+  requireMutationsAllowed()
   return request<Category>('/api/categories', { method: 'POST', body: JSON.stringify({ id: category.id, name: category.name, color: category.color, placement: category.placement, sortOrder: category.sortOrder }) })
 }
 export async function updateCategory(category: Category) {
   requireOnline()
+  requireMutationsAllowed()
   return request<Category>(`/api/categories/${category.id}`, { method: 'PATCH', body: JSON.stringify({ name: category.name, color: category.color, placement: category.placement, sortOrder: category.sortOrder, archived: Boolean(category.archivedAt), version: category.version }) })
 }
 export async function reorderCategories(ids: string[]) {
   requireOnline()
+  requireMutationsAllowed()
   return request<{ categories: Category[] }>('/api/categories/order', { method: 'PUT', body: JSON.stringify({ ids }) })
 }
 
