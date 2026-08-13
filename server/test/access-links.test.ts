@@ -304,6 +304,35 @@ test("manual recovery is two-phase and concurrent rotations use generation CAS",
   }
 });
 
+test("logging out revokes an unfinished manual recovery rotation", async () => {
+  const app = await buildTestApp({ config, plugins: [registerAccessRoutes] });
+  try {
+    const owner = await identity(app, "Recovery logout", "192.0.2.51");
+    const prepared = await app.inject({
+      method: "POST",
+      url: "/api/me/recovery/rotation/prepare",
+      headers: { ...origin, ...context(owner) },
+      payload: {}
+    });
+    assert.equal(prepared.statusCode, 200, prepared.body);
+    const logout = await app.inject({ method: "DELETE", url: "/api/session", headers: { ...origin, ...context(owner) } });
+    assert.equal(logout.statusCode, 204, logout.body);
+    const pending = app.db.prepare("SELECT revoked_at FROM access_tokens WHERE token_hash=?")
+      .get(hashSecret(prepared.json().completionToken)) as { revoked_at: string | null };
+    assert.notEqual(pending.revoked_at, null);
+    const denied = await app.inject({
+      method: "POST",
+      url: "/api/me/recovery/rotation/complete",
+      headers: { ...origin, ...context(owner) },
+      payload: { completionToken: prepared.json().completionToken }
+    });
+    assert.equal(denied.statusCode, 401, denied.body);
+    assert.equal(denied.json().error.code, "UNAUTHORIZED");
+  } finally {
+    await app.close();
+  }
+});
+
 test("public recovery preserves old access until complete, then revokes all old access and creates one session", async () => {
   const app = await buildTestApp({ config, plugins: [registerAccessRoutes] });
   try {
@@ -418,15 +447,17 @@ test("access hardening enforces exact origin/JSON, rate limits, and ordered hous
     assert.equal(typeof limited.headers["retry-after"], "string");
 
     const user = await identity(app, "Cleanup", "192.0.2.80");
-    const session = createSession(app.db, limitedConfig, { userId: user.session.user.id, expiresAt: new Date(Date.now() - 1) });
     const past = new Date(Date.now() - 1).toISOString();
+    app.db.prepare("UPDATE sessions SET expires_at=? WHERE id=?")
+      .run(past, user.session.currentSessionId);
     app.db.prepare(`INSERT INTO access_tokens
       (id,kind,token_hash,workspace_id,target_user_id,created_by_user_id,created_by_session_id,replacement_token_hash,expected_generation,revoke_sessions,accept_attempt_hash,accepted_session_id,created_at,expires_at,consumed_at,revoked_at)
       VALUES (?,'device_link',?,NULL,?,?,?,NULL,NULL,0,NULL,NULL,?,?,NULL,NULL)`)
-      .run(randomUUID(), hashSecret(randomBytes(32).toString("base64url")), user.session.user.id, user.session.user.id, session.id, past, past);
+      .run(randomUUID(), hashSecret(randomBytes(32).toString("base64url")), user.session.user.id, user.session.user.id, user.session.currentSessionId, past, past);
     const cleaned = cleanupExpiredAccessRows(app.db);
     assert.equal(cleaned.accessRows, 1);
     assert.equal(cleaned.sessions, 1);
+    assert.equal(cleaned.users, 1);
   } finally {
     await app.close();
   }

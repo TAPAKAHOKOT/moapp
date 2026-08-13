@@ -54,6 +54,18 @@ test("guest bootstrap and identity create only a user and session", async () => 
   assert.equal(replay.json().error.code, "ALREADY_AUTHENTICATED");
 });
 
+test("identity creation enforces the hourly per-address limit", async () => {
+  const headers = { ...origin, "x-forwarded-for": "198.51.100.77" };
+  for (const displayName of ["Rate One", "Rate Two", "Rate Three"]) {
+    const response = await app.inject({ method: "POST", url: "/api/identity", headers, payload: { displayName } });
+    assert.equal(response.statusCode, 201, response.body);
+  }
+  const limited = await app.inject({ method: "POST", url: "/api/identity", headers, payload: { displayName: "Rate Four" } });
+  assert.equal(limited.statusCode, 429);
+  assert.equal(limited.json().error.code, "RATE_LIMITED");
+  assert.ok(Number(limited.headers["retry-after"]) > 0);
+});
+
 test("expected context blocks stale reads and does not log out a replacement session", async () => {
   const first = await identity("Context One");
   const denied = await app.inject({ method: "GET", url: "/api/workspaces", headers: { cookie: first.cookie } });
@@ -93,6 +105,29 @@ test("workspace creation is idempotent and owner mutations use versions", async 
   const stale = await app.inject({ method: "PATCH", url: `/api/workspaces/${id}`, headers, payload: { name: "Старое", version: 1 } });
   assert.equal(stale.statusCode, 409);
   assert.equal(stale.json().error.code, "VERSION_CONFLICT");
+});
+
+test("route rate limits use the canonical error envelope", async () => {
+  const owner = await identity("Workspace Rate Owner");
+  const headers = { ...origin, ...context(owner.session, owner.cookie) };
+  for (let index = 0; index < 5; index += 1) {
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/workspaces",
+      headers,
+      payload: { id: randomUUID(), name: `Rate workspace ${index + 1}` }
+    });
+    assert.equal(created.statusCode, 201, `workspace ${index + 1}: ${created.body}`);
+  }
+  const limited = await app.inject({
+    method: "POST",
+    url: "/api/workspaces",
+    headers,
+    payload: { id: randomUUID(), name: "Rate workspace 6" }
+  });
+  assert.equal(limited.statusCode, 429, limited.body);
+  assert.equal(limited.json().error.code, "RATE_LIMITED");
+  assert.ok(Number(limited.headers["retry-after"]) > 0);
 });
 
 test("membership removal, leave and ownership transfer stay workspace scoped", async () => {

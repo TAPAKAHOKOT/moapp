@@ -45,5 +45,9 @@ export async function requireMutationOrigin(
   }
   if (jsonBody && !/^application\/json(?:\s*;|$)/i.test(request.headers["content-type"] ?? "")) {
     await reply.code(415).send(jsonError("REQUEST_ERROR", "Content-Type must be application/json"));
+    return;
+  }
+  if (jsonBody && (request.body === null || typeof request.body !== "object" || Array.isArray(request.body))) {
+    await reply.code(400).send(jsonError("REQUEST_ERROR", "JSON body must be an object"));
   }
 }

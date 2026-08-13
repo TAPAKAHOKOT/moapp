@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { noStore, requireMutationOrigin } from "./tenant-domain-guard.js";
-import { isCurrency, jsonError } from "./validation.js";
+import { isCalendarDate, isCurrency, jsonError } from "./validation.js";
 
 type FrankfurterRate = { date: string; base: string; quote: string; rate: number };
 
@@ -74,7 +74,9 @@ export async function registerRateRoutes(app: FastifyInstance): Promise<void> {
     const q = request.query as { amount?: string; from?: string; to?: string; date?: string };
     const from = q.from?.toUpperCase(), to = q.to?.toUpperCase(), amount = Number(q.amount);
     const date = q.date ?? new Date().toISOString().slice(0, 10);
-    if (!from || !to || !isCurrency(from) || !isCurrency(to) || !Number.isFinite(amount)) return reply.code(400).send(jsonError("VALIDATION", "amount, from and to are required"));
+    if (!from || !to || !isCurrency(from) || !isCurrency(to) || !Number.isFinite(amount) || !isCalendarDate(date)) {
+      return reply.code(400).send(jsonError("VALIDATION", "Valid amount, from, to and date are required"));
+    }
     await ensureRates(app, date, date);
     const converted = convertMajor(app, amount, from, to, date);
     return converted ? { ...converted, currency: to } : reply.code(503).send(jsonError("RATE_MISSING", "No cached rate is available"));

@@ -145,11 +145,11 @@ function createWorkspace(db: Database.Database, workspaceId: string, userId: str
   })();
 }
 
-test("a clean file reaches v3 without hidden identity, workspace, categories, or claim", () => {
+test("a clean file reaches the latest schema without hidden identity, workspace, categories, or claim", () => {
   const fixture = temporaryDatabase();
   try {
     let db = openDatabase(fixture.path);
-    assert.equal((db.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number }).version, 3);
+    assert.equal((db.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number }).version, 4);
     for (const table of ["users", "workspaces", "memberships", "categories", "legacy_claims"] as const) {
       assert.equal((db.prepare(`SELECT count(*) AS count FROM ${table}`).get() as { count: number }).count, 0);
     }
@@ -157,7 +157,7 @@ test("a clean file reaches v3 without hidden identity, workspace, categories, or
     const sizeAfterFirstStart = statSync(fixture.path).size;
 
     db = openDatabase(fixture.path);
-    assert.equal((db.prepare("SELECT count(*) AS count FROM schema_migrations").get() as { count: number }).count, 3);
+    assert.equal((db.prepare("SELECT count(*) AS count FROM schema_migrations").get() as { count: number }).count, 4);
     assert.equal((db.prepare("SELECT count(*) AS count FROM users").get() as { count: number }).count, 0);
     assert.equal(statSync(fixture.path).size, sizeAfterFirstStart);
     db.close();
@@ -330,6 +330,44 @@ test("access token purpose constraints reject hybrid recovery and cross-user dev
   }
 });
 
+test("legacy claim storage remains a singleton", () => {
+  const fixture = temporaryDatabase();
+  try {
+    const db = openDatabase(fixture.path);
+    const userId = randomUUID();
+    const secondUserId = randomUUID();
+    const workspaceId = randomUUID();
+    const secondWorkspaceId = randomUUID();
+    const now = "2026-02-01T00:00:00.000Z";
+    createWorkspace(db, workspaceId, userId, "A");
+    createWorkspace(db, secondWorkspaceId, secondUserId, "B");
+    const insert = db.prepare(`INSERT INTO legacy_claims
+      (workspace_id,owner_user_id,state,attempt_hash,pending_session_id,pending_expires_at,updated_at)
+      VALUES (?,?,'open',NULL,NULL,NULL,?)`);
+    insert.run(workspaceId, userId, now);
+    assert.throws(() => insert.run(secondWorkspaceId, secondUserId, now), /UNIQUE/);
+    db.close();
+  } finally {
+    rmSync(fixture.directory, { recursive: true, force: true });
+  }
+});
+
+test("an existing v3 database receives the singleton hardening migration", () => {
+  const fixture = temporaryDatabase();
+  try {
+    let db = openDatabase(fixture.path);
+    db.exec("DROP INDEX legacy_claims_singleton_idx; DELETE FROM schema_migrations WHERE version=4");
+    db.close();
+
+    db = openDatabase(fixture.path);
+    assert.equal((db.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number }).version, 4);
+    assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type='index' AND name='legacy_claims_singleton_idx'").get());
+    db.close();
+  } finally {
+    rmSync(fixture.directory, { recursive: true, force: true });
+  }
+});
+
 test("a copy failure rolls v3 back and leaves a retryable v2 database", () => {
   const fixture = temporaryDatabase();
   try {
@@ -347,7 +385,7 @@ test("a copy failure rolls v3 back and leaves a retryable v2 database", () => {
     db.close();
 
     db = openDatabase(fixture.path);
-    assert.equal((db.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number }).version, 3);
+    assert.equal((db.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number }).version, 4);
     assert.equal((db.prepare("SELECT count(*) AS count FROM expenses").get() as { count: number }).count, 2);
     assert.deepEqual(db.pragma("foreign_key_check"), []);
     db.close();

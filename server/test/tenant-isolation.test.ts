@@ -140,6 +140,26 @@ test("category order and archived history remain workspace scoped", async () => 
   assert.equal(app.db.prepare("SELECT archived_at FROM categories WHERE workspace_id=? AND id='products'").pluck().get(workspaceB), null);
 });
 
+test("category names are canonically normalized and reject control characters", async () => {
+  const id = randomUUID();
+  const created = await app.inject({
+    method: "POST",
+    url: `/api/workspaces/${workspaceA}/categories`,
+    headers: identityA.headers,
+    payload: { id, name: "  Cafe\u0301  ", placement: "additional", sortOrder: 100 }
+  });
+  assert.equal(created.statusCode, 201, created.body);
+  assert.equal(created.json().name, "Café");
+  const invalid = await app.inject({
+    method: "PATCH",
+    url: `/api/workspaces/${workspaceA}/categories/${id}`,
+    headers: identityA.headers,
+    payload: { name: "Hidden\u202Ename", version: 1 }
+  });
+  assert.equal(invalid.statusCode, 400);
+  assert.equal(invalid.json().error.code, "VALIDATION");
+});
+
 test("analytics filters tenants in SQL and sync idempotency is composite", async () => {
   const analytics = await app.inject({
     method: "GET",
@@ -169,6 +189,26 @@ test("analytics filters tenants in SQL and sync idempotency is composite", async
   const replayA = await makeSync(workspaceA, randomUUID(), 777, identityA.headers);
   assert.equal(replayA.json().results[0].replayed, true);
   assert.equal(replayA.json().results[0].expense.amountMinor, 111);
+});
+
+test("analytics and rate conversion reject impossible calendar dates before loading rates", async () => {
+  for (const date of ["2026-99-99", "2026-02-30", "banana"]) {
+    const analytics = await app.inject({
+      method: "GET",
+      url: `/api/workspaces/${workspaceA}/analytics?from=${date}&to=2026-08-04&currency=RSD`,
+      headers: identityA.headers
+    });
+    assert.equal(analytics.statusCode, 400, analytics.body);
+    assert.equal(analytics.json().error.code, "VALIDATION");
+
+    const conversion = await app.inject({
+      method: "GET",
+      url: `/api/rates/convert?amount=1&from=EUR&to=RSD&date=${date}`,
+      headers: identityA.headers
+    });
+    assert.equal(conversion.statusCode, 400, conversion.body);
+    assert.equal(conversion.json().error.code, "VALIDATION");
+  }
 });
 
 test("membership removal blocks mutations, old APIs are 410, and rates require a normal expected context", async () => {
@@ -206,4 +246,15 @@ test("membership removal blocks mutations, old APIs are 410, and rates require a
   const rates = await app.inject({ method: "GET", url: "/api/rates/status", headers: identityA.headers });
   assert.equal(rates.statusCode, 200);
   assert.equal(rates.headers["cache-control"], "private, no-store");
+});
+
+test("tenant mutations reject non-object JSON bodies without a server error", async () => {
+  const malformed = await app.inject({
+    method: "POST",
+    url: `/api/workspaces/${workspaceA}/categories`,
+    headers: { ...identityA.headers, "content-type": "application/json" },
+    payload: "null"
+  });
+  assert.equal(malformed.statusCode, 400, malformed.body);
+  assert.equal(malformed.json().error.code, "REQUEST_ERROR");
 });

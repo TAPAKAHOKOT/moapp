@@ -9,9 +9,39 @@ import { createWorkspace, getWorkspaceSummary, listParticipants, normalizeWorksp
 
 const scrypt = promisify(scryptCallback);
 const UPGRADE_ERROR = jsonError("UPGRADE_REQUIRED", "This sign-in method is no longer available; update the app");
+const MAX_IDENTITY_RATE_BUCKETS = 10_000;
+
+type IdentityRateBucket = { expiresAt: number; count: number };
 
 function fail(reply: FastifyReply, status: number, code: string, message: string) {
   return reply.code(status).send(jsonError(code, message));
+}
+
+function allowIdentityCreation(
+  buckets: Map<string, IdentityRateBucket>,
+  ip: string,
+  reply: FastifyReply,
+  now = Date.now()
+): boolean {
+  if (buckets.size >= MAX_IDENTITY_RATE_BUCKETS && !buckets.has(ip)) {
+    for (const [key, bucket] of buckets) if (bucket.expiresAt <= now) buckets.delete(key);
+    if (buckets.size >= MAX_IDENTITY_RATE_BUCKETS) {
+      const oldest = buckets.keys().next().value as string | undefined;
+      if (oldest !== undefined) buckets.delete(oldest);
+    }
+  }
+  const current = buckets.get(ip);
+  const bucket = !current || current.expiresAt <= now
+    ? { expiresAt: now + 60 * 60 * 1000, count: 0 }
+    : current;
+  if (bucket.count >= 3) {
+    void reply.header("Retry-After", String(Math.max(1, Math.ceil((bucket.expiresAt - now) / 1000))));
+    void fail(reply, 429, "RATE_LIMITED", "Too many profiles were created from this address; try again later");
+    return false;
+  }
+  bucket.count += 1;
+  buckets.set(ip, bucket);
+  return true;
 }
 
 async function requireMutation(request: FastifyRequest, reply: FastifyReply, app: FastifyInstance, bodyless = false): Promise<boolean> {
@@ -67,6 +97,8 @@ function ownerInsideTransaction(app: FastifyInstance, workspaceId: string, userI
 }
 
 export async function registerCoreRoutes(app: FastifyInstance): Promise<void> {
+  const identityRateBuckets = new Map<string, IdentityRateBucket>();
+
   app.get("/api/session", { preHandler: app.optionalAuth }, async (request, reply) => {
     refreshNormalSession(app, request, reply);
     return request.auth ? authenticatedSession(app.db, request.auth) : guestSession(app.db);
@@ -85,11 +117,12 @@ export async function registerCoreRoutes(app: FastifyInstance): Promise<void> {
 
   app.post("/api/identity", {
     preHandler: app.optionalAuth,
-    config: { rateLimit: { max: 3, timeWindow: "1 hour" } },
+    config: { rateLimit: { max: 10, timeWindow: "1 day" } },
     schema: { body: displayNameBody }
   }, async (request, reply) => {
     if (!await requireMutation(request, reply, app)) return;
     if (request.auth) return fail(reply, 409, "ALREADY_AUTHENTICATED", "This browser already has a profile");
+    if (!allowIdentityCreation(identityRateBuckets, request.ip, reply)) return;
     const displayName = normalizeDisplayName((request.body as { displayName: unknown }).displayName);
     if (!displayName) return fail(reply, 400, "INVALID_DISPLAY_NAME", "Display name is invalid");
     const session = app.db.transaction(() => {
@@ -132,7 +165,12 @@ export async function registerCoreRoutes(app: FastifyInstance): Promise<void> {
 
   app.post("/api/workspaces", {
     preHandler: app.requireAuth,
-    config: { rateLimit: { max: 5, timeWindow: "1 hour", keyGenerator: (request: FastifyRequest) => request.auth?.userId ?? request.ip } },
+    config: { rateLimit: {
+      max: 5,
+      timeWindow: "1 hour",
+      hook: "preHandler",
+      keyGenerator: (request: FastifyRequest) => request.auth?.userId ?? request.ip
+    } },
     schema: { body: { type: "object", required: ["id", "name"], additionalProperties: false, properties: { id: { type: "string", format: "uuid" }, name: { type: "string", minLength: 1, maxLength: 320 } } } }
   }, async (request, reply) => {
     if (!await requireMutation(request, reply, app) || !request.auth) return;
