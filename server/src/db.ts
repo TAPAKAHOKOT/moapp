@@ -63,7 +63,7 @@ const migrations = [
 
 const seeds = [
   ["products", "Продукты", "main", 0, "#7CB98B"],
-  ["eating-out", "Eating out", "main", 1, "#E9A76F"],
+  ["eating-out", "Кафе и рестораны", "main", 1, "#E9A76F"],
   ["home", "Для дома", "additional", 0, "#79A9D1"],
   ["waffle", "Вафля", "additional", 1, "#D7A0BF"],
   ["entertainment", "Развлечения", "additional", 2, "#A493D1"],
@@ -71,7 +71,7 @@ const seeds = [
   ["other", "Прочее", "additional", 4, "#A8A8A8"]
 ] as const;
 
-const LATEST_SCHEMA_VERSION = 4;
+const LATEST_SCHEMA_VERSION = 5;
 
 type TableCount = {
   categories: number;
@@ -360,6 +360,15 @@ export function openDatabase(path: string): Database.Database {
         if (version <= migrations.length) db.exec(migrations[i]!);
         else if (version === 3) migrateToVersion3(db, wasLegacyInstallation, legacyUserId, legacyWorkspaceId, appliedAt);
         else if (version === 4) db.exec("CREATE UNIQUE INDEX IF NOT EXISTS legacy_claims_singleton_idx ON legacy_claims((1))");
+        else if (version === 5) db.prepare(`UPDATE categories
+          SET name = 'Кафе и рестораны', version = version + 1, updated_at = ?
+          WHERE id = 'eating-out' AND name = 'Eating out' COLLATE NOCASE
+            AND NOT EXISTS (
+              SELECT 1 FROM categories AS conflicting
+              WHERE conflicting.workspace_id = categories.workspace_id
+                AND conflicting.id <> categories.id
+                AND conflicting.name = 'Кафе и рестораны' COLLATE NOCASE
+            )`).run(appliedAt);
         db.prepare("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)").run(version, appliedAt);
       }
     });

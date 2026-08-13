@@ -1,5 +1,5 @@
-import { cacheProfile, clearUserOfflineData, clearWorkspaceOfflineData, outboxStats, readCachedBootstrap, readCachedProfile } from './workspace-offline'
-import { isSessionContextChanged, logoutExpected, setSessionContext } from './workspace-api'
+import { cacheProfile, clearUserOfflineData, clearWorkspaceOfflineData, outboxStats, readCachedBootstrap, readCachedProfile, waitForWorkspaceOfflineWrites } from './workspace-offline'
+import { blockWorkspaceMutations, isSessionContextChanged, logoutExpected, setSessionContext } from './workspace-api'
 import type { CapabilityIntent, OutboxStats, SessionState, WorkspaceRuntime, WorkspaceSummary } from './types'
 
 export type AppPhase = 'checking' | 'guest' | 'known-user-locked' | 'legacy-claim' | 'restricted-recovery' | 'no-workspaces' | 'workspace' | 'capability'
@@ -188,12 +188,14 @@ export async function canOpenOfflineWorkspace(userId: string, workspaceId: strin
 export async function beginLogout(state: AppState): Promise<void> {
   if (!state.session?.authenticated) return
   const { user, currentSessionId } = state.session
+  blockWorkspaceMutations()
+  setSessionContext(null)
   storage()?.setItem(LOGOUT_PENDING, JSON.stringify({ userId: user.id, sessionId: currentSessionId } satisfies LogoutMarker))
   // The marker is durable before any profile/cache IDs are removed.
   storage()?.removeItem(KNOWN_USER)
   clearUserPreferences(user.id)
+  await waitForWorkspaceOfflineWrites()
   await clearUserOfflineData(user.id)
-  setSessionContext(null)
 }
 
 /** Returns true only after the old cookie is revoked or safely proved unrelated. */
@@ -202,10 +204,17 @@ export async function settlePendingLogout(online: boolean, signal?: AbortSignal)
   if (!marker || !online) return !marker
   try {
     await logoutExpected(marker.userId, marker.sessionId, signal)
+    await waitForWorkspaceOfflineWrites()
+    await clearUserOfflineData(marker.userId)
     storage()?.removeItem(LOGOUT_PENDING)
     return true
   } catch (error) {
-    if (isSessionContextChanged(error)) { storage()?.removeItem(LOGOUT_PENDING); return true }
+    if (isSessionContextChanged(error)) {
+      await waitForWorkspaceOfflineWrites()
+      await clearUserOfflineData(marker.userId)
+      storage()?.removeItem(LOGOUT_PENDING)
+      return true
+    }
     return false
   }
 }
@@ -213,19 +222,29 @@ export async function settlePendingLogout(online: boolean, signal?: AbortSignal)
 export async function forgetKnownProfile(online: boolean, session: SessionState | null, signal?: AbortSignal): Promise<boolean> {
   const userId = knownUserId()
   if (!userId) return true
-  const sessionId = session?.authenticated && session.user.id === userId ? session.currentSessionId : 'unknown'
-  storage()?.setItem(LOGOUT_PENDING, JSON.stringify({ userId, sessionId } satisfies LogoutMarker))
+  const authenticatedSession = session?.authenticated && session.user.id === userId ? session : null
+  const authoritativeGuest = Boolean(online && session && !session.authenticated)
+  // navigator.onLine alone is not proof that the server cookie is gone. Keep
+  // the local lock until we have either the matching session ID or a fresh
+  // authoritative guest response.
+  if (!authenticatedSession && !authoritativeGuest) return false
+  blockWorkspaceMutations()
+  setSessionContext(null)
+  if (authenticatedSession) storage()?.setItem(LOGOUT_PENDING, JSON.stringify({ userId, sessionId: authenticatedSession.currentSessionId } satisfies LogoutMarker))
+  else storage()?.removeItem(LOGOUT_PENDING)
   storage()?.removeItem(KNOWN_USER)
   clearUserPreferences(userId)
+  await waitForWorkspaceOfflineWrites()
   await clearUserOfflineData(userId)
-  return settlePendingLogout(online, signal)
+  if (!authenticatedSession || !online) return true
+  return settlePendingLogout(true, signal)
 }
 
 export function getWorkspacePreference(userId: string, workspaceId: string, name: 'last-currency' | 'analytics-currency'): string | null { return storage()?.getItem(workspaceCurrencyKey(userId, workspaceId, name)) ?? null }
 export function setWorkspacePreference(userId: string, workspaceId: string, name: 'last-currency' | 'analytics-currency', value: string): void { storage()?.setItem(workspaceCurrencyKey(userId, workspaceId, name), value) }
 export const readWorkspaceStats = (userId: string, workspaceId: string): Promise<OutboxStats> => outboxStats(userId, workspaceId)
 
-export type IdentityEvent = { epoch: number; userId: string | null; sessionId: string | null }
+export type IdentityEvent = { epoch: number; eventId: string; userId: string | null; sessionId: string | null }
 type CoordinatorOptions = { refresh: (reloadWorkspace?: boolean) => Promise<void>; abortNetwork: () => void; stopSync: () => void; onForeignIdentity: () => void; intervalMs?: number }
 
 /** Broadcast is an acceleration only; server expected-context headers remain the security boundary. */
@@ -239,11 +258,13 @@ export function createIdentityCoordinator(options: CoordinatorOptions) {
     } catch { return 0 }
   }
   let epoch = readEpoch()
+  const seenEvents = new Set<string>()
   let stopped = false
   const channel = typeof BroadcastChannel === 'undefined' ? null : new BroadcastChannel('moapp-identity')
   const receive = (event: IdentityEvent) => {
-    if (stopped || event.epoch <= epoch) return
-    epoch = event.epoch; options.abortNetwork(); options.stopSync(); options.onForeignIdentity(); void options.refresh()
+    const eventId = typeof event.eventId === 'string' ? event.eventId : `${event.epoch}:${event.userId ?? ''}:${event.sessionId ?? ''}`
+    if (stopped || seenEvents.has(eventId) || event.epoch < epoch) return
+    seenEvents.add(eventId); epoch = Math.max(epoch, event.epoch); options.abortNetwork(); options.stopSync(); options.onForeignIdentity(); void options.refresh()
   }
   channel?.addEventListener('message', (event: MessageEvent<IdentityEvent>) => receive(event.data))
   const storageListener = (event: StorageEvent) => { if (event.key === key && event.newValue) { try { receive(JSON.parse(event.newValue) as IdentityEvent) } catch { /* ignore malformed events */ } } }
@@ -260,7 +281,8 @@ export function createIdentityCoordinator(options: CoordinatorOptions) {
       // version before incrementing prevents its epoch=1 announcement from
       // being ignored by a tab that has already observed epoch=5.
       epoch = Math.max(epoch, readEpoch()) + 1
-      const event = { epoch, userId, sessionId }
+      const event = { epoch, eventId: crypto.randomUUID(), userId, sessionId }
+      seenEvents.add(event.eventId)
       channel?.postMessage(event)
       try { storage()?.setItem(key, JSON.stringify(event)) } catch { /* BroadcastChannel remains available */ }
     },

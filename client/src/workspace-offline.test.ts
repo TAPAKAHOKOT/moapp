@@ -1,7 +1,7 @@
 import 'fake-indexeddb/auto'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
-  WORKSPACE_DB_NAME, cacheBootstrap, clearWorkspaceOfflineData, migrateLegacyOfflineData, outboxStats, queueMutation, readCachedBootstrap, readOutbox,
+  WORKSPACE_DB_NAME, cacheBootstrap, clearUserOfflineData, clearWorkspaceOfflineData, migrateLegacyOfflineData, outboxStats, queueMutation, queueMutations, readCachedBootstrap, readOutbox,
 } from './workspace-offline'
 import type { WorkspaceBootstrap, WorkspaceOutboxItem } from './types'
 
@@ -66,6 +66,18 @@ describe('workspace offline isolation', () => {
     expect(await readOutbox('user-b', 'workspace-a')).toHaveLength(1)
   })
 
+  it('queues a batch in one transaction and rejects mixed scopes without partial writes', async () => {
+    const valid = item('user-a', 'workspace-a', 'one')
+    const foreign = item('user-a', 'workspace-b', 'two')
+
+    await expect(queueMutations('user-a', 'workspace-a', [valid, foreign])).rejects.toThrow('scope')
+    expect(await readOutbox('user-a', 'workspace-a')).toEqual([])
+    expect(await readOutbox('user-a', 'workspace-b')).toEqual([])
+
+    await queueMutations('user-a', 'workspace-a', [valid, item('user-a', 'workspace-a', 'two')])
+    expect(await readOutbox('user-a', 'workspace-a')).toHaveLength(2)
+  })
+
   it('quarantines a v2 cache and outbox until an explicit legacy mapping exists', async () => {
     await seedV2()
     expect(await readOutbox('user-a', 'workspace-a')).toEqual([])
@@ -102,5 +114,23 @@ describe('workspace offline isolation', () => {
     expect(await readOutbox('user-a', 'workspace-a')).toEqual([])
     expect(await readCachedBootstrap('user-a', 'workspace-b')).toBeDefined()
     expect((await outboxStats('user-a', 'workspace-b')).total).toBe(1)
+  })
+
+  it('clears every cache and outbox row for one user without touching another user', async () => {
+    await cacheBootstrap('user-a', 'workspace-a', bootstrap('workspace-a'))
+    await cacheBootstrap('user-a', 'workspace-b', bootstrap('workspace-b'))
+    await cacheBootstrap('user-b', 'workspace-a', bootstrap('workspace-a'))
+    await queueMutation('user-a', 'workspace-a', item('user-a', 'workspace-a'))
+    await queueMutation('user-a', 'workspace-b', item('user-a', 'workspace-b'))
+    await queueMutation('user-b', 'workspace-a', item('user-b', 'workspace-a'))
+
+    await clearUserOfflineData('user-a')
+
+    expect(await readCachedBootstrap('user-a', 'workspace-a')).toBeUndefined()
+    expect(await readCachedBootstrap('user-a', 'workspace-b')).toBeUndefined()
+    expect(await readOutbox('user-a', 'workspace-a')).toEqual([])
+    expect(await readOutbox('user-a', 'workspace-b')).toEqual([])
+    expect(await readCachedBootstrap('user-b', 'workspace-a')).toBeDefined()
+    expect(await readOutbox('user-b', 'workspace-a')).toHaveLength(1)
   })
 })

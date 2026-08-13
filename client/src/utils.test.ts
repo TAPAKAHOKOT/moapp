@@ -5,14 +5,48 @@ import type { Currency, Expense } from './types'
 const currencies: Currency[] = [
   { code: 'RSD', name: 'Сербский динар', symbol: 'дин.', decimals: 2 },
   { code: 'EUR', name: 'Евро', symbol: '€', decimals: 2 },
+  { code: 'KWD', name: 'Кувейтский динар', symbol: 'KWD', decimals: 3 },
+  { code: 'CLF', name: 'Унидад де Фоменто', symbol: 'CLF', decimals: 4 },
 ]
 
 describe('money helpers', () => {
   it('uses integer minor units', () => expect(amountToMinor('12.34', 'EUR', currencies)).toBe(1234))
-  it('limits keypad fractional digits', () => expect(applyKeypad('12.34', '5')).toBe('12.34'))
+  it('converts currency decimals without floating-point drift', () => {
+    expect(amountToMinor('1.005', 'KWD', currencies)).toBe(1005)
+    expect(amountToMinor('1.005', 'EUR', currencies)).toBe(101)
+    expect(amountToMinor('12,34', 'EUR', currencies)).toBe(1234)
+  })
+  it('limits keypad fractional digits for each currency precision', () => {
+    expect(applyKeypad('12.34', '5')).toBe('12.34')
+    expect(applyKeypad('12.34', '5', 3)).toBe('12.345')
+    expect(applyKeypad('12', ',', 0)).toBe('12')
+  })
+  it('handles decimal comma and backspace predictably', () => {
+    expect(applyKeypad('', ',')).toBe('0.')
+    expect(applyKeypad('12.', ',')).toBe('12.')
+    expect(applyKeypad('0.', '⌫')).toBe('0')
+    expect(applyKeypad('0', '⌫')).toBe('')
+  })
+  it('limits the whole part to twelve digits', () => {
+    expect(applyKeypad('99999999999', '9', 2)).toBe('999999999999')
+    expect(applyKeypad('999999999999', '9', 2)).toBe('999999999999')
+  })
+  it('never lets keypad input exceed a safe minor-unit integer', () => {
+    expect(applyKeypad('99999999999', '9', 4)).toBe('99999999999')
+    expect(applyKeypad('900719925474.099', '1', 4)).toBe('900719925474.0991')
+    expect(applyKeypad('900719925474.099', '2', 4)).toBe('900719925474.099')
+  })
+  it('rejects conversion beyond the safe minor-unit integer', () => {
+    expect(amountToMinor('90071992547409.91', 'EUR', currencies)).toBe(Number.MAX_SAFE_INTEGER)
+    expect(() => amountToMinor('90071992547409.92', 'EUR', currencies)).toThrow(RangeError)
+  })
   it('converts through RSD rates', () => {
     const expense = { amountMinor: 1000, currency: 'EUR' } as Expense
     expect(convertExpense(expense, 'RSD', currencies, { base: 'RSD', date: '2026-08-03', ratesToRsd: { EUR: 117, RSD: 1 } })).toBe(1170)
+  })
+  it('keeps an identity conversion even when the rate snapshot is empty', () => {
+    const expense = { amountMinor: 1000, currency: 'EUR' } as Expense
+    expect(convertExpense(expense, 'EUR', currencies, { base: 'RSD', date: null, ratesToRsd: {} })).toBe(10)
   })
 })
 
