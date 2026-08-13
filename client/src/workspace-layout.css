@@ -6,3 +6,147 @@
   height: calc(48px + env(safe-area-inset-top));
   padding-top: env(safe-area-inset-top);
 }
+
+/* Keep the account and workspace controls readable on a narrow screen.
+ * Only direct form controls are laid out here: category rows keep their
+ * compact, divider-based list layout. */
+
+.settings-group > h2 {
+  margin: 0 0 12px;
+}
+
+.settings-group > label {
+  display: grid;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .04em;
+  margin: 0 0 12px;
+}
+
+.settings-group > label > input,
+.settings-group > label > select {
+  appearance: none;
+  width: 100%;
+  min-height: 44px;
+  margin: 0;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  outline: none;
+  background: var(--card);
+  color: var(--ink);
+  box-shadow: 0 1px 2px rgb(32 37 31 / 4%);
+  padding: 10px 12px;
+  font-size: 16px;
+  font-weight: 500;
+  letter-spacing: 0;
+  line-height: 1.35;
+  transition: border-color .16s ease, box-shadow .16s ease, background-color .16s ease;
+}
+
+.settings-group > label > select {
+  padding-right: 40px;
+  background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%), linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+  background-position: calc(100% - 18px) calc(50% - 2px), calc(100% - 13px) calc(50% - 2px);
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+}
+
+.settings-group > label > input::placeholder {
+  color: var(--muted);
+  opacity: .72;
+}
+
+.settings-group > label > input:focus-visible,
+.settings-group > label > select:focus-visible,
+.settings-group button:focus-visible {
+  border-color: var(--sage);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--sage) 28%, transparent);
+}
+
+.settings-group > label > input:disabled,
+.settings-group > label > select:disabled {
+  cursor: not-allowed;
+  background: var(--soft);
+  border-color: transparent;
+  box-shadow: none;
+  color: var(--muted);
+  opacity: 1;
+}
+
+.settings-group > label + small {
+  display: block;
+  margin: -6px 4px 12px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.settings-group > .sheet-cancel {
+  min-height: 44px;
+  margin: 8px 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  background: transparent;
+  color: var(--ink);
+  font-size: 12px;
+  transition: border-color .16s ease, background-color .16s ease, box-shadow .16s ease;
+}
+
+.settings-group > .sheet-cancel:active:not(:disabled) {
+  background: var(--soft);
+}
+
+.settings-group > .primary {
+  min-height: 48px;
+  margin-top: 8px;
+}
+
+.settings-group .management-row {
+  min-height: 56px;
+  padding: 8px 4px;
+}
+
+.settings-group .management-row > span:first-child {
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.settings-group .management-row button {
+  min-height: 44px;
+}
+
+.settings-group .theme-setting {
+  min-height: 56px;
+  padding: 6px 4px 14px;
+}
+
+.settings-group .theme-toggle button {
+  min-height: 44px;
+}
+
+@media (hover: hover) {
+  .settings-group > .sheet-cancel:hover:not(:disabled) {
+    border-color: var(--sage);
+  }
+}
+
+@media (max-width: 360px) {
+  .settings-group .theme-setting {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
+
+/* Blurring the whole page behind a fixed bar is noticeably expensive while
+ * scrolling on iOS. A solid surface gives the same visual separation here. */
+@media (max-width: 599px) {
+  .bottom-nav,
+  :root[data-theme="dark"] .bottom-nav {
+    background: var(--paper);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+}

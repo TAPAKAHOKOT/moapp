@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import * as accessFlow from './access-flow'
-import { CapabilityScreen, CreateWorkspaceSheet, RecoverySave, WorkspaceSwitcher } from './App'
+import { CapabilityScreen, CreateWorkspaceSheet, pagerTabsAt, RecoverySave, useToast, WorkspaceSwitcher } from './App'
 import * as workspaceApi from './workspace-api'
 import type { AuthenticatedSession } from './types'
 
@@ -15,8 +15,43 @@ const prepared = {
 
 afterEach(() => {
   cleanup()
+  vi.useRealTimers()
   vi.restoreAllMocks()
   Object.defineProperty(window.navigator, 'onLine', { configurable: true, value: true })
+})
+
+function ToastHarness() {
+  const { toast, notify, dismiss } = useToast()
+  return <>
+    <button onClick={() => notify('Пространство создано')}>Создать</button>
+    <button onClick={() => notify('Второе сообщение')}>Повторить</button>
+    {toast && <button onClick={dismiss}>{toast.text}</button>}
+  </>
+}
+
+describe('global notices', () => {
+  it('auto-dismisses a workspace-created notice and resets its timer for a new message', () => {
+    vi.useFakeTimers()
+    render(<ToastHarness />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Создать' }))
+    act(() => vi.advanceTimersByTime(2500))
+    fireEvent.click(screen.getByRole('button', { name: 'Повторить' }))
+    act(() => vi.advanceTimersByTime(2500))
+    expect(screen.getByRole('button', { name: 'Второе сообщение' })).not.toBeNull()
+
+    act(() => vi.advanceTimersByTime(100))
+    expect(screen.queryByRole('button', { name: 'Второе сообщение' })).toBeNull()
+  })
+})
+
+describe('pager lazy mounting', () => {
+  it('keeps entry alive and prepares only the pages touching the current swipe position', () => {
+    expect(pagerTabsAt(0, 390)).toEqual(['entry'])
+    expect(pagerTabsAt(390 * 1.25, 390)).toEqual(['entry', 'history', 'analytics'])
+    expect(pagerTabsAt(390 * 3, 390)).toEqual(['entry', 'settings'])
+    expect(pagerTabsAt(390, 0)).toEqual(['entry'])
+  })
 })
 
 describe('workspace onboarding controls', () => {
