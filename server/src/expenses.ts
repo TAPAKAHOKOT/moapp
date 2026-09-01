@@ -111,8 +111,11 @@ export function updateExpense(
   };
   const error = validate(merged);
   if (error) return { error, code: "VALIDATION" };
-  if (!app.db.prepare(`SELECT 1 FROM categories
-    WHERE workspace_id=? AND id=? AND archived_at IS NULL`).get(workspaceId, merged.categoryId)) {
+  const category = app.db.prepare(`SELECT archived_at FROM categories
+    WHERE workspace_id=? AND id=?`).get(workspaceId, merged.categoryId) as { archived_at: string | null } | undefined;
+  // An archived category may stay attached to its existing expense so the
+  // amount, note, currency or date remain editable. It cannot be newly chosen.
+  if (!category || (category.archived_at && merged.categoryId !== current.category_id)) {
     return { error: "Category not found or archived", code: "CATEGORY_INVALID" };
   }
   app.db.prepare(`UPDATE expenses SET amount_minor=?,currency=?,category_id=?,occurred_at=?,note=?,deleted_at=NULL,

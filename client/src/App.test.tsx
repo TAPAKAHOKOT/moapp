@@ -2,7 +2,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import * as accessFlow from './access-flow'
-import { CapabilityScreen, CreateWorkspaceSheet, EntryView, fallbackAnalytics, pagerTabsAt, RecoverySave, SettingsView, useToast, WorkspaceSwitcher } from './App'
+import { AnalyticsView, CapabilityScreen, CreateWorkspaceSheet, EntryView, fallbackAnalytics, formatEntryDate, formatHistoryDate, HistoryView, pagerTabsAt, RecoverySave, SettingsView, useToast, WorkspaceSwitcher } from './App'
 import * as workspaceApi from './workspace-api'
 import type { AuthenticatedSession, WorkspaceBootstrap } from './types'
 
@@ -29,6 +29,21 @@ function ToastHarness() {
     <button onClick={() => notify('Второе сообщение')}>Повторить</button>
     {toast && <button onClick={dismiss}>{toast.text}</button>}
   </>
+}
+
+function expenseBootstrap(overrides: Partial<WorkspaceBootstrap> = {}): WorkspaceBootstrap {
+  const workspace = { id: 'workspace-a', name: 'Дом', role: 'owner' as const, version: 1, joinedAt: '2026-08-01T00:00:00.000Z' }
+  return {
+    workspaceId: workspace.id,
+    workspace,
+    categories: [{ id: 'products', name: 'Продукты', color: '#758d69', placement: 'main', sortOrder: 0, createdAt: '2026-08-01T00:00:00.000Z', updatedAt: '2026-08-01T00:00:00.000Z', archivedAt: null, version: 1 }],
+    currencies: [{ code: 'RSD', name: 'Сербский динар', symbol: 'дин.', decimals: 2 }],
+    rates: { base: 'RSD', date: '2026-08-10', ratesToRsd: { RSD: 1 } },
+    expenses: [],
+    defaultAnalyticsCurrency: 'RSD',
+    serverTime: '2026-08-10T14:00:00.000Z',
+    ...overrides,
+  }
 }
 
 describe('global notices', () => {
@@ -96,6 +111,114 @@ describe('expense card swipe', () => {
 
     expect(track.style.transform).toBe('')
     expect(setCurrentId).not.toHaveBeenCalled()
+  })
+
+  it('opens a new expense directly from an old expense', () => {
+    const setCurrentId = vi.fn()
+    const bootstrap: WorkspaceBootstrap = {
+      workspaceId: 'workspace-a',
+      workspace: { id: 'workspace-a', name: 'Дом', role: 'owner', version: 1, joinedAt: '2026-08-01T00:00:00.000Z' },
+      categories: [],
+      currencies: [{ code: 'RSD', name: 'Сербский динар', symbol: 'дин.', decimals: 2 }],
+      rates: { base: 'RSD', date: '2026-08-10', ratesToRsd: { RSD: 1 } },
+      expenses: [{ id: 'old', amountMinor: 1_000, currency: 'RSD', categoryId: 'products', note: null, occurredAt: '2026-08-09T13:00:00.000Z', createdAt: '2026-08-09T13:00:00.000Z', updatedAt: '2026-08-09T13:00:00.000Z', version: 1, deletedAt: null }],
+      defaultAnalyticsCurrency: 'RSD',
+      serverTime: '2026-08-10T14:00:00.000Z',
+    }
+    render(<EntryView userId="user-a" workspaceId="workspace-a" bootstrap={bootstrap} setBootstrap={vi.fn()} currentId="old" setCurrentId={setCurrentId} refreshPending={vi.fn()} onDraftDirtyChange={vi.fn()} active/>)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Новый расход' }))
+
+    expect(setCurrentId).toHaveBeenCalledWith(null)
+    expect(screen.getByRole('region', { name: 'Ввод суммы' }).querySelector('.entry-card:not(.aside) output')?.textContent).toBe('0')
+  })
+
+  it('asks before a swipe discards changes to the current expense', async () => {
+    vi.useFakeTimers()
+    const setCurrentId = vi.fn()
+    const bootstrap = expenseBootstrap({ expenses: [
+      { id: 'newer', amountMinor: 2_000, currency: 'RSD', categoryId: 'products', note: null, occurredAt: '2026-08-10T13:00:00.000Z', createdAt: '2026-08-10T13:00:00.000Z', updatedAt: '2026-08-10T13:00:00.000Z', version: 1, deletedAt: null },
+      { id: 'older', amountMinor: 1_000, currency: 'RSD', categoryId: 'products', note: null, occurredAt: '2026-08-09T13:00:00.000Z', createdAt: '2026-08-09T13:00:00.000Z', updatedAt: '2026-08-09T13:00:00.000Z', version: 1, deletedAt: null },
+    ] })
+    render(<EntryView userId="user-a" workspaceId="workspace-a" bootstrap={bootstrap} setBootstrap={vi.fn()} currentId="newer" setCurrentId={setCurrentId} refreshPending={vi.fn()} onDraftDirtyChange={vi.fn()} active/>)
+    fireEvent.click(screen.getByRole('button', { name: '1' }))
+    const entry = screen.getByRole('region', { name: 'Ввод суммы' })
+    fireEvent.pointerDown(entry, { pointerType: 'mouse', button: 0, clientX: 100, clientY: 20 })
+    fireEvent.pointerMove(entry, { pointerType: 'mouse', clientX: 200, clientY: 20 })
+    fireEvent.pointerUp(entry, { pointerType: 'mouse', clientX: 200, clientY: 20 })
+
+    expect(screen.getByRole('alertdialog', { name: 'Перейти к другому расходу?' })).not.toBeNull()
+    expect(setCurrentId).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Отмена' }))
+    act(() => vi.runAllTimers())
+    expect(setCurrentId).not.toHaveBeenCalled()
+  })
+})
+
+describe('expense editing and saving', () => {
+  it('uses an explicit save action for an existing expense and retains its archived category', async () => {
+    const submit = vi.spyOn(workspaceApi, 'submitExpenseOperation').mockResolvedValue(null)
+    const archived = { id: 'old-category', name: 'Старое кафе', color: '#758d69', placement: 'main' as const, sortOrder: 0, createdAt: '2026-08-01T00:00:00.000Z', updatedAt: '2026-08-02T00:00:00.000Z', archivedAt: '2026-08-03T00:00:00.000Z', version: 2 }
+    const expense = { id: 'old', amountMinor: 1_000, currency: 'RSD', categoryId: archived.id, note: null, occurredAt: '2026-08-09T13:00:00.000Z', createdAt: '2026-08-09T13:00:00.000Z', updatedAt: '2026-08-09T13:00:00.000Z', version: 1, deletedAt: null }
+    render(<EntryView userId="user-a" workspaceId="workspace-a" bootstrap={expenseBootstrap({ categories: [archived], expenses: [expense] })} setBootstrap={vi.fn()} currentId="old" setCurrentId={vi.fn()} refreshPending={vi.fn()} onDraftDirtyChange={vi.fn()} active/>)
+
+    fireEvent.click(screen.getByRole('button', { name: '1' }))
+    expect(submit).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Сохранить изменения' }))
+
+    await waitFor(() => expect(submit).toHaveBeenCalled())
+    expect(submit.mock.calls[0]?.[3]).toEqual(expect.objectContaining({ categoryId: archived.id }))
+  })
+
+  it('locks conflicting controls while a new expense is being saved', async () => {
+    vi.spyOn(workspaceApi, 'submitExpenseOperation').mockImplementation(() => new Promise(() => {}))
+    render(<EntryView userId="user-a" workspaceId="workspace-a" bootstrap={expenseBootstrap()} setBootstrap={vi.fn()} currentId={null} setCurrentId={vi.fn()} refreshPending={vi.fn()} onDraftDirtyChange={vi.fn()} active/>)
+
+    expect(screen.queryByRole('button', { name: 'Новый расход' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: '1' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Продукты' }))
+
+    await waitFor(() => expect((screen.getByRole('button', { name: '1' }) as HTMLButtonElement).disabled).toBe(true))
+    expect((screen.getByRole('button', { name: /RSD/ }) as HTMLButtonElement).disabled).toBe(true)
+    expect((screen.getByRole('button', { name: /Добавить заметку/ }) as HTMLButtonElement).disabled).toBe(true)
+  })
+})
+
+describe('expense dates', () => {
+  it('shows a short weekday in entry and history dates', () => {
+    expect(formatEntryDate('2026-08-30T09:37')).toBe('вс · 30 августа 2026, 09:37')
+    expect(formatHistoryDate('2026-08-30')).toBe('вс · 30 августа 2026')
+  })
+})
+
+describe('history discovery', () => {
+  it('offers a first-expense action instead of a useless empty search field', () => {
+    const createNew = vi.fn()
+    render(<HistoryView userId="user-a" workspaceId="workspace-a" bootstrap={expenseBootstrap()} setBootstrap={vi.fn()} edit={vi.fn()} createNew={createNew} refreshPending={vi.fn()}/>)
+    expect(screen.queryByRole('searchbox')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Добавить первый расход' }))
+    expect(createNew).toHaveBeenCalledTimes(1)
+  })
+
+  it('searches expenses by note, amount and weekday-aware date', () => {
+    const bootstrap = expenseBootstrap({ expenses: [{ id: 'expense-a', amountMinor: 12_345, currency: 'RSD', categoryId: 'products', note: 'IKEA полка', occurredAt: '2026-08-30T09:37:00.000Z', createdAt: '2026-08-30T09:37:00.000Z', updatedAt: '2026-08-30T09:37:00.000Z', version: 1, deletedAt: null }] })
+    render(<HistoryView userId="user-a" workspaceId="workspace-a" bootstrap={bootstrap} setBootstrap={vi.fn()} edit={vi.fn()} createNew={vi.fn()} refreshPending={vi.fn()}/>)
+    const search = screen.getByRole('searchbox')
+    fireEvent.change(search, { target: { value: 'полка' } })
+    expect(screen.getByRole('button', { name: /Продукты/ })).not.toBeNull()
+    fireEvent.change(search, { target: { value: 'вс' } })
+    expect(screen.getByRole('button', { name: /Продукты/ })).not.toBeNull()
+    fireEvent.change(search, { target: { value: '123,45' } })
+    expect(screen.getByRole('button', { name: /Продукты/ })).not.toBeNull()
+  })
+})
+
+describe('analytics filters and fallback', () => {
+  it('starts with all categories and labels cached data with its timestamp', () => {
+    const bootstrap = expenseBootstrap()
+    render(<AnalyticsView userId="analytics-user" workspaceId="analytics-workspace" bootstrap={bootstrap} theme="light" online={false}/>)
+    expect((screen.getByLabelText('Категория расходов') as HTMLSelectElement).value).toBe('')
+    expect(screen.getByRole('status').textContent).toContain('Показаны сохранённые данные на')
   })
 })
 
@@ -169,6 +292,43 @@ describe('settings identity transitions', () => {
     await waitFor(() => expect(logoutButton.disabled).toBe(true))
     fireEvent.click(logoutButton)
     expect(logout).not.toHaveBeenCalled()
+  })
+
+  it('confirms invitation and device revocation before changing access', async () => {
+    const invitation = { id: 'invite-a', workspaceId: 'workspace-a', expiresAt: '2030-01-01T00:00:00.000Z', createdAt: '2026-08-01T00:00:00.000Z' }
+    vi.spyOn(workspaceApi, 'listMembers').mockResolvedValue({ members: [] })
+    vi.spyOn(workspaceApi, 'listSessions').mockResolvedValue({ sessions: [{ id: 'device-a', label: 'iPad', current: false, createdAt: '2026-08-01T00:00:00.000Z', lastSeenAt: '2026-08-10T00:00:00.000Z', expiresAt: '2030-01-01T00:00:00.000Z' }] })
+    vi.spyOn(workspaceApi, 'listInvitations').mockResolvedValue({ invitations: [invitation] })
+    const revokeInvite = vi.spyOn(workspaceApi, 'revokeInvitation').mockResolvedValue(undefined)
+    const revokeDevice = vi.spyOn(workspaceApi, 'revokeSession').mockResolvedValue(undefined)
+    const workspace = expenseBootstrap().workspace
+    const user: AuthenticatedSession = { authenticated: true, user: { id: 'user-a', displayName: 'Аня', recoveryConfigured: true, recoveryGeneration: 1 }, currentSessionId: 'session-a', currentSessionExpiresAt: '2030-01-01T00:00:00.000Z', serverTime: '2026-08-10T14:00:00.000Z', restrictedToRecovery: false, workspaces: [workspace], legacyWorkspaceId: null }
+    render(<SettingsView user={user} workspace={workspace} workspaceId={workspace.id} bootstrap={expenseBootstrap()} setBootstrap={vi.fn()} pendingCount={0} refreshPending={vi.fn()} onLogout={vi.fn()} theme="light" onThemeChange={vi.fn()} onSession={vi.fn()} onCreateWorkspace={vi.fn()} online/>)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Отозвать' }))
+    expect(await screen.findByRole('alertdialog', { name: 'Отозвать приглашение?' })).not.toBeNull()
+    expect(revokeInvite).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Отмена' }))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Отключить' }))
+    expect(await screen.findByRole('alertdialog', { name: 'Отключить устройство?' })).not.toBeNull()
+    expect(revokeDevice).not.toHaveBeenCalled()
+  })
+
+  it('rolls a display name back when saving on blur fails', async () => {
+    vi.spyOn(workspaceApi, 'listMembers').mockResolvedValue({ members: [] })
+    vi.spyOn(workspaceApi, 'listSessions').mockResolvedValue({ sessions: [] })
+    vi.spyOn(workspaceApi, 'listInvitations').mockResolvedValue({ invitations: [] })
+    vi.spyOn(workspaceApi, 'updateProfile').mockRejectedValue(new Error('Нет связи'))
+    const workspace = expenseBootstrap().workspace
+    const user: AuthenticatedSession = { authenticated: true, user: { id: 'user-a', displayName: 'Аня', recoveryConfigured: true, recoveryGeneration: 1 }, currentSessionId: 'session-a', currentSessionExpiresAt: '2030-01-01T00:00:00.000Z', serverTime: '2026-08-10T14:00:00.000Z', restrictedToRecovery: false, workspaces: [workspace], legacyWorkspaceId: null }
+    render(<SettingsView user={user} workspace={workspace} workspaceId={workspace.id} bootstrap={expenseBootstrap()} setBootstrap={vi.fn()} pendingCount={0} refreshPending={vi.fn()} onLogout={vi.fn()} theme="light" onThemeChange={vi.fn()} onSession={vi.fn()} onCreateWorkspace={vi.fn()} online/>)
+    const input = screen.getByLabelText('Ваше имя') as HTMLInputElement
+    fireEvent.change(input, { target: { value: 'Новое имя' } })
+    fireEvent.blur(input)
+
+    await waitFor(() => expect(input.value).toBe('Аня'))
+    expect(screen.getByText('Не удалось сохранить — возвращено прежнее имя')).not.toBeNull()
   })
 })
 

@@ -167,35 +167,56 @@ function tap(pattern = 8) {
   navigator.vibrate?.(pattern)
 }
 
-function formatEntryDate(localInput: string) {
+function localInputParts(localInput: string) {
   const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(localInput)
-  if (!match) return ''
+  if (!match) return null
   const [, year, month, day, hour, minute] = match
-  return `${new Date(`${year}-${month}-${day}T12:00:00Z`).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' })}, ${hour}:${minute}`
+  const date = new Date(`${year}-${month}-${day}T12:00:00Z`)
+  return { year, hour, minute, date }
+}
+
+function formatShortWeekday(localInput: string) {
+  return localInputParts(localInput)?.date.toLocaleDateString('ru-RU', { weekday: 'short', timeZone: 'UTC' }) ?? ''
+}
+
+export function formatEntryDate(localInput: string) {
+  const parts = localInputParts(localInput)
+  if (!parts) return ''
+  const calendarDate = parts.date.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', timeZone: 'UTC' })
+  return `${formatShortWeekday(localInput)} · ${calendarDate} ${parts.year}, ${parts.hour}:${parts.minute}`
+}
+
+export function formatHistoryDate(dateKey: string) {
+  const localInput = `${dateKey}T12:00`
+  const parts = localInputParts(localInput)
+  if (!parts) return ''
+  const calendarDate = parts.date.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', timeZone: 'UTC' })
+  return `${formatShortWeekday(localInput)} · ${calendarDate} ${parts.year}`
 }
 
 const CARD_GAP = 18
 
 type CardFace = { title: string; date: string; amount: string; currency: string }
 
-function EntryCard({ face, onDate, onCurrency }: { face: CardFace; onDate?: () => void; onCurrency?: () => void }) {
+function EntryCard({ face, onDate, onCurrency, disabled = false }: { face: CardFace; onDate?: () => void; onCurrency?: () => void; disabled?: boolean }) {
   const inert = onCurrency ? undefined : -1
   const amountSize = face.amount.replace(/\D/g, '').length > 10 ? 'long' : face.amount.replace(/\D/g, '').length > 7 ? 'medium' : 'normal'
   return <>
     <header className="topline">
       <div>
         <p className="eyebrow">{face.title}</p>
-        <button type="button" className="date-chip" onClick={onDate} tabIndex={inert}>{face.date}<span>⌄</span></button>
+        <button type="button" className="date-chip" onClick={onDate} tabIndex={inert} disabled={disabled}>{face.date}<span>⌄</span></button>
       </div>
     </header>
     <div className="amount-row">
       <output className={`amount-value${face.amount ? '' : ' empty'}`} data-size={amountSize} aria-label="Сумма">{face.amount || '0'}</output>
-      <button type="button" onClick={onCurrency} tabIndex={inert}>{face.currency}<span>⌄</span></button>
+      <button type="button" onClick={onCurrency} tabIndex={inert} disabled={disabled}>{face.currency}<span>⌄</span></button>
     </div>
   </>
 }
 
 const TrashIcon = () => <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"/></svg>
+const PlusIcon = () => <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
 
 function styleDeleteButton(node: HTMLButtonElement | null, presence: number, duration: number) {
   if (!node) return
@@ -273,18 +294,19 @@ function DateSheet({ value, onClose, onPick }: { value: string; onClose: () => v
       <div className="sheet-handle"/>
       <div className="sheet-title"><h2 id="date-title">Когда</h2><button type="button" className="icon-button" data-dialog-initial-focus onClick={onClose} aria-label="Закрыть">×</button></div>
       <div className="date-presets"><button type="button" onClick={() => shift(0)}>Сейчас</button><button type="button" onClick={() => shift(1)}>Вчера</button><button type="button" onClick={() => shift(2)}>Позавчера</button></div>
-      <label>Дата и время<input type="datetime-local" aria-invalid={Boolean(validation)} value={draft} onChange={(event) => { setValidation(''); setDraft(event.target.value) }}/></label>
+      <label className="date-field">Дата и время <b className="weekday-badge">{formatShortWeekday(draft)}</b><input type="datetime-local" aria-invalid={Boolean(validation)} value={draft} onChange={(event) => { setValidation(''); setDraft(event.target.value) }}/></label>
       {validation && <p className="form-error" role="alert">{validation}</p>}
       <button className="primary">Готово</button>
     </form>
   </div>
 }
 
-const Keypad = memo(function Keypad({ onKey }: { onKey: (key: string) => void }) {
+const Keypad = memo(function Keypad({ onKey, disabled = false }: { onKey: (key: string) => void; disabled?: boolean }) {
   const press = (key: string) => { tap(); onKey(key) }
   return <div className="keypad" aria-label="Клавиатура суммы">{['1','2','3','4','5','6','7','8','9',',','0','⌫'].map((key) => <button
     key={key}
     type="button"
+    disabled={disabled}
     className={key === ',' || key === '⌫' ? 'keypad-aux' : undefined}
     onPointerDown={(event) => event.preventDefault()}
     onPointerUp={() => press(key)}
@@ -316,7 +338,9 @@ export function EntryView({ userId, workspaceId, bootstrap, setBootstrap, curren
   const [dateSheet, setDateSheet] = useState(false)
   const [showNote, setShowNote] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [editCategoryId, setEditCategoryId] = useState<string | null>(null)
   const { toast, notify, dismiss } = useToast()
+  const { confirm, confirmation } = useConfirm()
   const swipe = useRef<{ x: number; y: number; lastX: number; active: boolean; touchId: number | null } | null>(null)
   const suppressTouchPointerUp = useRef(false)
   const entryRef = useRef<HTMLElement>(null)
@@ -329,6 +353,8 @@ export function EntryView({ userId, workspaceId, bootstrap, setBootstrap, curren
   // Черновик несохранённого нового расхода, чтобы свайп по истории не стирал набранную сумму.
   const draft = useRef(EMPTY_FORM)
   const synced = useRef<{ id: string; form: typeof EMPTY_FORM }>({ id: '', form: EMPTY_FORM })
+  const formRef = useRef(form)
+  formRef.current = form
 
   useEffect(() => () => clearTimeout(swapTimer.current), [])
 
@@ -352,34 +378,43 @@ export function EntryView({ userId, workspaceId, bootstrap, setBootstrap, curren
     if (sameRecord && JSON.stringify(form) !== JSON.stringify(synced.current.form)) return
     synced.current = { id: currentId || '', form: base }
     setForm(base)
+    setEditCategoryId(current?.categoryId ?? null)
     // Заметка всегда свёрнута в одну строку: развёрнутое поле у одних расходов и свёрнутое у других меняло высоту при листании.
     setShowNote(false)
   }, [currentId, current?.version]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const key = useCallback((value: string) => setForm((previous) => ({ ...previous, amount: applyKeypad(previous.amount, value, bootstrap.currencies.find((item) => item.code === previous.currency)?.decimals ?? 2) })), [bootstrap.currencies])
 
-  const buildExpense = (categoryId: string): Expense => {
+  const buildExpense = (categoryId: string, submittedForm = form, submittedCurrent = current): Expense => {
     const now = new Date().toISOString()
     return {
-      id: current?.id || crypto.randomUUID(), amountMinor: amountToMinor(form.amount, form.currency, bootstrap.currencies), currency: form.currency,
-      categoryId, note: form.note.trim() || null, occurredAt: form.occurredAt ? localInputToIso(form.occurredAt) : now,
-      createdAt: current?.createdAt || now, updatedAt: now, version: current ? current.version + 1 : 1, deletedAt: null, pending: !navigator.onLine,
+      id: submittedCurrent?.id || crypto.randomUUID(), amountMinor: amountToMinor(submittedForm.amount, submittedForm.currency, bootstrap.currencies), currency: submittedForm.currency,
+      categoryId, note: submittedForm.note.trim() || null, occurredAt: submittedForm.occurredAt ? localInputToIso(submittedForm.occurredAt) : now,
+      createdAt: submittedCurrent?.createdAt || now, updatedAt: now, version: submittedCurrent ? submittedCurrent.version + 1 : 1, deletedAt: null, pending: !navigator.onLine,
     }
   }
 
-  const chooseCategory = async (category: Category) => {
-    if (!form.amount || Number(form.amount) <= 0) { notify('Сначала введите сумму'); return }
+  const submitExpense = async (categoryId: string) => {
+    const submittedForm = { ...form }
+    const submittedCurrent = current
+    if (!submittedForm.amount || Number(submittedForm.amount) <= 0) { notify('Сначала введите сумму'); return }
     setSaving(true); setCategorySheet(false)
-    const expense = buildExpense(category.id)
+    const expense = buildExpense(categoryId, submittedForm, submittedCurrent)
     const previousExpense = bootstrap.expenses.find((item) => item.id === expense.id)
     setBootstrap((data) => ({ ...data, expenses: [expense, ...data.expenses.filter((item) => item.id !== expense.id)] }))
     try {
-      const result = await submitExpenseOperation(userId, workspaceId, current ? 'updateExpense' : 'createExpense', expense)
+      const result = await submitExpenseOperation(userId, workspaceId, submittedCurrent ? 'updateExpense' : 'createExpense', expense)
       if (result?.expense) setBootstrap((data) => ({ ...data, expenses: data.expenses.map((item) => item.id === expense.id ? result.expense! : item) }))
       else if (!result) setBootstrap((data) => ({ ...data, expenses: data.expenses.map((item) => item.id === expense.id ? { ...item, pending:true } : item) }))
-      notify(result?.status === 'conflict' ? 'Изменение конфликтует с сервером. Откройте «Нужна проверка» вверху.' : current ? 'Изменения сохранены' : 'Расход добавлен')
-      if (!current) { draft.current = EMPTY_FORM; setCurrentId(null); setForm({ ...EMPTY_FORM, currency: form.currency }) }
-      else synced.current = { id: current.id, form }
+      notify(result?.status === 'conflict' ? 'Изменение конфликтует с сервером. Откройте «Нужна проверка» вверху.' : submittedCurrent ? 'Изменения сохранены' : 'Расход добавлен')
+      if (!submittedCurrent && !currentId && JSON.stringify(formRef.current) === JSON.stringify(submittedForm)) {
+        const next = { ...EMPTY_FORM, currency: submittedForm.currency }
+        draft.current = next
+        synced.current = { id: '', form: next }
+        setForm(next)
+      } else if (submittedCurrent && currentId === submittedCurrent.id) {
+        synced.current = { id: submittedCurrent.id, form: submittedForm }
+      }
       refreshPending()
     } catch (error) {
       setBootstrap((data) => {
@@ -392,6 +427,16 @@ export function EntryView({ userId, workspaceId, bootstrap, setBootstrap, curren
       notify(error instanceof ApiError ? error.message : 'Не удалось сохранить', undefined, true)
     }
     finally { setSaving(false) }
+  }
+
+  const chooseCategory = (category: Category) => {
+    if (!form.amount || Number(form.amount) <= 0) { notify('Сначала введите сумму'); return }
+    if (current) {
+      setEditCategoryId(category.id)
+      setCategorySheet(false)
+      return
+    }
+    void submitExpense(category.id)
   }
 
   const restore = async (deleted: Expense) => {
@@ -453,10 +498,21 @@ export function EntryView({ userId, workspaceId, bootstrap, setBootstrap, curren
     styleDeleteButton(deleteRef.current, sourcePresence + (targetPresence - sourcePresence) * progress, duration)
   }
 
-  const move = (direction: 'older' | 'newer') => {
+  const move = async (direction: 'older' | 'newer') => {
     if (!canMove(direction)) return
+    const discarded = dirty
+    if (dirty) {
+      slide(0, prefersReducedMotion() ? 0 : 180)
+      if (!await confirm({
+        title: 'Перейти к другому расходу?',
+        message: 'Несохранённые изменения будут потеряны. Сохраните их кнопкой ниже или подтвердите переход.',
+        confirmLabel: 'Отбросить и перейти',
+        danger: true,
+      })) return
+      draft.current = { ...EMPTY_FORM, currency: form.currency }
+    }
     const target = direction === 'older' ? olderNeighbour : newerNeighbour ?? null
-    if (!current) draft.current = form
+    if (!current && !discarded) draft.current = form
     const span = (trackRef.current?.clientWidth ?? 320) + CARD_GAP
     const destination = direction === 'older' ? span : -span
     const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches
@@ -472,7 +528,7 @@ export function EntryView({ userId, workspaceId, bootstrap, setBootstrap, curren
 
   const swipeStartAt = (clientX: number, clientY: number, touchId: number | null = null) => {
     // Пока лента доезжает до соседа, новый жест перехватывать нельзя: подмена карточки дёрнет её из-под пальца.
-    if (committing.current || categorySheet || currencySheet || dateSheet) return false
+    if (committing.current || saving || categorySheet || currencySheet || dateSheet) return false
     swipe.current = { x: clientX, y: clientY, lastX: clientX, active: false, touchId }
     return true
   }
@@ -499,7 +555,7 @@ export function EntryView({ userId, workspaceId, bootstrap, setBootstrap, curren
     swipe.current = null
     if (!start?.active) return false
     const dx = clientX - start.x
-    if (Math.abs(dx) > SWIPE_COMMIT && canMove(swipeDirection(dx))) move(swipeDirection(dx))
+    if (Math.abs(dx) > SWIPE_COMMIT && canMove(swipeDirection(dx))) void move(swipeDirection(dx))
     else slide(0, prefersReducedMotion() ? 0 : 220)
     return true
   }
@@ -601,14 +657,43 @@ export function EntryView({ userId, workspaceId, bootstrap, setBootstrap, curren
   const main = bootstrap.categories.filter((item) => !item.archivedAt && item.placement === 'main').sort((a,b) => a.sortOrder-b.sortOrder)
   const additional = bootstrap.categories.filter((item) => !item.archivedAt && item.placement === 'additional').sort((a,b) => a.sortOrder-b.sortOrder)
   const ready = Boolean(form.amount) && Number(form.amount) > 0
-  const currentCategory = current ? bootstrap.categories.find((item) => item.id === current.categoryId) : undefined
+  const selectedCategoryId = current ? editCategoryId ?? current.categoryId : null
+  const currentCategory = selectedCategoryId ? bootstrap.categories.find((item) => item.id === selectedCategoryId) : undefined
   // Категорию из «Другого» показываем на самой кнопке «Другое»: добавлять её в сетку нельзя — та переносится на вторую строку и дёргает раскладку.
   const otherFace = currentCategory && !main.some((item) => item.id === currentCategory.id) ? currentCategory : null
-  const dirty = current ? JSON.stringify(form) !== JSON.stringify(inputFromExpense(current, bootstrap.currencies)) : Boolean(form.amount || form.note || form.occurredAt)
+  const dirty = current ? JSON.stringify(form) !== JSON.stringify(inputFromExpense(current, bootstrap.currencies)) || selectedCategoryId !== current.categoryId : Boolean(form.amount || form.note || form.occurredAt)
+  const cancelEdit = () => {
+    if (!current || saving) return
+    const original = inputFromExpense(current, bootstrap.currencies)
+    synced.current = { id: current.id, form: original }
+    setForm(original)
+    setEditCategoryId(current.categoryId)
+    setShowNote(false)
+  }
+  const startNew = async () => {
+    if (dirty && !await confirm({
+      title: 'Начать новый расход?',
+      message: 'Несохранённые изменения текущего расхода будут потеряны.',
+      confirmLabel: 'Начать новый',
+      danger: true,
+    })) return
+    const next = { ...EMPTY_FORM, currency: getWorkspacePreference(userId, workspaceId, 'last-currency') || 'RSD' }
+    draft.current = next
+    synced.current = { id: '', form: next }
+    setCurrentId(null)
+    setForm(next)
+    setEditCategoryId(null)
+    setShowNote(false)
+    setCategorySheet(false)
+    setCurrencySheet(false)
+    setDateSheet(false)
+    tap(6)
+  }
   useEffect(() => { onDraftDirtyChange(dirty) }, [dirty, onDraftDirtyChange])
   useEffect(() => () => onDraftDirtyChange(false), [onDraftDirtyChange])
-  const categoryHint = !ready ? 'Сначала введите сумму' : dirty ? 'Выберите категорию, чтобы сохранить' : 'Категория'
+  const categoryHint = !ready ? 'Сначала введите сумму' : current ? dirty ? 'Проверьте изменения и сохраните' : 'Категория расхода' : 'Выберите категорию, чтобы сохранить'
   const physicalKey = (event: KeyboardEvent) => {
+    if (saving) return
     if(event.metaKey||event.ctrlKey||event.altKey)return
     if(document.querySelector('[aria-modal="true"]'))return
     if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement || event.target instanceof HTMLSelectElement) return
@@ -627,16 +712,20 @@ export function EntryView({ userId, workspaceId, bootstrap, setBootstrap, curren
     <div className="swipe-area">
       <div className="entry-track" ref={trackRef}>
         {olderFace && <div className="entry-card aside older" aria-hidden="true"><EntryCard face={olderFace}/></div>}
-        <div className="entry-card"><EntryCard face={liveFace} onDate={() => setDateSheet(true)} onCurrency={() => setCurrencySheet(true)}/></div>
+        <div className="entry-card"><EntryCard face={liveFace} disabled={saving} onDate={() => setDateSheet(true)} onCurrency={() => setCurrencySheet(true)}/></div>
         {newerFace && <div className="entry-card aside newer" aria-hidden="true"><EntryCard face={newerFace}/></div>}
       </div>
     </div>
-    <button ref={deleteRef} type="button" className={`icon-danger entry-delete${current ? '' : ' off'}`} onClick={remove} tabIndex={current ? 0 : -1} aria-hidden={!current} aria-label="Удалить расход"><TrashIcon/></button>
-    <Keypad onKey={key}/>
-    <div className={`categories${ready ? '' : ' locked'}${dirty ? ' unsaved' : ''}`}><p>{categoryHint}</p><div className="main-categories">{main.map((category) => <button type="button" disabled={!ready || saving} aria-pressed={category.id === current?.categoryId} key={category.id} className={category.id === current?.categoryId ? 'selected' : undefined} onClick={() => chooseCategory(category)}><i style={{backgroundColor:category.color ?? '#a9afa5'}}/><span>{category.name}</span></button>)}<button type="button" disabled={!ready || saving} aria-pressed={Boolean(otherFace)} className={otherFace ? 'selected' : undefined} onClick={() => setCategorySheet(true)}>{otherFace ? <i style={{backgroundColor:otherFace.color ?? '#a9afa5'}}/> : <i className="dots">•••</i>}<span>{otherFace ? otherFace.name : 'Другое'}</span></button></div></div>
-    <div className="note-block">{!showNote ? <button type="button" className="text-button" onClick={() => setShowNote(true)}>{form.note ? `✎ ${form.note}` : '＋ Добавить заметку'}</button> : <label>Заметка <span>необязательно</span><input autoFocus maxLength={200} placeholder="Например, IKEA" value={form.note} onFocus={(event) => { const node = event.currentTarget; requestAnimationFrame(() => node.scrollIntoView({ block: 'center' })) }} onChange={(e) => setForm({...form,note:e.target.value})}/></label>}</div>
+    {current && <div className="entry-actions">
+      <button type="button" className="icon-add" disabled={saving} onClick={() => void startNew()} aria-label="Новый расход"><PlusIcon/></button>
+      <button ref={deleteRef} type="button" className="icon-danger entry-delete" disabled={saving} onClick={() => void remove()} aria-label="Удалить расход"><TrashIcon/></button>
+    </div>}
+    <Keypad onKey={key} disabled={saving}/>
+    <div className={`categories${ready ? '' : ' locked'}${dirty ? ' unsaved' : ''}`}><p>{categoryHint}</p><div className="main-categories">{main.map((category) => <button type="button" disabled={!ready || saving} aria-pressed={category.id === selectedCategoryId} key={category.id} className={category.id === selectedCategoryId ? 'selected' : undefined} onClick={() => chooseCategory(category)}><i style={{backgroundColor:category.color ?? '#a9afa5'}}/><span>{category.name}</span></button>)}<button type="button" disabled={!ready || saving} aria-pressed={Boolean(otherFace)} className={otherFace ? 'selected' : undefined} onClick={() => setCategorySheet(true)}>{otherFace ? <i style={{backgroundColor:otherFace.color ?? '#a9afa5'}}/> : <i className="dots">•••</i>}<span>{otherFace ? otherFace.name : 'Другое'}</span></button></div></div>
+    {current && <div className="edit-actions"><button type="button" className="primary" disabled={!ready || !dirty || saving || !selectedCategoryId} onClick={() => selectedCategoryId && void submitExpense(selectedCategoryId)}>{saving ? 'Сохраняем…' : 'Сохранить изменения'}</button><button type="button" className="sheet-cancel" disabled={!dirty || saving} onClick={cancelEdit}>Отменить изменения</button></div>}
+    <div className="note-block">{!showNote ? <button type="button" className="text-button" disabled={saving} onClick={() => setShowNote(true)}>{form.note ? `✎ ${form.note}` : '＋ Добавить заметку'}</button> : <label>Заметка <span>необязательно</span><input autoFocus maxLength={200} disabled={saving} placeholder="Например, IKEA" value={form.note} onFocus={(event) => { const node = event.currentTarget; requestAnimationFrame(() => node.scrollIntoView({ block: 'center' })) }} onChange={(e) => setForm({...form,note:e.target.value})}/></label>}</div>
     {dateSheet && <DateSheet value={form.occurredAt} onClose={() => setDateSheet(false)} onPick={(value) => { setForm({ ...form, occurredAt: value }); setDateSheet(false) }}/>}
-    {categorySheet && <CategorySheet categories={additional} selectedId={current?.categoryId} onClose={() => setCategorySheet(false)} onPick={chooseCategory}/>}
+    {categorySheet && <CategorySheet categories={additional} selectedId={selectedCategoryId ?? undefined} onClose={() => setCategorySheet(false)} onPick={chooseCategory}/>}
     {currencySheet && <CurrencySheet
       currencies={bootstrap.currencies}
       selected={form.currency}
@@ -648,15 +737,17 @@ export function EntryView({ userId, workspaceId, bootstrap, setBootstrap, curren
       }}
     />}
     {toast && <Toast toast={toast} onDismiss={dismiss}/>}
+    {confirmation}
   </section>
 }
 
-function HistoryView({ userId, workspaceId, bootstrap, setBootstrap, edit, refreshPending }: {
+export function HistoryView({ userId, workspaceId, bootstrap, setBootstrap, edit, createNew, refreshPending }: {
   userId: string
   workspaceId: string
   bootstrap: Bootstrap
   setBootstrap: React.Dispatch<React.SetStateAction<Bootstrap>>
   edit: (id: string) => void
+  createNew: () => void
   refreshPending: () => void
 }) {
   const [query, setQuery] = useState('')
@@ -664,7 +755,22 @@ function HistoryView({ userId, workspaceId, bootstrap, setBootstrap, edit, refre
   const [deleting, setDeleting] = useState(false)
   const { toast, notify, dismiss } = useToast()
   const categoryMap = new Map(bootstrap.categories.map((category) => [category.id, category]))
-  const expenses = bootstrap.expenses.filter((item) => !item.deletedAt && `${categoryMap.get(item.categoryId)?.name} ${item.currency}`.toLowerCase().includes(query.toLowerCase())).sort((a,b) => b.occurredAt.localeCompare(a.occurredAt))
+  const activeExpenses = bootstrap.expenses.filter((item) => !item.deletedAt)
+  const normalizedQuery = query.trim().toLocaleLowerCase('ru-RU')
+  const expenses = activeExpenses.filter((item) => {
+    const dateKey = localDateKey(item.occurredAt)
+    const date = new Date(item.occurredAt)
+    const searchText = [
+      categoryMap.get(item.categoryId)?.name,
+      item.currency,
+      item.note,
+      money(item.amountMinor, item.currency, bootstrap.currencies),
+      String(item.amountMinor / 10 ** (bootstrap.currencies.find((currency) => currency.code === item.currency)?.decimals ?? 2)).replace('.', ','),
+      formatHistoryDate(dateKey),
+      date.toLocaleDateString('ru-RU', { timeZone: 'Europe/Belgrade' }),
+    ].filter(Boolean).join(' ').toLocaleLowerCase('ru-RU')
+    return !normalizedQuery || searchText.includes(normalizedQuery)
+  }).sort((a,b) => b.occurredAt.localeCompare(a.occurredAt))
   const grouped = expenses.reduce<Record<string, Expense[]>>((result, item) => { (result[localDateKey(item.occurredAt)] ||= []).push(item); return result }, {})
   const groups = Object.entries(grouped)
   const toggle = (id: string) => setSelected((current) => {
@@ -706,19 +812,23 @@ function HistoryView({ userId, workspaceId, bootstrap, setBootstrap, edit, refre
       setDeleting(false)
     }
   }
-  return <section className="page"><header className="page-header history-title"><div><p className="eyebrow">Все записи</p><h1>История</h1></div><button type="button" className={`icon-danger history-delete${selected.size ? '' : ' off'}`} onClick={removeSelected} disabled={deleting} tabIndex={selected.size ? 0 : -1} aria-hidden={!selected.size} aria-label={`Удалить выбранные расходы: ${selected.size}`}><TrashIcon/></button></header><input className="search" type="search" placeholder="Категория или валюта" value={query} onChange={(e) => setQuery(e.target.value)}/>
-    <div className="history-list">{groups.map(([date, items]) => <div key={date} className="history-day"><div className="history-date"><span>{new Date(`${date}T12:00:00Z`).toLocaleDateString('ru-RU',{timeZone:'Europe/Belgrade',day:'numeric',month:'long'})}</span><b>{items?.length}</b></div>{items?.map((expense) => { const category=categoryMap.get(expense.categoryId); const checked=selected.has(expense.id); return <div key={expense.id} className={`history-expense${checked ? ' selected' : ''}`}><label className="expense-check" aria-label={`Выбрать расход ${category?.name || ''}`}><input type="checkbox" checked={checked} onChange={()=>toggle(expense.id)}/><span/></label><button type="button" className="history-row" onClick={() => edit(expense.id)}><i style={{backgroundColor:category?.color ?? '#a9afa5'}}/><span><b>{category?.name || 'Архивная категория'}</b><small>{new Date(expense.occurredAt).toLocaleTimeString('ru-RU',{timeZone:'Europe/Belgrade',hour:'2-digit',minute:'2-digit'})}{expense.note ? ` · ${expense.note}`:''}</small></span><strong>{money(expense.amountMinor,expense.currency,bootstrap.currencies)}</strong>{expense.pending && <em aria-label="Ожидает синхронизации">●</em>}</button></div>})}</div>)}</div>
-    {!groups.length && <div className="list-empty" role="status"><span>{query ? 'Ничего не найдено' : 'История пока пуста'}</span><p>{query ? 'Попробуйте изменить запрос.' : 'Сохранённые расходы появятся здесь.'}</p></div>}
+  return <section className="page"><header className="page-header history-title"><div><p className="eyebrow">Все записи</p><h1>История</h1></div><button type="button" className={`icon-danger history-delete${selected.size ? '' : ' off'}`} onClick={removeSelected} disabled={deleting} tabIndex={selected.size ? 0 : -1} aria-hidden={!selected.size} aria-label={`Удалить выбранные расходы: ${selected.size}`}><TrashIcon/></button></header>
+    {activeExpenses.length > 0 && <input className="search" type="search" placeholder="Сумма, заметка, дата или категория" value={query} onChange={(e) => setQuery(e.target.value)}/>}
+    <div className="history-list">{groups.map(([date, items]) => <div key={date} className="history-day"><div className="history-date"><span>{formatHistoryDate(date)}</span><b>{items?.length}</b></div>{items?.map((expense) => { const category=categoryMap.get(expense.categoryId); const checked=selected.has(expense.id); return <div key={expense.id} className={`history-expense${checked ? ' selected' : ''}`}><label className="expense-check" aria-label={`Выбрать расход ${category?.name || ''}`}><input type="checkbox" checked={checked} onChange={()=>toggle(expense.id)}/><span/></label><button type="button" className="history-row" onClick={() => edit(expense.id)}><i style={{backgroundColor:category?.color ?? '#a9afa5'}}/><span><b>{category?.name || 'Архивная категория'}</b><small>{new Date(expense.occurredAt).toLocaleTimeString('ru-RU',{timeZone:'Europe/Belgrade',hour:'2-digit',minute:'2-digit'})}{expense.note ? ` · ${expense.note}`:''}</small></span><strong>{money(expense.amountMinor,expense.currency,bootstrap.currencies)}</strong>{expense.pending && <em aria-label="Ожидает синхронизации">●</em>}</button></div>})}</div>)}</div>
+    {!groups.length && <div className="list-empty" role="status"><span>{query ? 'Ничего не найдено' : 'История пока пуста'}</span><p>{query ? 'Попробуйте изменить запрос.' : 'Добавьте первый расход — он сразу появится здесь.'}</p>{!query && <button type="button" className="primary history-empty-action" onClick={createNew}>Добавить первый расход</button>}</div>}
     {toast&&<Toast toast={toast} onDismiss={dismiss}/>}
   </section>
 }
 
-function AnalyticsView({ userId, workspaceId, bootstrap, theme, online }: { userId: string; workspaceId: string; bootstrap: Bootstrap; theme: Theme; online: boolean }) {
+export function AnalyticsView({ userId, workspaceId, bootstrap, theme, online }: { userId: string; workspaceId: string; bootstrap: Bootstrap; theme: Theme; online: boolean }) {
   const [target, setTarget] = useState(getWorkspacePreference(userId, workspaceId, 'analytics-currency') || 'RSD')
   const [period, setPeriod] = useState<AnalyticsPeriod>('week')
   const [weekOffset, setWeekOffset] = useState(0)
   const [monthOffset, setMonthOffset] = useState(0)
-  const [categoryByPeriod, setCategoryByPeriod] = useState<Record<AnalyticsPeriod,string|null>>({week:'products',month:null})
+  const [categoryByPeriod, setCategoryByPeriod] = useState<Record<AnalyticsPeriod,string|null>>({
+    week:getWorkspacePreference(userId, workspaceId, 'analytics-week-category') || null,
+    month:getWorkspacePreference(userId, workspaceId, 'analytics-month-category') || null,
+  })
   const [currencySheet, setCurrencySheet] = useState(false)
   const [remote,setRemote]=useState<{key:string;data:AnalyticsData;previousTotalMinor:number|null}|null>(null)
   const [analyticsOffline,setAnalyticsOffline]=useState(!online)
@@ -741,7 +851,7 @@ function AnalyticsView({ userId, workspaceId, bootstrap, theme, online }: { user
   const requestKey=`${expenseRevision}:${from}:${analyticsTo}:${target}:${period}:${categoryId??'all'}`
   const fallback=useMemo(()=>fallbackAnalytics(bootstrap,target,from,analyticsTo,categoryId),[bootstrap,target,from,analyticsTo,categoryId])
   const previousFallback=useMemo(()=>fallbackAnalytics(bootstrap,target,previousWeek.from,previousAnalyticsTo,categoryId),[bootstrap,target,previousWeek.from,previousAnalyticsTo,categoryId])
-  useEffect(()=>{let active=true;const controller=new AbortController();setAnalyticsError(null);if(!online){setAnalyticsOffline(true);setAnalyticsLoading(false);setRemote(null);return()=>controller.abort()}setAnalyticsLoading(true);Promise.all([getAnalytics(workspaceId,from,analyticsTo,target,categoryId??undefined,controller.signal),period==='week'?getAnalytics(workspaceId,previousWeek.from,previousAnalyticsTo,target,categoryId??undefined,controller.signal):Promise.resolve(null)]).then(([result,previous])=>{if(active){setRemote({key:requestKey,data:result,previousTotalMinor:previous?.totalMinor??null});setAnalyticsOffline(false);setAnalyticsLoading(false)}}).catch((reason)=>{if(active&&!controller.signal.aborted){setRemote(null);setAnalyticsOffline(false);setAnalyticsError(reason instanceof ApiError?reason.message:'Не удалось обновить аналитику');setAnalyticsLoading(false)}});return()=>{active=false;controller.abort()}},[workspaceId,from,analyticsTo,target,categoryId,period,previousWeek.from,previousAnalyticsTo,requestKey,online,retryEpoch])
+  useEffect(()=>{let active=true;const controller=new AbortController();setAnalyticsError(null);if(!online){setAnalyticsOffline(true);setAnalyticsLoading(false);setRemote(null);return()=>controller.abort()}setAnalyticsLoading(true);Promise.all([getAnalytics(workspaceId,from,analyticsTo,target,categoryId??undefined,controller.signal),period==='week'?getAnalytics(workspaceId,previousWeek.from,previousAnalyticsTo,target,categoryId??undefined,controller.signal):Promise.resolve(null)]).then(([result,previous])=>{if(active){setRemote({key:requestKey,data:result,previousTotalMinor:previous?.totalMinor??null});setAnalyticsOffline(false);setAnalyticsLoading(false)}}).catch((reason)=>{if(active&&!controller.signal.aborted){setRemote(null);setAnalyticsOffline(true);setAnalyticsError(reason instanceof ApiError?reason.message:'Сервер аналитики недоступен');setAnalyticsLoading(false)}});return()=>{active=false;controller.abort()}},[workspaceId,from,analyticsTo,target,categoryId,period,previousWeek.from,previousAnalyticsTo,requestKey,online,retryEpoch])
   const data=remote?.key===requestKey?remote.data:fallback
   const previousTotalMinor=remote?.key===requestKey?remote.previousTotalMinor:period==='week'?previousFallback.totalMinor:null
   const decimals=bootstrap.currencies.find((currency)=>currency.code===target)?.decimals??2
@@ -765,11 +875,11 @@ function AnalyticsView({ userId, workspaceId, bootstrap, theme, online }: { user
   const chartGrid=theme==='dark'?'rgba(255,255,255,.06)':'rgba(32,37,31,.06)'
   return <section className="page analytics"><header className="page-header analytics-title"><div><p className="eyebrow">{period==='week'?'Расходы за неделю':'Расходы за месяц'} · {selectedCategoryName}</p><h1>{new Intl.NumberFormat('ru-RU',{maximumFractionDigits:0}).format(total)} <small>{target}</small></h1>{period==='week'&&<p className="analytics-comparison">{weekComparisonLabel(total,previousTotal,currentWeekPartial)}</p>}</div><button className="currency-choice" onClick={()=>setCurrencySheet(true)}>{target}⌄</button></header>
     <div className="analytics-period" role="group" aria-label="Период аналитики"><button type="button" aria-pressed={period==='week'} className={period==='week'?'selected':''} onClick={()=>setPeriod('week')}>Неделя</button><button type="button" aria-pressed={period==='month'} className={period==='month'?'selected':''} onClick={()=>setPeriod('month')}>Месяц</button></div>
-    <label className="analytics-category"><span>Категория</span><select aria-label="Категория расходов" value={categoryId??''} onChange={(event)=>setCategoryByPeriod((current)=>({...current,[period]:event.target.value||null}))}><option value="">Все категории</option>{activeCategories.map((category)=><option key={category.id} value={category.id}>{category.name}</option>)}</select></label>
+    <label className="analytics-category"><span>Категория</span><select aria-label="Категория расходов" value={categoryId??''} onChange={(event)=>{const value=event.target.value||null;setCategoryByPeriod((current)=>({...current,[period]:value}));setWorkspacePreference(userId,workspaceId,period==='week'?'analytics-week-category':'analytics-month-category',value??'')}}><option value="">Все категории</option>{activeCategories.map((category)=><option key={category.id} value={category.id}>{category.name}</option>)}</select></label>
     {period==='week'&&<div className="week-navigator"><button type="button" onClick={()=>setWeekOffset((value)=>value-1)} aria-label="Предыдущая неделя">‹</button><div><b>{weekOffset===0?'Текущая неделя':weekOffset===-1?'Прошлая неделя':'Выбранная неделя'}</b><span>{weekRange}</span></div><button type="button" onClick={()=>setWeekOffset((value)=>Math.min(0,value+1))} disabled={weekOffset===0} aria-label="Следующая неделя">›</button></div>}
     {period==='month'&&<div className="week-navigator"><button type="button" onClick={()=>setMonthOffset((value)=>value-1)} aria-label="Предыдущий месяц">‹</button><div><b>{monthOffset===0?'Текущий месяц':monthOffset===-1?'Прошлый месяц':'Выбранный месяц'}</b><span>{monthLabel}</span></div><button type="button" onClick={()=>setMonthOffset((value)=>Math.min(0,value+1))} disabled={monthOffset===0} aria-label="Следующий месяц">›</button></div>}
     <div className="analytics-stats"><div><span>Среднее в день</span><strong>{formatAnalyticsAmount(total/elapsedDays,target)}</strong></div><div><span>Операций</span><strong>{data.expenseCount}</strong></div></div>
-    <div className={`rate-caption${analyticsError?' error':''}`} role={analyticsError?'alert':'status'}>{analyticsLoading?'Обновляем аналитику…':analyticsError?<>{analyticsError} <button type="button" onClick={()=>setRetryEpoch((value)=>value+1)}>Повторить</button></>:analyticsOffline?'Офлайн-оценка по последнему сохранённому курсу':data.rateDate?`Исторические курсы с ${new Date(`${data.rateDate}T12:00:00Z`).toLocaleDateString('ru-RU')}`:'Курсы обновляются'}{data.missingCurrencies.length?` · без ${data.missingCurrencies.join(', ')}`:''}</div>
+    <div className={`rate-caption${analyticsOffline?' cached':''}`} role="status">{analyticsLoading?'Обновляем аналитику…':analyticsOffline?<>{analyticsError?'Не удалось обновить. ':''}Показаны сохранённые данные на {new Date(bootstrap.serverTime).toLocaleString('ru-RU')}{online&&<button type="button" onClick={()=>setRetryEpoch((value)=>value+1)}>Повторить</button>}</>:data.rateDate?`Исторические курсы с ${new Date(`${data.rateDate}T12:00:00Z`).toLocaleDateString('ru-RU')}`:'Курсы обновляются'}{data.missingCurrencies.length?` · без ${data.missingCurrencies.join(', ')}`:''}</div>
     <div className="chart-card"><div><h2>Динамика</h2><p>{period==='week'?'Понедельник — воскресенье':'По дням выбранного месяца'}</p></div>{data.convertedCount?<div className="line-chart"><Suspense fallback={<ChartSkeleton/>}><AnalyticsChart kind="line" labels={days.map((d)=>new Date(`${d}T12:00`).toLocaleDateString('ru-RU',period==='week'?{weekday:'short'}:{day:'numeric',month:'short'}))} values={byDay} color={chartColor} fillColor={theme==='dark'?'rgba(154,181,142,.16)':'rgba(117,141,105,.12)'} pointRadius={period==='week'?3:0} target={target} textColor={chartText} gridColor={chartGrid} maxTicksLimit={period==='week'?7:6}/></Suspense></div>:<AnalyticsEmpty>{data.expenseCount?'Нет курса для выбранной валюты':'В этом периоде ещё нет расходов'}</AnalyticsEmpty>}</div>
     <div className={`chart-card${byCategory.length?' split':''}`}><div><h2>Категории</h2><p>{period==='week'?'За выбранную неделю':'За выбранный месяц'}</p></div>{byCategory.length?<><div className="donut-wrap"><Suspense fallback={<ChartSkeleton/>}><AnalyticsChart kind="doughnut" labels={byCategory.map((x)=>x.name)} values={byCategory.map((x)=>x.value)} colors={byCategory.map((x)=>x.color||'#a9afa5')} target={target}/></Suspense><span>{formatCompactNumber(total)}</span></div><div className="legend">{byCategory.slice(0,5).map((x)=><div key={x.categoryId}><i style={{background:x.color||'#a9afa5'}}/><span>{x.name}</span><span className="legend-value"><b>{formatAnalyticsAmount(x.value,target)}</b><small>{Math.round(x.value/total*100)||0}%</small></span></div>)}{byCategory.length>5&&<div className="legend-rest"><i/><span>Остальные</span><span className="legend-value"><b>{formatAnalyticsAmount(byCategory.slice(5).reduce((sum,item)=>sum+item.value,0),target)}</b><small>{byCategory.length-5}</small></span></div>}</div></>:<AnalyticsEmpty>Категории появятся после первого расхода</AnalyticsEmpty>}</div>
     {period==='month'&&<div className="chart-card"><div><h2>По дням недели</h2><p>Средние траты за календарный день</p></div>{data.convertedCount?<div className="bar-chart"><Suspense fallback={<ChartSkeleton/>}><AnalyticsChart kind="bar" labels={['Пн','Вт','Ср','Чт','Пт','Сб','Вс']} values={weekdays} color={chartColor} target={target} textColor={chartText} gridColor={chartGrid}/></Suspense></div>:<AnalyticsEmpty>Недостаточно данных для сравнения</AnalyticsEmpty>}</div>}
@@ -823,6 +933,7 @@ function formatWeekRange(from:string,to:string) {
 
 function AccessLinkSheet({ link, onClose, onRevoke }: { link: { title: string; url: string; expiresAt?: string; revoke?: () => Promise<void> }; onClose: () => void; onRevoke: (reason: unknown) => void }) {
   const dialogRef = useDialog(onClose)
+  const { confirm, confirmation } = useConfirm()
   const [feedback, setFeedback] = useState('')
   const [feedbackError, setFeedbackError] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -841,6 +952,7 @@ function AccessLinkSheet({ link, onClose, onRevoke }: { link: { title: string; u
   }
   const revoke = async () => {
     if (!link.revoke || busy) return
+    if (!await confirm({ title: 'Отозвать ссылку?', message: 'Ссылка сразу перестанет работать.', confirmLabel: 'Отозвать', danger: true })) return
     setBusy(true)
     try { await link.revoke() }
     catch (reason) { onRevoke(reason); setBusy(false) }
@@ -853,7 +965,7 @@ function AccessLinkSheet({ link, onClose, onRevoke }: { link: { title: string; u
     <button type="button" className="primary" onClick={() => void copy()}>Скопировать</button>
     <button type="button" className="sheet-cancel" onClick={() => void share()}>Поделиться</button>
     {link.revoke && <button type="button" className="danger-link" disabled={busy} onClick={() => void revoke()}>{busy ? 'Отзываем…' : 'Отозвать'}</button>}
-  </section></div>
+  </section>{confirmation}</div>
 }
 
 function AccessSettings({ user, workspace, pendingCount, online, onSession, onCreateWorkspace, onNotice, onBusyChange }: {
@@ -876,10 +988,12 @@ function AccessSettings({ user, workspace, pendingCount, online, onSession, onCr
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
   const [busyAction, setBusyAction] = useState<string | null>(null)
+  const [workspaceNameState, setWorkspaceNameState] = useState<'idle'|'dirty'|'saving'|'saved'|'error'>('idle')
+  const [displayNameState, setDisplayNameState] = useState<'idle'|'dirty'|'saving'|'saved'|'error'>('idle')
   const { confirm, confirmation } = useConfirm()
 
-  useEffect(() => { setWorkspaceName(workspace.name) }, [workspace.id, workspace.name])
-  useEffect(() => { setName(user.user.displayName) }, [user.user.displayName])
+  useEffect(() => { setWorkspaceName(workspace.name); setWorkspaceNameState('idle') }, [workspace.id, workspace.name])
+  useEffect(() => { setName(user.user.displayName); setDisplayNameState('idle') }, [user.user.displayName])
   useEffect(() => {
     onBusyChange(Boolean(busyAction))
     return () => onBusyChange(false)
@@ -907,8 +1021,7 @@ function AccessSettings({ user, workspace, pendingCount, online, onSession, onCr
       setLoading(false)
     } catch (reason) {
       if (signal?.aborted) return
-      setLoading(false); setLoadError('Не удалось обновить данные доступа.')
-      showError(reason, 'Не удалось обновить настройки доступа')
+      setLoading(false); setLoadError(reason instanceof ApiError || reason instanceof Error ? reason.message : 'Не удалось обновить данные доступа.')
     }
   }, [online, showError, workspace.id, workspace.role])
 
@@ -971,34 +1084,44 @@ function AccessSettings({ user, workspace, pendingCount, online, onSession, onCr
   const saveWorkspaceName = async () => {
     const trimmed = workspaceName.trim()
     if (workspace.role !== 'owner' || trimmed === workspace.name) return
-    if (!trimmed) { setWorkspaceName(workspace.name); onNotice('Название пространства не может быть пустым.', true); return }
-    await runAction('workspace-name', async () => {
+    if (!trimmed) { setWorkspaceName(workspace.name); setWorkspaceNameState('error'); return }
+    if (busyAction) return
+    setBusyAction('workspace-name'); setWorkspaceNameState('saving')
+    try {
       await renameWorkspace(workspace.id, trimmed, workspace.version)
       await onSession(await getSession())
-    }, 'Не удалось переименовать пространство', 'Название пространства сохранено')
+      setWorkspaceNameState('saved')
+    } catch {
+      setWorkspaceName(workspace.name); setWorkspaceNameState('error')
+    } finally { setBusyAction(null) }
   }
 
   const saveDisplayName = async () => {
     const trimmed = name.trim()
     if (trimmed === user.user.displayName) return
-    if (!trimmed) { setName(user.user.displayName); onNotice('Имя не может быть пустым.', true); return }
-    await runAction('display-name', async () => {
+    if (!trimmed) { setName(user.user.displayName); setDisplayNameState('error'); return }
+    if (busyAction) return
+    setBusyAction('display-name'); setDisplayNameState('saving')
+    try {
       await updateProfile(trimmed)
       await onSession(await getSession())
-    }, 'Не удалось изменить имя', 'Имя сохранено')
+      setDisplayNameState('saved')
+    } catch {
+      setName(user.user.displayName); setDisplayNameState('error')
+    } finally { setBusyAction(null) }
   }
 
   return <>
     <div className="settings-group">
-      <h2>Пространство</h2>
-      <label>Название<input value={workspaceName} maxLength={80} disabled={workspace.role !== 'owner' || !online || busyAction === 'workspace-name'} aria-busy={busyAction === 'workspace-name'} onChange={(event) => setWorkspaceName(event.target.value)} onBlur={() => void saveWorkspaceName()}/></label>
+      <h2>Общие настройки пространства</h2>
+      <label>Название<input value={workspaceName} maxLength={80} disabled={workspace.role !== 'owner' || !online || busyAction === 'workspace-name'} aria-busy={busyAction === 'workspace-name'} onChange={(event) => {setWorkspaceName(event.target.value);setWorkspaceNameState(event.target.value.trim()===workspace.name?'idle':'dirty')}} onBlur={() => void saveWorkspaceName()}/><span className={`field-state ${workspaceNameState}`}>{workspaceNameState==='dirty'?'Сохранится после выхода из поля':workspaceNameState==='saving'?'Сохраняем…':workspaceNameState==='saved'?'Сохранено':workspaceNameState==='error'?'Не удалось сохранить — возвращено прежнее название':''}</span></label>
       <small>{workspace.role === 'owner' ? 'Вы владелец пространства' : 'Вы участник пространства'}</small>
       <button type="button" className="sheet-cancel" disabled={!online || Boolean(busyAction)} onClick={onCreateWorkspace}>Создать новое пространство</button>
     </div>
     <div className="settings-group">
       <h2>Участники</h2>
       {loading && <p className="management-state" role="status">Загружаем участников…</p>}
-      {loadError && <p className="management-state" role="status">{loadError}</p>}
+      {loadError && <p className="management-state" role="status"><span>{loadError}</span>{online&&<button type="button" onClick={()=>void refresh()}>Повторить</button>}</p>}
       {!loading && !loadError && !members.length && <p className="management-state" role="status">Участников пока нет.</p>}
       {members.map((member) => <div className="management-row" key={member.userId}>
         <span>{member.displayName}<small>{member.role === 'owner' ? 'Владелец' : 'Участник'}</small></span>
@@ -1016,7 +1139,7 @@ function AccessSettings({ user, workspace, pendingCount, online, onSession, onCr
       {workspace.role === 'owner' ? <>
         <button type="button" className="sheet-cancel" disabled={!online || Boolean(busyAction)} onClick={() => void invite()}>{busyAction === 'invite' ? 'Создаём приглашение…' : 'Пригласить человека'}</button>
         {!loading && !loadError && !invitations.length && <p className="management-state" role="status">Активных приглашений нет.</p>}
-        {invitations.map((item) => <div className="management-row" key={item.id}><span>Активное приглашение<small>до {new Date(item.expiresAt).toLocaleString('ru-RU')}</small></span><button type="button" disabled={!online || Boolean(busyAction)} onClick={() => void runAction(`invite-${item.id}`, async () => { await revokeInvitation(workspace.id, item.id); await refresh() }, 'Не удалось отозвать приглашение', 'Приглашение отозвано')}>Отозвать</button></div>)}
+        {invitations.map((item) => <div className="management-row" key={item.id}><span>Активное приглашение<small>до {new Date(item.expiresAt).toLocaleString('ru-RU')}</small></span><button type="button" disabled={!online || Boolean(busyAction)} onClick={() => void (async()=>{if(!await confirm({title:'Отозвать приглашение?',message:'Ссылка сразу перестанет работать.',confirmLabel:'Отозвать',danger:true}))return;await runAction(`invite-${item.id}`, async () => { await revokeInvitation(workspace.id, item.id); await refresh() }, 'Не удалось отозвать приглашение', 'Приглашение отозвано')})()}>{busyAction===`invite-${item.id}`?'Отзываем…':'Отозвать'}</button></div>)}
       </> : <button type="button" className="danger-link" disabled={!online || Boolean(busyAction)} onClick={() => {
         const warning = pendingCount ? `Есть несинхронизированные изменения: ${pendingCount}. Выйти и удалить их с этого устройства?` : 'Выйти из пространства?'
         void (async () => {
@@ -1027,13 +1150,13 @@ function AccessSettings({ user, workspace, pendingCount, online, onSession, onCr
     </div>
     <div className="settings-group">
       <h2>Доступ</h2>
-      <label>Ваше имя<input value={name} maxLength={80} disabled={!online || busyAction === 'display-name'} aria-busy={busyAction === 'display-name'} onChange={(event) => setName(event.target.value)} onBlur={() => void saveDisplayName()}/></label>
+      <label>Ваше имя<input value={name} maxLength={80} disabled={!online || busyAction === 'display-name'} aria-busy={busyAction === 'display-name'} onChange={(event) => {setName(event.target.value);setDisplayNameState(event.target.value.trim()===user.user.displayName?'idle':'dirty')}} onBlur={() => void saveDisplayName()}/><span className={`field-state ${displayNameState}`}>{displayNameState==='dirty'?'Сохранится после выхода из поля':displayNameState==='saving'?'Сохраняем…':displayNameState==='saved'?'Сохранено':displayNameState==='error'?'Не удалось сохранить — возвращено прежнее имя':''}</span></label>
       <button type="button" className="sheet-cancel" disabled={!online || Boolean(busyAction)} onClick={() => void device()}>{busyAction === 'device' ? 'Готовим ссылку…' : 'Подключить моё устройство'}</button>
       {loading && <p className="management-state" role="status">Загружаем устройства…</p>}
       {!loading && !loadError && !devices.length && <p className="management-state" role="status">Подключённых устройств пока нет.</p>}
       {devices.map((deviceItem) => <div className="management-row" key={deviceItem.id}>
         <span>{deviceItem.label}<small>{deviceItem.current ? 'Это устройство' : `Активность: ${new Date(deviceItem.lastSeenAt).toLocaleString('ru-RU')}`}</small></span>
-        {!deviceItem.current && <button type="button" disabled={!online || Boolean(busyAction)} onClick={() => void runAction(`device-${deviceItem.id}`, async () => { await revokeSession(deviceItem.id); await refresh() }, 'Не удалось отключить сессию', 'Устройство отключено')}>Отключить</button>}
+        {!deviceItem.current && <button type="button" disabled={!online || Boolean(busyAction)} onClick={() => void (async()=>{if(!await confirm({title:'Отключить устройство?',message:`Устройство «${deviceItem.label}» потеряет доступ к профилю.`,confirmLabel:'Отключить',danger:true}))return;await runAction(`device-${deviceItem.id}`, async () => { await revokeSession(deviceItem.id); await refresh() }, 'Не удалось отключить сессию', 'Устройство отключено')})()}>{busyAction===`device-${deviceItem.id}`?'Отключаем…':'Отключить'}</button>}
       </div>)}
       {!user.user.recoveryConfigured && <p className="page-intro device-note">Восстановление пока не настроено. Без сохранённой ссылки доступ нельзя будет вернуть после потери всех устройств.</p>}
       <button type="button" className="primary" disabled={!online || Boolean(busyAction)} onClick={() => void rotateRecovery()}>{busyAction === 'recovery' ? 'Готовим ссылку…' : user.user.recoveryConfigured ? 'Создать новую ссылку восстановления' : 'Настроить восстановление'}</button>
@@ -1092,7 +1215,7 @@ export function SettingsView({ user, workspace, workspaceId, bootstrap, setBoots
     setMoving(null)
   }
   const groups:[Category['placement'],string][]=[['main','Основные'],['additional','Дополнительные']]
-  return <section className="page"><header className="page-header settings-title"><div><p className="eyebrow">Настройки</p><h1>Пространство</h1></div></header><AccessSettings user={user} workspace={workspace} pendingCount={pendingCount} online={online} onSession={onSession} onCreateWorkspace={onCreateWorkspace} onNotice={accessNotice} onBusyChange={setAccessBusy}/><p className="page-intro">Настройте быстрые кнопки и их порядок. Категории меняются только онлайн; архивные останутся в истории.</p>
+  return <section className="page"><header className="page-header settings-title"><div><p className="eyebrow">{workspace.name}</p><h1>Настройки</h1></div></header><AccessSettings user={user} workspace={workspace} pendingCount={pendingCount} online={online} onSession={onSession} onCreateWorkspace={onCreateWorkspace} onNotice={accessNotice} onBusyChange={setAccessBusy}/><p className="page-intro">Настройте быстрые кнопки и их порядок. Категории меняются только онлайн; архивные останутся в истории.</p>
     {notice&&<Toast toast={notice} onDismiss={hideNotice}/>}<div className="settings-group"><button type="button" className="primary" disabled={!online} onClick={()=>setAdding(true)}>Новая категория</button></div>
     {groups.map(([placement,title])=>{const items=bootstrap.categories.filter((x)=>x.placement===placement&&!x.archivedAt).sort((a,b)=>a.sortOrder-b.sortOrder);return <div className="settings-group" key={placement}><h2>{title}</h2>{items.map((category,index)=><div className="category-row" key={category.id}><i style={{background:category.color ?? '#a9afa5'}}/><button type="button" className="category-name" disabled={!online||Boolean(moving)} onClick={()=>setEditing(category)}>{category.name}</button><button type="button" disabled={!online||Boolean(moving)||index===0} onClick={()=>void move(category,-1)} aria-label={`Поднять категорию ${category.name}`}>↑</button><button type="button" disabled={!online||Boolean(moving)||index===items.length-1} onClick={()=>void move(category,1)} aria-label={`Опустить категорию ${category.name}`}>↓</button></div>)}{!items.length&&<p className="management-state" role="status">Категорий в этом разделе пока нет.</p>}</div>})}
     {(editing||adding)&&<CategoryEditor category={editing} colors={colors} onClose={()=>{setEditing(null);setAdding(false)}} onSave={save}/>}
@@ -1623,8 +1746,14 @@ export default function App({ capability = null }: { capability?: CapabilityInte
     await refresh()
   }
 
-  const confirmDraftDiscard=async()=>!draftDirty||confirm({title:'Отбросить черновик?',message:'Несохранённая сумма, категория и заметка будут потеряны.',confirmLabel:'Отбросить',danger:true})
+  const confirmDraftDiscard=async()=>!draftDirty||confirm({title:'Отбросить изменения?',message:'Несохранённая сумма, категория, дата и заметка будут потеряны.',confirmLabel:'Отбросить',danger:true})
   const openCreate=async()=>{if(await confirmDraftDiscard()){setSwitchOpen(false);setCreateOpen(true)}}
+  const openExpense=async(id:string|null)=>{
+    if(id!==currentId&&!await confirmDraftDiscard())return
+    setCurrentId(id)
+    setDraftDirty(false)
+    setTab('entry')
+  }
   const switchWorkspace=async(id:string)=>{
     if(id!==stateRef.current.activeWorkspaceId&&!await confirmDraftDiscard())return
     if(id!==stateRef.current.activeWorkspaceId){updateState((value)=>setActiveWorkspace(value,id));setCurrentId(null);setDraftDirty(false);setTab('entry')}
@@ -1669,16 +1798,17 @@ export default function App({ capability = null }: { capability?: CapabilityInte
   const workspace=auth&&workspaceId?auth.workspaces.find((item)=>item.id===workspaceId):undefined
   if(!auth||!workspaceId||!workspace||!bootstrap)return <div className="splash"><div className="brand-mark">m</div><p role={runtime?.status==='error'?'alert':'status'}>{runtime?.status==='error'?'Не удалось открыть пространство':'Загружаем пространство…'}</p>{error&&<><p className="form-error" role="alert">{error}</p><button type="button" className="sheet-cancel" onClick={()=>void refresh(true)}>Повторить</button></>}</div>
   const stats=runtime.outbox
+  const serverAvailable=online&&!runtime.offline
   return <div className="app-shell" key={workspaceId}>
-    <header className="workspace-header"><button type="button" className="workspace-name-button" onClick={()=>setSwitchOpen(true)}><span>{workspace.name}</span><span aria-hidden="true">⌄</span></button><div className="workspace-header-actions">{updateWaiting&&<button type="button" className="update-button" onClick={activateUpdate}>Обновить</button>}{stats.conflicts||stats.failed?<button type="button" className="sync-status attention" onClick={()=>setIssuesOpen(true)} aria-label={`Нужна проверка: ${stats.conflicts+stats.failed}`}><span>Нужна проверка · {stats.conflicts+stats.failed}</span><i/></button>:!online?<div className="sync-status offline" role="status"><span>{stats.total?`Офлайн · ${stats.total}`:'Офлайн'}</span><i/></div>:stats.total?<div className="sync-status" role="status" aria-live="polite"><span>Отправляем · {stats.total}</span><i/></div>:null}</div></header>
+    <header className="workspace-header"><button type="button" className="workspace-name-button" onClick={()=>setSwitchOpen(true)}><span>{workspace.name}</span><span aria-hidden="true">⌄</span></button><div className="workspace-header-actions">{updateWaiting&&<button type="button" className="update-button" onClick={activateUpdate}>Обновить</button>}{stats.conflicts||stats.failed?<button type="button" className="sync-status attention" onClick={()=>setIssuesOpen(true)} aria-label={`Нужна проверка: ${stats.conflicts+stats.failed}`}><span>Нужна проверка · {stats.conflicts+stats.failed}</span><i/></button>:!serverAvailable?<button type="button" className="sync-status offline" onClick={()=>setWorkspaceReloadEpoch((value)=>value+1)} aria-label="Нет связи с сервером. Повторить подключение"><span>{stats.total?`Нет связи · ${stats.total}`:'Нет связи с сервером'}</span><i/></button>:stats.total?<div className="sync-status" role="status" aria-live="polite"><span>Отправляем · {stats.total}</span><i/></div>:null}</div></header>
     <main className="pager" ref={pager} onScroll={onPagerScroll}>
       <div className="page-slot" inert={tab!=='entry'} aria-hidden={tab!=='entry'}>{mountedTabs.includes('entry')&&<EntryView userId={auth.user.id} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} currentId={currentId} setCurrentId={setCurrentId} refreshPending={refreshPending} onDraftDirtyChange={setDraftDirty} active={tab==='entry'}/>}</div>
-      <div className="page-slot" inert={tab!=='history'} aria-hidden={tab!=='history'}>{mountedTabs.includes('history')&&<HistoryView userId={auth.user.id} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} edit={(id)=>{setCurrentId(id);setTab('entry')}} refreshPending={refreshPending}/>}</div>
-      <div className="page-slot" inert={tab!=='analytics'} aria-hidden={tab!=='analytics'}>{mountedTabs.includes('analytics')&&<AnalyticsView userId={auth.user.id} workspaceId={workspaceId} bootstrap={bootstrap} theme={theme} online={online}/>}</div>
-      <div className="page-slot" inert={tab!=='settings'} aria-hidden={tab!=='settings'}>{mountedTabs.includes('settings')&&<SettingsView user={auth} workspace={workspace} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} pendingCount={stats.total} refreshPending={refreshPending} onLogout={()=>void logoutCurrent()} theme={theme} onThemeChange={setTheme} onSession={(next)=>hydrate(next,false,settingsIdentityEpoch)} onCreateWorkspace={()=>void openCreate()} online={online}/>}</div>
+      <div className="page-slot" inert={tab!=='history'} aria-hidden={tab!=='history'}>{mountedTabs.includes('history')&&<HistoryView userId={auth.user.id} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} edit={(id)=>void openExpense(id)} createNew={()=>void openExpense(null)} refreshPending={refreshPending}/>}</div>
+      <div className="page-slot" inert={tab!=='analytics'} aria-hidden={tab!=='analytics'}>{mountedTabs.includes('analytics')&&<AnalyticsView userId={auth.user.id} workspaceId={workspaceId} bootstrap={bootstrap} theme={theme} online={serverAvailable}/>}</div>
+      <div className="page-slot" inert={tab!=='settings'} aria-hidden={tab!=='settings'}>{mountedTabs.includes('settings')&&<SettingsView user={auth} workspace={workspace} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} pendingCount={stats.total} refreshPending={refreshPending} onLogout={()=>void logoutCurrent()} theme={theme} onThemeChange={setTheme} onSession={(next)=>hydrate(next,false,settingsIdentityEpoch)} onCreateWorkspace={()=>void openCreate()} online={serverAvailable}/>}</div>
     </main>
     <nav className="bottom-nav" aria-label="Основная навигация">{tabs.map((item)=><button type="button" key={item.id} aria-current={tab===item.id?'page':undefined} className={tab===item.id?'active':''} onClick={()=>setTab(item.id)}><span><NavIcon tab={item.id}/></span><small>{item.label}</small></button>)}</nav>
-    {switchOpen&&<WorkspaceSwitcher items={auth.workspaces} active={workspaceId} runtimes={state.runtimes} online={online} onSelect={(id)=>void switchWorkspace(id)} onCreate={()=>void openCreate()}/>} {createOpen&&<CreateWorkspaceSheet existing onClose={()=>setCreateOpen(false)} onCreate={create}/>} {issuesOpen&&<SyncIssuesSheet userId={auth.user.id} workspaceId={workspaceId} online={online} onClose={()=>setIssuesOpen(false)} onDiscard={discardIssues}/>} {initialRecovery&&<RecoverySave key={initialRecovery.completionToken} prepared={initialRecovery} mode="initial" close={()=>setInitialRecovery(null)} complete={async()=>{
+    {switchOpen&&<WorkspaceSwitcher items={auth.workspaces} active={workspaceId} runtimes={state.runtimes} online={serverAvailable} onSelect={(id)=>void switchWorkspace(id)} onCreate={()=>void openCreate()}/>} {createOpen&&<CreateWorkspaceSheet existing onClose={()=>setCreateOpen(false)} onCreate={create}/>} {issuesOpen&&<SyncIssuesSheet userId={auth.user.id} workspaceId={workspaceId} online={serverAvailable} onClose={()=>setIssuesOpen(false)} onDiscard={discardIssues}/>} {initialRecovery&&<RecoverySave key={initialRecovery.completionToken} prepared={initialRecovery} mode="initial" close={()=>setInitialRecovery(null)} complete={async()=>{
       const outcome=await completeRotationSafely({prepared:initialRecovery,targetUserId:auth.user.id})
       if(outcome.status!=='completed')throw new Error(outcome.status==='rotation-stale'?'Параллельно была завершена другая настройка восстановления.':'Не удалось подтвердить настройку. Повторите из настроек.')
       await hydrate(outcome.session,true)

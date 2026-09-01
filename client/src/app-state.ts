@@ -19,7 +19,8 @@ export type AppState = {
 const KNOWN_USER = 'moapp:v2:known-user'
 const LOGOUT_PENDING = 'moapp:v2:logout-pending'
 const activeKey = (userId: string) => `moapp:v2:active-workspace:${userId}`
-const workspaceCurrencyKey = (userId: string, workspaceId: string, name: 'last-currency' | 'analytics-currency') => `moapp:v2:user:${userId}:workspace:${workspaceId}:${name}`
+type WorkspacePreference = 'last-currency' | 'analytics-currency' | 'analytics-week-category' | 'analytics-month-category'
+const workspaceCurrencyKey = (userId: string, workspaceId: string, name: WorkspacePreference) => `moapp:v2:user:${userId}:workspace:${workspaceId}:${name}`
 
 const storage = (): Storage | null => {
   if (typeof localStorage === 'undefined') return null
@@ -240,8 +241,8 @@ export async function forgetKnownProfile(online: boolean, session: SessionState 
   return settlePendingLogout(true, signal)
 }
 
-export function getWorkspacePreference(userId: string, workspaceId: string, name: 'last-currency' | 'analytics-currency'): string | null { return storage()?.getItem(workspaceCurrencyKey(userId, workspaceId, name)) ?? null }
-export function setWorkspacePreference(userId: string, workspaceId: string, name: 'last-currency' | 'analytics-currency', value: string): void { storage()?.setItem(workspaceCurrencyKey(userId, workspaceId, name), value) }
+export function getWorkspacePreference(userId: string, workspaceId: string, name: WorkspacePreference): string | null { return storage()?.getItem(workspaceCurrencyKey(userId, workspaceId, name)) ?? null }
+export function setWorkspacePreference(userId: string, workspaceId: string, name: WorkspacePreference, value: string): void { storage()?.setItem(workspaceCurrencyKey(userId, workspaceId, name), value) }
 export const readWorkspaceStats = (userId: string, workspaceId: string): Promise<OutboxStats> => outboxStats(userId, workspaceId)
 
 export type IdentityEvent = { epoch: number; eventId: string; userId: string | null; sessionId: string | null }
