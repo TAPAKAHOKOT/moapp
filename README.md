@@ -21,6 +21,37 @@ The repository is split into two workspaces:
 - `server` — Fastify API, SQLite storage, profile sessions, workspaces, and
   exchange rates.
 
+### Local Bybit Card demo
+
+The mock exercises credential validation, request signing, the exact
+enable-time boundary, synchronization, and the review UI without a real Bybit
+key or payment. Start it in a separate terminal:
+
+```bash
+npm run dev:bybit-mock
+```
+
+Then start the API with a separate local encryption key and the development-only
+mock origin:
+
+```bash
+DATABASE_PATH=/tmp/moapp-local.sqlite \
+SESSION_SECRET=moapp-local-development-session-secret-2026 \
+INTEGRATION_ENCRYPTION_KEY=moapp-local-development-integration-key-2026 \
+APP_ORIGIN=http://localhost:5173 \
+BYBIT_API_BASE_URL=http://127.0.0.1:4010 \
+npm run dev --workspace=server
+```
+
+In **Settings → Integrations → Bybit Card**, choose `Global / Serbia` and use:
+
+- API key: `moapp-demo-key`
+- API secret: `moapp-demo-secret`
+
+The mock deliberately returns one operation just before the enable boundary
+(it must not appear) and three operations at or after it. The override is
+rejected in production and accepts only a loopback HTTP origin.
+
 ## ChatGPT and MCP
 
 The production server exposes a read-only MCP endpoint at `${APP_ORIGIN}/mcp`.
@@ -56,6 +87,7 @@ Deployment files live in `infra`, with the production workflow in
 - SQLite as the primary database.
 - Cloudflare R2 as off-server backup storage.
 - Read-only MCP access with built-in OAuth 2.1 and live workspace membership checks.
+- Optional read-only Bybit Card import with an explicit enable-time boundary and a separate review queue.
 - Host Nginx terminates HTTPS and proxies to `127.0.0.1:8892`.
 
 The recovery link is the profile's long-lived master secret. Save it somewhere

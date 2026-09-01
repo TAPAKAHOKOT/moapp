@@ -8,6 +8,7 @@
   },
   "scripts": {
     "dev": "tsx watch src/index.ts",
+    "dev:bybit-mock": "tsx watch src/dev/bybit-card-mock.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
     "test": "node --import tsx --test test/*.test.ts",

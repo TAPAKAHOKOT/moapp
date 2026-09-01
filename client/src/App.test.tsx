@@ -2,7 +2,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import * as accessFlow from './access-flow'
-import { AnalyticsView, CapabilityScreen, CreateWorkspaceSheet, EntryView, fallbackAnalytics, formatEntryDate, formatHistoryDate, HistoryView, pagerTabsAt, RecoverySave, SettingsView, useToast, WorkspaceSwitcher } from './App'
+import { AnalyticsView, BybitReviewView, CapabilityScreen, CreateWorkspaceSheet, EntryView, fallbackAnalytics, formatEntryDate, formatHistoryDate, HistoryView, pagerTabsAt, RecoverySave, SettingsView, useToast, WorkspaceSwitcher } from './App'
 import * as workspaceApi from './workspace-api'
 import type { AuthenticatedSession, WorkspaceBootstrap } from './types'
 
@@ -68,7 +68,8 @@ describe('pager lazy mounting', () => {
   it('keeps entry alive and prepares only the pages touching the current swipe position', () => {
     expect(pagerTabsAt(0, 390)).toEqual(['entry'])
     expect(pagerTabsAt(390 * 1.25, 390)).toEqual(['entry', 'history', 'analytics'])
-    expect(pagerTabsAt(390 * 3, 390)).toEqual(['entry', 'settings'])
+    expect(pagerTabsAt(390 * 3, 390)).toEqual(['entry', 'review'])
+    expect(pagerTabsAt(390 * 4, 390)).toEqual(['entry', 'settings'])
     expect(pagerTabsAt(390, 0)).toEqual(['entry'])
   })
 })
@@ -349,7 +350,61 @@ describe('offline analytics fallback', () => {
   })
 })
 
+describe('Bybit transaction review', () => {
+  it('undoes from a toast and restores the chosen category and comment', async () => {
+    const transaction = {
+      id: 'card-transaction-a', txnId: 'bybit-a', orderNo: null, type: 'purchase' as const,
+      amountMinor: 1_250, currency: 'RSD', merchantName: 'Coffee Corner', merchantCountry: 'RS', merchantCity: 'Beograd',
+      mccCode: '5812', merchantCategory: 'Cafe', occurredAt: '2026-08-10T12:00:00.000Z', reviewStatus: 'pending' as const, expenseId: null,
+    }
+    const expense = {
+      id: 'expense-a', amountMinor: transaction.amountMinor, currency: transaction.currency, categoryId: 'products', note: 'Coffee Corner · Встреча с Димой',
+      occurredAt: transaction.occurredAt, createdAt: '2026-08-10T14:00:00.000Z', updatedAt: '2026-08-10T14:00:00.000Z', version: 1, deletedAt: null,
+    }
+    vi.spyOn(workspaceApi, 'listBybitCardTransactions').mockResolvedValue({ transactions: [transaction], pendingCount: 1 })
+    vi.spyOn(workspaceApi, 'classifyBybitCardTransaction').mockResolvedValue({ transaction: { ...transaction, reviewStatus: 'classified', expenseId: expense.id }, expense, pendingCount: 0 })
+    vi.spyOn(workspaceApi, 'undoBybitCardTransaction').mockResolvedValue({ transaction, undoneExpenseId: expense.id, pendingCount: 1 })
+    const onExpenseUndo = vi.fn()
+
+    render(<BybitReviewView workspaceId="workspace-a" categories={expenseBootstrap().categories} currencies={expenseBootstrap().currencies} online onExpense={vi.fn()} onExpenseUndo={onExpenseUndo} onStatus={vi.fn()}/>)
+
+    await screen.findByText('Coffee Corner')
+    expect(screen.getByLabelText('Сумма').textContent).toBe('12,50')
+    expect(screen.getByText('RSD', { exact: true })).not.toBeNull()
+    expect(screen.queryByText(/Свайп/)).toBeNull()
+    fireEvent.change(screen.getByLabelText(/Комментарий/), { target: { value: 'Встреча с Димой' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Продукты' }))
+    await screen.findByText('Расход добавлен')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Отменить' }))
+    await screen.findByText('Coffee Corner')
+    await waitFor(() => expect(onExpenseUndo).toHaveBeenCalledWith(expense.id))
+    expect((screen.getByLabelText(/Комментарий/) as HTMLInputElement).value).toBe('Встреча с Димой')
+    expect(screen.getByRole('button', { name: 'Продукты' }).getAttribute('aria-pressed')).toBe('true')
+  })
+})
+
 describe('settings identity transitions', () => {
+  it('separates workspace, integrations, and general settings', async () => {
+    vi.spyOn(workspaceApi, 'listMembers').mockResolvedValue({ members: [] })
+    vi.spyOn(workspaceApi, 'listSessions').mockResolvedValue({ sessions: [] })
+    vi.spyOn(workspaceApi, 'listInvitations').mockResolvedValue({ invitations: [] })
+    const workspace = expenseBootstrap().workspace
+    const user: AuthenticatedSession = { authenticated: true, user: { id: 'user-a', displayName: 'Аня', recoveryConfigured: true, recoveryGeneration: 1 }, currentSessionId: 'session-a', currentSessionExpiresAt: '2030-01-01T00:00:00.000Z', serverTime: '2026-08-10T14:00:00.000Z', restrictedToRecovery: false, workspaces: [workspace], legacyWorkspaceId: null }
+    render(<SettingsView user={user} workspace={workspace} workspaceId={workspace.id} bootstrap={expenseBootstrap()} setBootstrap={vi.fn()} pendingCount={0} refreshPending={vi.fn()} onLogout={vi.fn()} theme="light" onThemeChange={vi.fn()} onSession={vi.fn()} onCreateWorkspace={vi.fn()} online bybitStatus={{connected:true,canManage:true,pendingCount:3,enabledAt:'2026-08-10T12:00:00.000Z',status:'active'}}/>)
+
+    expect(screen.getByText('Люди и доступ')).not.toBeNull()
+    expect(screen.queryByRole('button', { name: 'Новая категория' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: /Общее/ }))
+    expect(screen.getByText('Вид и категории')).not.toBeNull()
+    expect(screen.getByRole('button', { name: 'Новая категория' })).not.toBeNull()
+    expect(screen.queryByLabelText('Ваше имя')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: /Интеграции/ }))
+    expect(screen.getByText('Подключённые сервисы')).not.toBeNull()
+    expect(screen.getAllByText('Bybit Card').length).toBeGreaterThan(0)
+    expect(screen.queryByRole('button', { name: /Разобрать операции/ })).toBeNull()
+  })
+
   it('prevents logout while a settings mutation can still return a session', async () => {
     vi.spyOn(workspaceApi, 'listMembers').mockResolvedValue({ members: [] })
     vi.spyOn(workspaceApi, 'listSessions').mockResolvedValue({ sessions: [] })

@@ -27,6 +27,9 @@ currency defaults, and backup credentials from the VPS environment.
 `https` origin without a path, query, or fragment. `SESSION_SECRET` must contain
 at least 32 characters; generate a random value and keep it stable during normal
 deployments, because rotating it invalidates every signed browser session.
+`INTEGRATION_ENCRYPTION_KEY` must be a different secret of at least 32
+characters. It encrypts Bybit API credentials in SQLite and must also remain
+stable during normal deployments.
 
 `APP_PIN` is only a transitional bridge for a database upgraded from the shared
 PIN release. It is required while that database's legacy claim is open or
@@ -81,14 +84,14 @@ copy and enable the dedicated site yourself.
    chmod 600 .env
    ```
 
-2. Fill `.env`. Set `APP_ORIGIN` to the final HTTPS origin and generate the
-   session secret on the VPS, for example:
+2. Fill `.env`. Set `APP_ORIGIN` to the final HTTPS origin and generate separate
+   session and integration secrets on the VPS (run this twice):
 
    ```bash
    openssl rand -hex 32
    ```
 
-   R2 credentials and `SESSION_SECRET` belong only in this VPS file. Do not add
+   R2 credentials, `SESSION_SECRET`, and `INTEGRATION_ENCRYPTION_KEY` belong only in this VPS file. Do not add
    them to GitHub secrets, the Docker image, or the repository. Keep `APP_PIN`
    only for a legacy cutover; a clean install can remove that line immediately.
 

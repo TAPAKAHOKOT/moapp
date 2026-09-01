@@ -5,6 +5,8 @@ import { configFromEnv } from "../src/config.js";
 const MANAGED_KEYS = [
   "NODE_ENV",
   "SESSION_SECRET",
+  "INTEGRATION_ENCRYPTION_KEY",
+  "BYBIT_API_BASE_URL",
   "APP_ORIGIN",
   "APP_PIN",
   "INVITATION_TTL_HOURS",
@@ -26,6 +28,7 @@ afterEach(restoreEnvironment);
 function minimalProductionEnvironment(): void {
   process.env.NODE_ENV = "production";
   process.env.SESSION_SECRET = "a-production-secret-with-at-least-thirty-two-characters";
+  process.env.INTEGRATION_ENCRYPTION_KEY = "an-independent-integration-secret-with-at-least-thirty-two-characters";
   delete process.env.APP_PIN;
   delete process.env.INVITATION_TTL_HOURS;
   delete process.env.DEVICE_LINK_TTL_MINUTES;
@@ -62,9 +65,26 @@ test("local development uses the localhost origin and non-secure cookie", () => 
   delete process.env.NODE_ENV;
   delete process.env.APP_ORIGIN;
   process.env.SESSION_SECRET = "a-development-secret-with-at-least-thirty-two-characters";
+  process.env.INTEGRATION_ENCRYPTION_KEY = "a-development-integration-secret-with-at-least-thirty-two-characters";
   const config = configFromEnv();
   assert.equal(config.appOrigin, "http://localhost:5173");
   assert.equal(config.secureCookies, false);
+});
+
+test("a Bybit API override is restricted to a local development origin", () => {
+  delete process.env.NODE_ENV;
+  process.env.SESSION_SECRET = "a-development-secret-with-at-least-thirty-two-characters";
+  process.env.INTEGRATION_ENCRYPTION_KEY = "a-development-integration-secret-with-at-least-thirty-two-characters";
+  process.env.BYBIT_API_BASE_URL = "http://127.0.0.1:4010";
+  assert.equal(configFromEnv().bybitApiBaseUrl, "http://127.0.0.1:4010");
+
+  process.env.BYBIT_API_BASE_URL = "https://api.example.com";
+  assert.throws(() => configFromEnv(), /must be a local http origin/);
+
+  minimalProductionEnvironment();
+  process.env.APP_ORIGIN = "https://moapp.example";
+  process.env.BYBIT_API_BASE_URL = "http://127.0.0.1:4010";
+  assert.throws(() => configFromEnv(), /available only outside production/);
 });
 
 test("session secrets and numeric limits fail closed", () => {
@@ -74,6 +94,10 @@ test("session secrets and numeric limits fail closed", () => {
   assert.throws(() => configFromEnv(), /SESSION_SECRET must be at least 32 characters/);
 
   process.env.SESSION_SECRET = "a-production-secret-with-at-least-thirty-two-characters";
+  process.env.INTEGRATION_ENCRYPTION_KEY = "too-short";
+  assert.throws(() => configFromEnv(), /INTEGRATION_ENCRYPTION_KEY must be at least 32 characters/);
+
+  process.env.INTEGRATION_ENCRYPTION_KEY = "an-independent-integration-secret-with-at-least-thirty-two-characters";
   process.env.INVITATION_TTL_HOURS = "0";
   assert.throws(() => configFromEnv(), /INVITATION_TTL_HOURS must be a positive integer/);
 

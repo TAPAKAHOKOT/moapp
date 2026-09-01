@@ -31,6 +31,36 @@ export type Expense = {
   pending?: boolean
 }
 
+export type BybitRegion = 'global' | 'eu' | 'nl' | 'tr' | 'kz' | 'ge' | 'ae' | 'id'
+
+export type BybitCardStatus = {
+  connected: boolean
+  canManage: boolean
+  region?: BybitRegion
+  enabledAt?: string
+  lastSyncedAt?: string | null
+  status?: 'active' | 'error'
+  lastError?: string | null
+  pendingCount: number
+}
+
+export type BybitCardTransaction = {
+  id: string
+  txnId: string | null
+  orderNo: string | null
+  type: 'purchase' | 'atm'
+  amountMinor: number
+  currency: string
+  merchantName: string | null
+  merchantCountry: string | null
+  merchantCity: string | null
+  mccCode: string | null
+  merchantCategory: string | null
+  occurredAt: string
+  reviewStatus: 'pending' | 'classified' | 'ignored'
+  expenseId: string | null
+}
+
 export type RateSnapshot = {
   base: 'RSD'
   date: string | null

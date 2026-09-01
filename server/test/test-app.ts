@@ -33,6 +33,7 @@ export function testConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     },
     frankfurterUrl: "https://example.invalid/v2",
     defaultAnalyticsCurrency: "RSD",
+    integrationEncryptionKey: "a-test-integration-key-that-is-longer-than-thirty-two-characters",
     ...overrides
   };
 }

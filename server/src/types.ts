@@ -40,6 +40,8 @@ export type AppConfig = {
   access: AccessConfig;
   frankfurterUrl: string;
   defaultAnalyticsCurrency: string;
+  integrationEncryptionKey: string;
+  bybitApiBaseUrl?: string;
 };
 
 declare module "fastify" {
