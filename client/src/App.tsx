@@ -14,6 +14,7 @@ import { completeRecoverySafely, completeRotationSafely } from './recovery-flow'
 import { monitorServiceWorkerUpdates } from './service-worker-update'
 import type { AnalyticsData, AuthenticatedSession, CapabilityIntent, Category, Currency, Expense, RecoveryPrepareResponse, SessionState, WorkspaceBootstrap, WorkspaceOutboxItem, WorkspaceSummary } from './types'
 import { amountToMinor, applyKeypad, convertExpense, countCalendarWeekdays, isoToLocalInput, localDateKey, localInputToIso, monthDateRange, shiftDateKey, swipeDirection, weekdayFromDateKey, weekDateRange } from './utils'
+import { buildHistoryCsv, defaultHistoryPreferences, filterHistoryExpenses, parseHistoryPreferences, type HistoryPeriod, type HistoryPreferences } from './history'
 
 const AnalyticsChart = lazy(() => import('./AnalyticsCharts'))
 
@@ -750,14 +751,23 @@ export function HistoryView({ userId, workspaceId, bootstrap, setBootstrap, edit
   createNew: () => void
   refreshPending: () => void
 }) {
-  const [query, setQuery] = useState('')
+  const [filters, setFilters] = useState<HistoryPreferences>(() => parseHistoryPreferences(
+    getWorkspacePreference(userId, workspaceId, 'history-filters'),
+    localDateKey(new Date()),
+  ))
   const [selected, setSelected] = useState<Set<string>>(() => new Set())
   const [deleting, setDeleting] = useState(false)
   const { toast, notify, dismiss } = useToast()
   const categoryMap = new Map(bootstrap.categories.map((category) => [category.id, category]))
   const activeExpenses = bootstrap.expenses.filter((item) => !item.deletedAt)
-  const normalizedQuery = query.trim().toLocaleLowerCase('ru-RU')
-  const expenses = activeExpenses.filter((item) => {
+  const categoryOptions = bootstrap.categories
+    .filter((category) => category.id === filters.categoryId || activeExpenses.some((expense) => expense.categoryId === category.id))
+    .sort((left, right) => left.name.localeCompare(right.name, 'ru-RU'))
+  const currencyOptions = bootstrap.currencies
+    .filter((currency) => currency.code === filters.currency || activeExpenses.some((expense) => expense.currency === currency.code))
+    .sort((left, right) => left.code.localeCompare(right.code))
+  const normalizedQuery = filters.query.trim().toLocaleLowerCase('ru-RU')
+  const expenses = filterHistoryExpenses(activeExpenses, filters).filter((item) => {
     const dateKey = localDateKey(item.occurredAt)
     const date = new Date(item.occurredAt)
     const searchText = [
@@ -770,15 +780,45 @@ export function HistoryView({ userId, workspaceId, bootstrap, setBootstrap, edit
       date.toLocaleDateString('ru-RU', { timeZone: 'Europe/Belgrade' }),
     ].filter(Boolean).join(' ').toLocaleLowerCase('ru-RU')
     return !normalizedQuery || searchText.includes(normalizedQuery)
-  }).sort((a,b) => b.occurredAt.localeCompare(a.occurredAt))
+  })
   const grouped = expenses.reduce<Record<string, Expense[]>>((result, item) => { (result[localDateKey(item.occurredAt)] ||= []).push(item); return result }, {})
   const groups = Object.entries(grouped)
+  useEffect(() => {
+    setWorkspacePreference(userId, workspaceId, 'history-filters', JSON.stringify(filters))
+  }, [filters, userId, workspaceId])
+  const updateFilters = (patch: Partial<HistoryPreferences>) => {
+    setFilters((current) => ({ ...current, ...patch }))
+    setSelected(new Set())
+  }
   const toggle = (id: string) => setSelected((current) => {
     const next = new Set(current)
     if (next.has(id)) next.delete(id)
     else next.add(id)
     return next
   })
+  const filtersActive = Boolean(normalizedQuery || filters.categoryId || filters.currency || filters.period !== 'all')
+  const resetFilters = () => {
+    setFilters(defaultHistoryPreferences(localDateKey(new Date())))
+    setSelected(new Set())
+  }
+  const exportExpenses = () => {
+    if (!expenses.length) return
+    try {
+      const blob = new Blob(['\uFEFF', buildHistoryCsv(expenses, bootstrap.categories, bootstrap.currencies)], { type: 'text/csv;charset=utf-8' })
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = `moapp-history-${localDateKey(new Date())}.csv`
+      link.hidden = true
+      document.body.append(link)
+      link.click()
+      link.remove()
+      setTimeout(() => URL.revokeObjectURL(url), 0)
+      notify(`Экспортировано расходов: ${expenses.length}`)
+    } catch {
+      notify('Не удалось подготовить файл экспорта', undefined, true)
+    }
+  }
   const removeSelected = async () => {
     const targets = bootstrap.expenses.filter((expense) => !expense.deletedAt && selected.has(expense.id))
     if (!targets.length || deleting) return
@@ -813,9 +853,20 @@ export function HistoryView({ userId, workspaceId, bootstrap, setBootstrap, edit
     }
   }
   return <section className="page"><header className="page-header history-title"><div><p className="eyebrow">Все записи</p><h1>История</h1></div><button type="button" className={`icon-danger history-delete${selected.size ? '' : ' off'}`} onClick={removeSelected} disabled={deleting} tabIndex={selected.size ? 0 : -1} aria-hidden={!selected.size} aria-label={`Удалить выбранные расходы: ${selected.size}`}><TrashIcon/></button></header>
-    {activeExpenses.length > 0 && <input className="search" type="search" placeholder="Сумма, заметка, дата или категория" value={query} onChange={(e) => setQuery(e.target.value)}/>}
+    {activeExpenses.length > 0 && <div className="history-controls">
+      <input className="search" type="search" placeholder="Сумма, заметка, дата или категория" value={filters.query} onChange={(event) => updateFilters({ query: event.target.value })}/>
+      <div className="history-filter-grid">
+        <label>Категория<select aria-label="Категория истории" value={filters.categoryId} onChange={(event) => updateFilters({ categoryId: event.target.value })}><option value="">Все категории</option>{categoryOptions.map((category) => <option key={category.id} value={category.id}>{category.name}{category.archivedAt ? ' · архив' : ''}</option>)}</select></label>
+        <label>Валюта<select aria-label="Валюта истории" value={filters.currency} onChange={(event) => updateFilters({ currency: event.target.value })}><option value="">Все валюты</option>{currencyOptions.map((currency) => <option key={currency.code} value={currency.code}>{currency.code} · {currency.name}</option>)}</select></label>
+      </div>
+      <label className="history-date-filter">Период<select aria-label="Период истории" value={filters.period} onChange={(event) => updateFilters({ period: event.target.value as HistoryPeriod })}><option value="all">Все даты</option><option value="day">День</option><option value="week">Неделя</option><option value="range">Интервал</option></select></label>
+      {filters.period === 'day' && <label className="history-date-filter">День<input type="date" value={filters.date} onChange={(event) => updateFilters({ date: event.target.value })}/></label>}
+      {filters.period === 'week' && <label className="history-date-filter">Любой день нужной недели<input type="date" value={filters.date} onChange={(event) => updateFilters({ date: event.target.value })}/></label>}
+      {filters.period === 'range' && <div className="history-filter-grid history-range"><label>С<input type="date" value={filters.from} onChange={(event) => updateFilters({ from: event.target.value })}/></label><label>По<input type="date" value={filters.to} onChange={(event) => updateFilters({ to: event.target.value })}/></label></div>}
+      <div className="history-filter-summary"><span>Показано {expenses.length} из {activeExpenses.length}</span><div>{filtersActive && <button type="button" onClick={resetFilters}>Сбросить</button>}<button type="button" className="history-export" disabled={!expenses.length} onClick={exportExpenses}>Экспорт CSV</button></div></div>
+    </div>}
     <div className="history-list">{groups.map(([date, items]) => <div key={date} className="history-day"><div className="history-date"><span>{formatHistoryDate(date)}</span><b>{items?.length}</b></div>{items?.map((expense) => { const category=categoryMap.get(expense.categoryId); const checked=selected.has(expense.id); return <div key={expense.id} className={`history-expense${checked ? ' selected' : ''}`}><label className="expense-check" aria-label={`Выбрать расход ${category?.name || ''}`}><input type="checkbox" checked={checked} onChange={()=>toggle(expense.id)}/><span/></label><button type="button" className="history-row" onClick={() => edit(expense.id)}><i style={{backgroundColor:category?.color ?? '#a9afa5'}}/><span><b>{category?.name || 'Архивная категория'}</b><small>{new Date(expense.occurredAt).toLocaleTimeString('ru-RU',{timeZone:'Europe/Belgrade',hour:'2-digit',minute:'2-digit'})}{expense.note ? ` · ${expense.note}`:''}</small></span><strong>{money(expense.amountMinor,expense.currency,bootstrap.currencies)}</strong>{expense.pending && <em aria-label="Ожидает синхронизации">●</em>}</button></div>})}</div>)}</div>
-    {!groups.length && <div className="list-empty" role="status"><span>{query ? 'Ничего не найдено' : 'История пока пуста'}</span><p>{query ? 'Попробуйте изменить запрос.' : 'Добавьте первый расход — он сразу появится здесь.'}</p>{!query && <button type="button" className="primary history-empty-action" onClick={createNew}>Добавить первый расход</button>}</div>}
+    {!groups.length && <div className="list-empty" role="status"><span>{filtersActive ? 'Ничего не найдено' : 'История пока пуста'}</span><p>{filtersActive ? 'Измените фильтры или сбросьте их.' : 'Добавьте первый расход — он сразу появится здесь.'}</p>{!filtersActive && <button type="button" className="primary history-empty-action" onClick={createNew}>Добавить первый расход</button>}</div>}
     {toast&&<Toast toast={toast} onDismiss={dismiss}/>}
   </section>
 }

@@ -19,7 +19,7 @@ export type AppState = {
 const KNOWN_USER = 'moapp:v2:known-user'
 const LOGOUT_PENDING = 'moapp:v2:logout-pending'
 const activeKey = (userId: string) => `moapp:v2:active-workspace:${userId}`
-type WorkspacePreference = 'last-currency' | 'analytics-currency' | 'analytics-week-category' | 'analytics-month-category'
+type WorkspacePreference = 'last-currency' | 'analytics-currency' | 'analytics-week-category' | 'analytics-month-category' | 'history-filters'
 const workspaceCurrencyKey = (userId: string, workspaceId: string, name: WorkspacePreference) => `moapp:v2:user:${userId}:workspace:${workspaceId}:${name}`
 
 const storage = (): Storage | null => {
