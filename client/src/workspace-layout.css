@@ -176,6 +176,7 @@ html {
 
 .record-count,
 .icon-danger,
+.icon-add,
 .date-chip,
 .amount-row button,
 .note-block .text-button,
@@ -194,6 +195,7 @@ html {
 
 .record-count,
 .icon-danger,
+.icon-add,
 .colors button {
   min-width: 44px;
 }
@@ -536,6 +538,20 @@ html {
   margin: 0;
 }
 
+.management-state > span {
+  display: block;
+}
+
+.management-state > button {
+  min-height: 44px;
+  border: 0;
+  background: transparent;
+  color: var(--sage);
+  font-weight: 750;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
 .inline-feedback {
   margin: 6px 0 10px;
   color: var(--sage);
@@ -743,6 +759,53 @@ html {
 }
 
 @media (max-height: 520px) and (orientation: landscape) {
+  .entry-view {
+    display: grid;
+    grid-template-columns: minmax(250px, .9fr) minmax(300px, 1.1fr);
+    grid-template-rows: minmax(105px, 1fr) auto auto;
+    min-height: 100%;
+  }
+
+  .entry-view .swipe-area {
+    grid-column: 1;
+    grid-row: 1;
+    min-height: 105px;
+  }
+
+  .entry-view .keypad {
+    grid-column: 2;
+    grid-row: 1 / 4;
+    min-height: 260px;
+    max-height: none;
+    padding-block: 5px;
+  }
+
+  .entry-view .categories {
+    grid-column: 1;
+    grid-row: 2;
+    padding-top: 3px;
+  }
+
+  .entry-view .main-categories button {
+    min-height: 52px;
+  }
+
+  .entry-view .edit-actions,
+  .entry-view .note-block {
+    grid-column: 1;
+  }
+
+  .entry-view .edit-actions {
+    grid-row: 3;
+    padding-top: 4px;
+  }
+
+  .entry-view .note-block {
+    grid-row: 4;
+    height: 52px;
+    padding-block: 4px;
+  }
+
   .sheet-backdrop {
     padding-top: max(2px, env(safe-area-inset-top));
   }
@@ -785,6 +848,28 @@ html {
 
   .toast {
     bottom: max(10px, env(safe-area-inset-bottom));
+  }
+}
+
+@media (min-width: 700px) {
+  body {
+    background: color-mix(in srgb, var(--paper) 82%, var(--line));
+  }
+
+  .app-shell {
+    width: min(100%, 680px);
+    margin: 0 auto;
+    background: var(--paper);
+    border-inline: 1px solid var(--line);
+    box-shadow: 0 0 40px rgb(32 37 31 / 8%);
+  }
+
+  .page-slot > * {
+    max-width: 100%;
+  }
+
+  .entry-view {
+    max-width: 100%;
   }
 }
 

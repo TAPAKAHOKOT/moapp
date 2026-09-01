@@ -138,6 +138,25 @@ test("category order and archived history remain workspace scoped", async () => 
   const bootstrap = await app.inject({ method: "GET", url: `/api/workspaces/${workspaceA}/bootstrap`, headers: identityA.headers });
   assert.ok(bootstrap.json().categories.some((category: { id: string; archivedAt: string | null }) => category.id === "products" && category.archivedAt));
   assert.equal(app.db.prepare("SELECT archived_at FROM categories WHERE workspace_id=? AND id='products'").pluck().get(workspaceB), null);
+
+  const retained = await app.inject({
+    method: "PATCH",
+    url: `/api/workspaces/${workspaceA}/expenses/${sharedExpenseId}`,
+    headers: identityA.headers,
+    payload: { note: "edited after archive", categoryId: "products", version: 2 }
+  });
+  assert.equal(retained.statusCode, 200, retained.body);
+  assert.equal(retained.json().note, "edited after archive");
+  assert.equal(retained.json().categoryId, "products");
+
+  const newlySelectedArchived = await app.inject({
+    method: "PATCH",
+    url: `/api/workspaces/${workspaceA}/expenses/${expenseOnlyA}`,
+    headers: identityA.headers,
+    payload: { categoryId: "products", version: 1 }
+  });
+  assert.equal(newlySelectedArchived.statusCode, 400);
+  assert.equal(newlySelectedArchived.json().error.code, "CATEGORY_INVALID");
 });
 
 test("category names are canonically normalized and reject control characters", async () => {
