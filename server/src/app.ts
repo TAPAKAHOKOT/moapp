@@ -12,6 +12,8 @@ import { registerTenantDomainRoutes } from "./tenant-domain.js";
 import { registerAccessRoutes, cleanupExpiredAccessRows } from "./access/index.js";
 import { startRateScheduler } from "./rates.js";
 import { jsonError } from "./validation.js";
+import { cleanupExpiredOAuthRows, registerOAuthRoutes } from "./oauth.js";
+import { registerMcpRoutes } from "./mcp.js";
 
 function loggerOptions(enabled: boolean | undefined) {
   if (enabled === false) return false;
@@ -20,7 +22,8 @@ function loggerOptions(enabled: boolean | undefined) {
     redact: {
       paths: [
         "req.headers.cookie", "req.headers.authorization", "req.body.pin", "req.body.token",
-        "req.body.attemptToken", "req.body.completionToken", "pin", "token", "attemptToken",
+        "req.body.attemptToken", "req.body.completionToken", "req.body.code", "req.body.code_verifier",
+        "req.body.refresh_token", "pin", "token", "code", "code_verifier", "refresh_token", "attemptToken",
         "completionToken"
       ] as string[],
       censor: "[REDACTED]"
@@ -61,6 +64,8 @@ export async function buildApp(config: AppConfig, options: { logger?: boolean; s
     return { status: database === "ok" ? "ok" : "degraded", database, time: new Date().toISOString() };
   });
   await registerAuth(app);
+  await registerOAuthRoutes(app);
+  await registerMcpRoutes(app);
   await registerCoreRoutes(app);
   await registerTenantDomainRoutes(app);
   await registerAccessRoutes(app);
@@ -85,11 +90,15 @@ export async function buildApp(config: AppConfig, options: { logger?: boolean; s
   if (options.scheduler !== false) {
     const stop = startRateScheduler(app);
     cleanupExpiredAccessRows(db);
+    cleanupExpiredOAuthRows(db);
     const accessCleanup = setInterval(() => cleanupExpiredAccessRows(db), 6 * 60 * 60 * 1000);
+    const oauthCleanup = setInterval(() => cleanupExpiredOAuthRows(db), 6 * 60 * 60 * 1000);
     accessCleanup.unref();
+    oauthCleanup.unref();
     app.addHook("onClose", async () => {
       stop();
       clearInterval(accessCleanup);
+      clearInterval(oauthCleanup);
     });
   }
   return app;

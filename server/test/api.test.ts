@@ -109,6 +109,18 @@ test("production build exposes access routes and canonical capability URLs", asy
   assert.equal(invitation.headers["cache-control"], "private, no-store");
   assert.match(invitation.json().url, new RegExp(`^${config.appOrigin}/#/join/[A-Za-z0-9_-]{43}$`));
   assert.doesNotMatch(invitation.json().url, /attacker\.example/);
+
+  const oauthMetadata = await app.inject({
+    method: "GET",
+    url: "/.well-known/oauth-protected-resource",
+    headers: { host: "attacker.example" }
+  });
+  assert.equal(oauthMetadata.statusCode, 200, oauthMetadata.body);
+  assert.equal(oauthMetadata.json().resource, `${config.appOrigin}/mcp`);
+  assert.equal(oauthMetadata.headers["cache-control"], "no-store");
+  const mcpChallenge = await app.inject({ method: "POST", url: "/mcp", headers: { host: "attacker.example" }, payload: {} });
+  assert.equal(mcpChallenge.statusCode, 401, mcpChallenge.body);
+  assert.match(String(mcpChallenge.headers["www-authenticate"]), new RegExp(`${config.appOrigin}/\\.well-known/oauth-protected-resource`));
 });
 
 test("foreign workspace access and stale expected context fail closed", async () => {
