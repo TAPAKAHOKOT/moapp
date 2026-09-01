@@ -1,0 +1,93 @@
+import type { Category, Currency, Expense } from './types'
+import { localDateKey, weekDateRange } from './utils'
+
+export type HistoryPeriod = 'all' | 'day' | 'week' | 'range'
+
+export type HistoryFilters = {
+  categoryId: string
+  currency: string
+  period: HistoryPeriod
+  date: string
+  from: string
+  to: string
+}
+
+export type HistoryPreferences = HistoryFilters & { query: string }
+
+export function defaultHistoryPreferences(today: string): HistoryPreferences {
+  return { query: '', categoryId: '', currency: '', period: 'all', date: today, from: `${today.slice(0, 8)}01`, to: today }
+}
+
+export function parseHistoryPreferences(raw: string | null, today: string): HistoryPreferences {
+  const defaults = defaultHistoryPreferences(today)
+  if (!raw) return defaults
+  try {
+    const saved = JSON.parse(raw) as Partial<Record<keyof HistoryPreferences, unknown>>
+    const date = (value: unknown, fallback: string) => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : fallback
+    const period = saved.period === 'day' || saved.period === 'week' || saved.period === 'range' || saved.period === 'all' ? saved.period : defaults.period
+    return {
+      query: typeof saved.query === 'string' ? saved.query.slice(0, 200) : defaults.query,
+      categoryId: typeof saved.categoryId === 'string' ? saved.categoryId.slice(0, 100) : defaults.categoryId,
+      currency: typeof saved.currency === 'string' && /^[A-Z]{3}$/.test(saved.currency) ? saved.currency : defaults.currency,
+      period,
+      date: date(saved.date, defaults.date),
+      from: date(saved.from, defaults.from),
+      to: date(saved.to, defaults.to),
+    }
+  } catch {
+    return defaults
+  }
+}
+
+export function historyDateRange(filters: HistoryFilters) {
+  if (filters.period === 'day') return filters.date ? { from: filters.date, to: filters.date } : {}
+  if (filters.period === 'week') return filters.date ? weekDateRange(filters.date) : {}
+  if (filters.period !== 'range') return {}
+  if (filters.from && filters.to && filters.from > filters.to) return { from: filters.to, to: filters.from }
+  return { from: filters.from || undefined, to: filters.to || undefined }
+}
+
+export function filterHistoryExpenses(expenses: Expense[], filters: HistoryFilters) {
+  const { from, to } = historyDateRange(filters)
+  return expenses.filter((expense) => {
+    if (expense.deletedAt) return false
+    if (filters.categoryId && expense.categoryId !== filters.categoryId) return false
+    if (filters.currency && expense.currency !== filters.currency) return false
+    const date = localDateKey(expense.occurredAt)
+    return (!from || date >= from) && (!to || date <= to)
+  }).sort((left, right) => right.occurredAt.localeCompare(left.occurredAt))
+}
+
+function decimalAmount(amountMinor: number, decimals: number) {
+  const sign = amountMinor < 0 ? '-' : ''
+  const digits = String(Math.abs(amountMinor)).padStart(decimals + 1, '0')
+  if (!decimals) return `${sign}${digits}`
+  return `${sign}${digits.slice(0, -decimals)}.${digits.slice(-decimals)}`
+}
+
+function csvCell(value: string | number) {
+  const text = String(value).replace(/\r\n?|\n/g, ' ')
+  return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text
+}
+
+export function buildHistoryCsv(expenses: Expense[], categories: Category[], currencies: Currency[]) {
+  const categoryMap = new Map(categories.map((category) => [category.id, category.name]))
+  const decimals = new Map(currencies.map((currency) => [currency.code, currency.decimals]))
+  const rows = expenses.map((expense) => {
+    const date = localDateKey(expense.occurredAt)
+    const time = new Date(expense.occurredAt).toLocaleTimeString('en-GB', {
+      timeZone: 'Europe/Belgrade', hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+    })
+    return [
+      expense.occurredAt,
+      date,
+      time,
+      categoryMap.get(expense.categoryId) ?? 'Архивная категория',
+      decimalAmount(expense.amountMinor, decimals.get(expense.currency) ?? 2),
+      expense.currency,
+      expense.note ?? '',
+      expense.id,
+    ].map(csvCell).join(',')
+  })
+  return ['occurred_at,date,time,category,amount,currency,note,id', ...rows].join('\n')
+}

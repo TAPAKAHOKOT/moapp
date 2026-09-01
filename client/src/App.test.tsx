@@ -15,8 +15,10 @@ const prepared = {
 
 afterEach(() => {
   cleanup()
+  localStorage.clear()
   vi.useRealTimers()
   vi.restoreAllMocks()
+  vi.unstubAllGlobals()
   Object.defineProperty(window.navigator, 'onLine', { configurable: true, value: true })
   Object.defineProperty(window.navigator, 'clipboard', { configurable: true, value: undefined })
   document.querySelectorAll('[data-test-opener]').forEach((node) => node.remove())
@@ -212,6 +214,91 @@ describe('history discovery', () => {
     expect(screen.getByRole('button', { name: /Продукты/ })).not.toBeNull()
     fireEvent.change(search, { target: { value: '123,45' } })
     expect(screen.getByRole('button', { name: /Продукты/ })).not.toBeNull()
+  })
+
+  it('filters the visible history by category and period', () => {
+    const transport = { id: 'transport', name: 'Транспорт', color: '#826f62', placement: 'main' as const, sortOrder: 1, createdAt: '2026-08-01T00:00:00.000Z', updatedAt: '2026-08-01T00:00:00.000Z', archivedAt: null, version: 1 }
+    const bootstrap = expenseBootstrap({
+      categories: [...expenseBootstrap().categories, transport],
+      expenses: [
+        { id: 'products', amountMinor: 1_000, currency: 'RSD', categoryId: 'products', note: null, occurredAt: '2026-08-30T09:37:00.000Z', createdAt: '2026-08-30T09:37:00.000Z', updatedAt: '2026-08-30T09:37:00.000Z', version: 1, deletedAt: null },
+        { id: 'transport', amountMinor: 2_000, currency: 'RSD', categoryId: 'transport', note: null, occurredAt: '2026-08-31T09:37:00.000Z', createdAt: '2026-08-31T09:37:00.000Z', updatedAt: '2026-08-31T09:37:00.000Z', version: 1, deletedAt: null },
+      ],
+    })
+    render(<HistoryView userId="user-a" workspaceId="workspace-a" bootstrap={bootstrap} setBootstrap={vi.fn()} edit={vi.fn()} createNew={vi.fn()} refreshPending={vi.fn()}/>)
+
+    fireEvent.change(screen.getByLabelText('Категория истории'), { target: { value: 'transport' } })
+    expect(screen.queryByRole('button', { name: /Продукты/ })).toBeNull()
+    expect(screen.getByRole('button', { name: /Транспорт/ })).not.toBeNull()
+
+    fireEvent.change(screen.getByLabelText('Период истории'), { target: { value: 'day' } })
+    fireEvent.change(screen.getByLabelText('День'), { target: { value: '2026-08-30' } })
+    expect(screen.getByText('Ничего не найдено')).not.toBeNull()
+  })
+
+  it('filters by currency and restores history filters after reopening', () => {
+    const bootstrap = expenseBootstrap({
+      currencies: [
+        { code: 'RSD', name: 'Сербский динар', symbol: 'дин.', decimals: 2 },
+        { code: 'EUR', name: 'Евро', symbol: '€', decimals: 2 },
+      ],
+      expenses: [
+        { id: 'rsd', amountMinor: 1_000, currency: 'RSD', categoryId: 'products', note: 'рынок', occurredAt: '2026-08-31T09:37:00.000Z', createdAt: '2026-08-31T09:37:00.000Z', updatedAt: '2026-08-31T09:37:00.000Z', version: 1, deletedAt: null },
+        { id: 'eur', amountMinor: 2_000, currency: 'EUR', categoryId: 'products', note: 'кофе', occurredAt: '2026-08-30T09:37:00.000Z', createdAt: '2026-08-30T09:37:00.000Z', updatedAt: '2026-08-30T09:37:00.000Z', version: 1, deletedAt: null },
+      ],
+    })
+    const props = { userId: 'user-a', workspaceId: 'workspace-a', bootstrap, setBootstrap: vi.fn(), edit: vi.fn(), createNew: vi.fn(), refreshPending: vi.fn() }
+    render(<HistoryView {...props}/>)
+
+    fireEvent.change(screen.getByLabelText('Валюта истории'), { target: { value: 'EUR' } })
+    fireEvent.change(screen.getByLabelText('Период истории'), { target: { value: 'day' } })
+    fireEvent.change(screen.getByLabelText('День'), { target: { value: '2026-08-30' } })
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'кофе' } })
+    expect(screen.getAllByRole('button', { name: /Продукты/ })).toHaveLength(1)
+
+    cleanup()
+    render(<HistoryView {...props}/>)
+
+    expect((screen.getByLabelText('Валюта истории') as HTMLSelectElement).value).toBe('EUR')
+    expect((screen.getByLabelText('Период истории') as HTMLSelectElement).value).toBe('day')
+    expect((screen.getByLabelText('День') as HTMLInputElement).value).toBe('2026-08-30')
+    expect((screen.getByRole('searchbox') as HTMLInputElement).value).toBe('кофе')
+    expect(screen.getAllByRole('button', { name: /Продукты/ })).toHaveLength(1)
+  })
+
+  it('exports only the currently visible expenses to a UTF-8 CSV file', () => {
+    const bootstrap = expenseBootstrap({
+      currencies: [
+        { code: 'RSD', name: 'Сербский динар', symbol: 'дин.', decimals: 2 },
+        { code: 'EUR', name: 'Евро', symbol: '€', decimals: 2 },
+      ],
+      expenses: [
+        { id: 'rsd-row', amountMinor: 1_000, currency: 'RSD', categoryId: 'products', note: null, occurredAt: '2026-08-31T09:37:00.000Z', createdAt: '2026-08-31T09:37:00.000Z', updatedAt: '2026-08-31T09:37:00.000Z', version: 1, deletedAt: null },
+        { id: 'eur-row', amountMinor: 2_000, currency: 'EUR', categoryId: 'products', note: 'кофе', occurredAt: '2026-08-30T09:37:00.000Z', createdAt: '2026-08-30T09:37:00.000Z', updatedAt: '2026-08-30T09:37:00.000Z', version: 1, deletedAt: null },
+      ],
+    })
+    const originalBlob = Blob
+    const createdParts: BlobPart[][] = []
+    vi.stubGlobal('Blob', class extends originalBlob {
+      constructor(parts: BlobPart[] = [], options?: BlobPropertyBag) {
+        super(parts, options)
+        createdParts.push(parts)
+      }
+    })
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: vi.fn(() => 'blob:history') })
+    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: vi.fn() })
+    let download = ''
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) { download = this.download })
+    render(<HistoryView userId="user-a" workspaceId="workspace-a" bootstrap={bootstrap} setBootstrap={vi.fn()} edit={vi.fn()} createNew={vi.fn()} refreshPending={vi.fn()}/>)
+
+    fireEvent.change(screen.getByLabelText('Валюта истории'), { target: { value: 'EUR' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Экспорт CSV' }))
+
+    expect(createdParts[0]?.[0]).toBe('\uFEFF')
+    expect(String(createdParts[0]?.[1])).toContain('eur-row')
+    expect(String(createdParts[0]?.[1])).not.toContain('rsd-row')
+    expect(download).toMatch(/^moapp-history-\d{4}-\d{2}-\d{2}\.csv$/)
+    expect(screen.getByText('Экспортировано расходов: 1')).not.toBeNull()
   })
 })
 
