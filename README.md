@@ -21,6 +21,25 @@ The repository is split into two workspaces:
 - `server` — Fastify API, SQLite storage, profile sessions, workspaces, and
   exchange rates.
 
+## ChatGPT and MCP
+
+The production server exposes a read-only MCP endpoint at `${APP_ORIGIN}/mcp`.
+It lets ChatGPT list the connected profile's current workspaces and read
+filtered, paginated expense history. It cannot create, edit, or delete data.
+
+Authentication is a small OAuth 2.1 authorization-code flow built into Moapp:
+dynamic client registration, S256 PKCE, one-hour access tokens, rotating
+30-day refresh tokens, and the single `history:read` scope. OAuth tokens and
+codes are stored only as SHA-256 hashes. The consent page reuses the existing
+Moapp browser session, so no email/password provider or additional deployment
+configuration is required.
+
+To test it, deploy the app over HTTPS, enable developer mode in ChatGPT, and
+add `${APP_ORIGIN}/mcp` as the MCP server URL. Open Moapp in the same browser
+profile first. Because the application cookie is deliberately
+`SameSite=Strict`, the first authorization page may ask for one extra
+"Продолжить" click before showing consent.
+
 Deployment files live in `infra`, with the production workflow in
 `.github/workflows`.
 
@@ -36,6 +55,7 @@ Deployment files live in `infra`, with the production workflow in
 - Frankfurter v2 for daily and historical exchange rates.
 - SQLite as the primary database.
 - Cloudflare R2 as off-server backup storage.
+- Read-only MCP access with built-in OAuth 2.1 and live workspace membership checks.
 - Host Nginx terminates HTTPS and proxies to `127.0.0.1:8892`.
 
 The recovery link is the profile's long-lived master secret. Save it somewhere

@@ -27,7 +27,12 @@ export default defineConfig({
   }],
   server: {
     port: 5173,
-    proxy: { '/api': 'http://localhost:3000' },
+    proxy: {
+      '/api': 'http://localhost:3000',
+      '/mcp': 'http://localhost:3000',
+      '/oauth': 'http://localhost:3000',
+      '/.well-known': 'http://localhost:3000',
+    },
   },
   build: { sourcemap: true },
 })

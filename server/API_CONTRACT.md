@@ -1,6 +1,6 @@
 # Moapp API contract
 
-This document describes the implemented account/workspace API. All application endpoints are under `/api`.
+This document describes the implemented account/workspace API. Normal application endpoints are under `/api`; OAuth discovery/authorization and MCP use the dedicated public paths described below.
 
 ## Transport, sessions, and errors
 
@@ -38,6 +38,51 @@ Validation errors are normally `400`; missing JSON content type is `415`. Protec
 Amounts are positive safe integers in currency minor units. Currency codes are ISO 4217. Timestamps are ISO 8601 instants; analytics filters use `YYYY-MM-DD` calendar dates in `Europe/Belgrade`. Client-created workspace, expense, sync-operation, and optional category IDs are UUIDs. Versioned mutations use integer optimistic-concurrency versions.
 
 `GET /api/health` returns `{status:'ok'|'degraded',database,time}`.
+
+## OAuth 2.1 and MCP
+
+Moapp exposes a stateless, JSON-response Streamable HTTP MCP endpoint at
+`POST /mcp`. `GET` and `DELETE /mcp` return `405` because the implementation
+does not keep MCP sessions or server-initiated streams. Every MCP request
+requires `Authorization: Bearer <access token>` and the `history:read` scope.
+Missing or invalid credentials return `401` with a `WWW-Authenticate` challenge
+pointing to protected-resource metadata.
+
+Discovery endpoints:
+
+- `GET /.well-known/oauth-protected-resource` (also available with `/mcp` appended);
+- `GET /.well-known/oauth-authorization-server`;
+- `POST /oauth/register` for public-client dynamic registration;
+- `GET|POST /oauth/authorize` for consent through the existing normal Moapp session;
+- `POST /oauth/token` for `authorization_code` and rotating `refresh_token` grants;
+- `POST /oauth/revoke` for access- or refresh-token revocation.
+
+The flow requires S256 PKCE, the exact resource `${APP_ORIGIN}/mcp`, an exact
+registered redirect URI, and the single `history:read` scope. Access tokens
+expire after one hour; refresh tokens expire after 30 days and rotate on every
+use. Authorization codes are single-use and expire after five minutes. Only
+SHA-256 hashes of codes and tokens are stored in SQLite. OAuth endpoints return
+`Cache-Control: no-store`.
+
+The authorization page does not introduce another identity provider. It uses
+the signed `SameSite=Strict` Moapp cookie but intentionally does not require
+the API expected-context headers, since it is a browser redirect rather than
+an API client request. The first cross-site navigation may not carry the strict
+cookie; the page provides a same-origin continuation before consent.
+
+Available read-only tools:
+
+- `list_workspaces` returns the connected profile's current workspace IDs,
+  names, and roles;
+- `get_expense_history` accepts `workspaceId`, optional inclusive `from`/`to`
+  Belgrade calendar dates, `categoryId`, `currency`, `limit` (up to 200), and
+  an opaque pagination `cursor`. It returns exact minor-unit and decimal
+  amounts, category names, notes, local dates, and `nextCursor`.
+
+Tool calls recheck live membership before reading tenant data. Losing
+membership immediately removes access even while the OAuth token remains
+valid. Deleted expenses are never returned, and a foreign workspace is
+indistinguishable from a missing workspace. MCP exposes no write tools.
 
 ## Session response
 

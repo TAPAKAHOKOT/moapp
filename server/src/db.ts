@@ -71,7 +71,7 @@ const seeds = [
   ["other", "Прочее", "additional", 4, "#A8A8A8"]
 ] as const;
 
-const LATEST_SCHEMA_VERSION = 5;
+const LATEST_SCHEMA_VERSION = 6;
 
 type TableCount = {
   categories: number;
@@ -369,6 +369,42 @@ export function openDatabase(path: string): Database.Database {
                 AND conflicting.id <> categories.id
                 AND conflicting.name = 'Кафе и рестораны' COLLATE NOCASE
             )`).run(appliedAt);
+        else if (version === 6) db.exec(`
+          CREATE TABLE oauth_clients (
+            client_id TEXT PRIMARY KEY,
+            redirect_uris_json TEXT NOT NULL CHECK(json_valid(redirect_uris_json)),
+            client_name TEXT NOT NULL CHECK(length(client_name) BETWEEN 1 AND 100),
+            created_at TEXT NOT NULL
+          );
+          CREATE TABLE oauth_authorization_codes (
+            code_hash TEXT PRIMARY KEY,
+            client_id TEXT NOT NULL REFERENCES oauth_clients(client_id),
+            user_id TEXT NOT NULL REFERENCES users(id),
+            redirect_uri TEXT NOT NULL,
+            scope TEXT NOT NULL,
+            code_challenge TEXT NOT NULL,
+            resource TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            consumed_at TEXT
+          );
+          CREATE INDEX oauth_codes_expiry_idx ON oauth_authorization_codes(expires_at);
+          CREATE TABLE oauth_tokens (
+            access_token_hash TEXT PRIMARY KEY,
+            refresh_token_hash TEXT UNIQUE NOT NULL,
+            client_id TEXT NOT NULL REFERENCES oauth_clients(client_id),
+            user_id TEXT NOT NULL REFERENCES users(id),
+            scope TEXT NOT NULL,
+            resource TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            access_expires_at TEXT NOT NULL,
+            refresh_expires_at TEXT NOT NULL,
+            revoked_at TEXT
+          );
+          CREATE INDEX oauth_tokens_user_idx ON oauth_tokens(user_id,created_at);
+          CREATE INDEX oauth_tokens_access_expiry_idx ON oauth_tokens(access_expires_at);
+          CREATE INDEX oauth_tokens_refresh_expiry_idx ON oauth_tokens(refresh_expires_at);
+        `);
         db.prepare("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)").run(version, appliedAt);
       }
     });

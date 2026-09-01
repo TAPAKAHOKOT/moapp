@@ -149,15 +149,15 @@ test("a clean file reaches the latest schema without hidden identity, workspace,
   const fixture = temporaryDatabase();
   try {
     let db = openDatabase(fixture.path);
-    assert.equal((db.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number }).version, 5);
-    for (const table of ["users", "workspaces", "memberships", "categories", "legacy_claims"] as const) {
+    assert.equal((db.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number }).version, 6);
+    for (const table of ["users", "workspaces", "memberships", "categories", "legacy_claims", "oauth_clients", "oauth_authorization_codes", "oauth_tokens"] as const) {
       assert.equal((db.prepare(`SELECT count(*) AS count FROM ${table}`).get() as { count: number }).count, 0);
     }
     db.close();
     const sizeAfterFirstStart = statSync(fixture.path).size;
 
     db = openDatabase(fixture.path);
-    assert.equal((db.prepare("SELECT count(*) AS count FROM schema_migrations").get() as { count: number }).count, 5);
+    assert.equal((db.prepare("SELECT count(*) AS count FROM schema_migrations").get() as { count: number }).count, 6);
     assert.equal((db.prepare("SELECT count(*) AS count FROM users").get() as { count: number }).count, 0);
     assert.equal(statSync(fixture.path).size, sizeAfterFirstStart);
     db.close();
@@ -222,7 +222,8 @@ for (const version of [1, 2] as const) {
       for (const name of [
         "memberships_user_idx", "sessions_user_idx", "sessions_expiry_idx", "sessions_active_idx",
         "access_tokens_kind_idx", "access_tokens_target_idx", "access_tokens_workspace_idx", "access_tokens_expiry_idx",
-        "categories_order_idx", "categories_archived_idx", "expenses_occurred_idx", "expenses_deleted_idx", "sync_operations_created_idx"
+        "categories_order_idx", "categories_archived_idx", "expenses_occurred_idx", "expenses_deleted_idx", "sync_operations_created_idx",
+        "oauth_codes_expiry_idx", "oauth_tokens_user_idx", "oauth_tokens_access_expiry_idx", "oauth_tokens_refresh_expiry_idx"
       ]) assert.ok(indexes.has(name), `missing index ${name}`);
       const expenseForeignKey = db.pragma("foreign_key_list(expenses)") as { from: string; to: string; table: string }[];
       assert.deepEqual(expenseForeignKey.filter(({ table }) => table === "categories").map(({ from, to }) => [from, to]),
@@ -419,7 +420,7 @@ test("an existing v3 database receives the singleton hardening migration", () =>
     db.close();
 
     db = openDatabase(fixture.path);
-    assert.equal((db.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number }).version, 5);
+    assert.equal((db.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number }).version, 6);
     assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type='index' AND name='legacy_claims_singleton_idx'").get());
     db.close();
   } finally {
@@ -444,7 +445,7 @@ test("a copy failure rolls v3 back and leaves a retryable v2 database", () => {
     db.close();
 
     db = openDatabase(fixture.path);
-    assert.equal((db.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number }).version, 5);
+    assert.equal((db.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number }).version, 6);
     assert.equal((db.prepare("SELECT count(*) AS count FROM expenses").get() as { count: number }).count, 2);
     assert.deepEqual(db.pragma("foreign_key_check"), []);
     db.close();
