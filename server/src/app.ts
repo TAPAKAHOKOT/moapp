@@ -23,8 +23,8 @@ function loggerOptions(enabled: boolean | undefined) {
       paths: [
         "req.headers.cookie", "req.headers.authorization", "req.body.pin", "req.body.token",
         "req.body.attemptToken", "req.body.completionToken", "req.body.code", "req.body.code_verifier",
-        "req.body.refresh_token", "pin", "token", "code", "code_verifier", "refresh_token", "attemptToken",
-        "completionToken"
+        "req.body.refresh_token", "req.body.csrf_token", "pin", "token", "code", "code_verifier",
+        "refresh_token", "csrf_token", "attemptToken", "completionToken"
       ] as string[],
       censor: "[REDACTED]"
     }

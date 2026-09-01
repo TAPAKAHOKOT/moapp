@@ -63,7 +63,12 @@ async function registerClient(app: FastifyInstance, redirectUri = "https://chatg
   return { clientId: (response.json() as { client_id: string }).client_id, redirectUri };
 }
 
-async function authorize(app: FastifyInstance, identity: Identity, client: { clientId: string; redirectUri: string }) {
+async function submitAuthorization(
+  app: FastifyInstance,
+  identity: Identity,
+  client: { clientId: string; redirectUri: string },
+  origin: string | null = app.config.appOrigin
+) {
   const verifier = "mcp-test-verifier-that-is-long-enough-for-pkce-1234567890";
   const challenge = createHash("sha256").update(verifier).digest("base64url");
   const fields = new URLSearchParams({
@@ -79,14 +84,27 @@ async function authorize(app: FastifyInstance, identity: Identity, client: { cli
   const consent = await app.inject({ method: "GET", url: `/oauth/authorize?${fields}`, headers: { cookie: identity.cookie } });
   assert.equal(consent.statusCode, 200, consent.body);
   assert.match(consent.body, /Разрешить доступ к истории/);
+  const csrfToken = /name="csrf_token" value="([A-Za-z0-9_.-]+)"/.exec(consent.body)?.[1];
+  assert.ok(csrfToken);
   const approval = new URLSearchParams(fields);
   approval.set("decision", "approve");
+  approval.set("csrf_token", csrfToken);
+  const headers: Record<string, string> = {
+    cookie: identity.cookie,
+    "content-type": "application/x-www-form-urlencoded"
+  };
+  if (origin !== null) headers.origin = origin;
   const approved = await app.inject({
     method: "POST",
     url: "/oauth/authorize",
-    headers: { cookie: identity.cookie, origin: app.config.appOrigin, "content-type": "application/x-www-form-urlencoded" },
+    headers,
     payload: approval.toString()
   });
+  return { approved, verifier };
+}
+
+async function authorize(app: FastifyInstance, identity: Identity, client: { clientId: string; redirectUri: string }, origin?: string | null) {
+  const { approved, verifier } = await submitAuthorization(app, identity, client, origin === undefined ? app.config.appOrigin : origin);
   assert.equal(approved.statusCode, 302, approved.body);
   const callback = new URL(approved.headers.location!);
   assert.equal(callback.searchParams.get("state"), "state-1");
@@ -186,6 +204,42 @@ test("OAuth discovery, DCR and PKCE issue only hashed, refreshable credentials",
   const oldAccess = await app.inject({ method: "GET", url: "/mcp", headers: { authorization: `Bearer ${tokens.access_token}` } });
   assert.equal(oldAccess.statusCode, 401);
   assert.match(String(oldAccess.headers["www-authenticate"]), /invalid_token/);
+});
+
+test("OAuth consent accepts opaque or missing Origin only with its signed session-bound form token", async () => {
+  const app = await buildTestApp({ plugins: [registerOAuthRoutes, registerMcpRoutes] });
+  apps.push(app);
+  const identity = await createIdentity(app, "Владелец", "Дом");
+  const client = await registerClient(app);
+
+  const opaqueOrigin = await authorize(app, identity, client, "null");
+  assert.ok(opaqueOrigin.code);
+  const missingOrigin = await authorize(app, identity, client, null);
+  assert.ok(missingOrigin.code);
+
+  const foreignOrigin = await submitAuthorization(app, identity, client, "https://attacker.example");
+  assert.equal(foreignOrigin.approved.statusCode, 400);
+  assert.match(foreignOrigin.approved.body, /Request origin is not allowed/);
+
+  const forged = new URLSearchParams({
+    response_type: "code",
+    client_id: client.clientId,
+    redirect_uri: client.redirectUri,
+    scope: "history:read",
+    code_challenge: createHash("sha256").update("mcp-test-verifier-that-is-long-enough-for-pkce-1234567890").digest("base64url"),
+    code_challenge_method: "S256",
+    resource: mcpResource(app),
+    decision: "approve",
+    csrf_token: "forged.token"
+  });
+  const rejected = await app.inject({
+    method: "POST",
+    url: "/oauth/authorize",
+    headers: { cookie: identity.cookie, "content-type": "application/x-www-form-urlencoded" },
+    payload: forged.toString()
+  });
+  assert.equal(rejected.statusCode, 400);
+  assert.match(rejected.body, /Authorization form is invalid or expired/);
 });
 
 test("MCP exposes paginated read-only history and rechecks workspace membership", async () => {
