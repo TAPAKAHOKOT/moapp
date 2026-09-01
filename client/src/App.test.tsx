@@ -162,6 +162,7 @@ describe('expense editing and saving', () => {
     const expense = { id: 'old', amountMinor: 1_000, currency: 'RSD', categoryId: archived.id, note: null, occurredAt: '2026-08-09T13:00:00.000Z', createdAt: '2026-08-09T13:00:00.000Z', updatedAt: '2026-08-09T13:00:00.000Z', version: 1, deletedAt: null }
     render(<EntryView userId="user-a" workspaceId="workspace-a" bootstrap={expenseBootstrap({ categories: [archived], expenses: [expense] })} setBootstrap={vi.fn()} currentId="old" setCurrentId={vi.fn()} refreshPending={vi.fn()} onDraftDirtyChange={vi.fn()} active/>)
 
+    expect(screen.getByRole('region', { name: 'Ввод суммы' }).querySelector('.edit-actions:not(.empty)')).not.toBeNull()
     fireEvent.click(screen.getByRole('button', { name: '1' }))
     expect(submit).not.toHaveBeenCalled()
     fireEvent.click(screen.getByRole('button', { name: 'Сохранить изменения' }))
@@ -175,6 +176,7 @@ describe('expense editing and saving', () => {
     render(<EntryView userId="user-a" workspaceId="workspace-a" bootstrap={expenseBootstrap()} setBootstrap={vi.fn()} currentId={null} setCurrentId={vi.fn()} refreshPending={vi.fn()} onDraftDirtyChange={vi.fn()} active/>)
 
     expect(screen.queryByRole('button', { name: 'Новый расход' })).toBeNull()
+    expect(screen.getByRole('region', { name: 'Ввод суммы' }).querySelector('.edit-actions.empty')).not.toBeNull()
     fireEvent.click(screen.getByRole('button', { name: '1' }))
     fireEvent.click(screen.getByRole('button', { name: 'Продукты' }))
 
