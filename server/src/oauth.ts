@@ -1,4 +1,4 @@
-import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import type { Database } from "better-sqlite3";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { hashSecret } from "./auth.js";
@@ -6,6 +6,7 @@ import { listWorkspaceSummaries } from "./users.js";
 
 const MCP_SCOPE = "history:read";
 const AUTHORIZATION_CODE_TTL_MS = 5 * 60_000;
+const CONSENT_CSRF_TTL_MS = 10 * 60_000;
 const ACCESS_TOKEN_TTL_SECONDS = 60 * 60;
 const REFRESH_TOKEN_TTL_MS = 30 * 86_400_000;
 const REDIRECT_URI_LIMIT = 10;
@@ -169,7 +170,7 @@ function hidden(name: string, value: string | undefined): string {
   return value === undefined ? "" : `<input type="hidden" name="${htmlEscape(name)}" value="${htmlEscape(value)}">`;
 }
 
-function authorizationFields(input: AuthorizationInput): string {
+function authorizationFields(input: AuthorizationInput, csrfToken: string): string {
   return [
     hidden("response_type", input.responseType),
     hidden("client_id", input.client.client_id),
@@ -178,8 +179,52 @@ function authorizationFields(input: AuthorizationInput): string {
     hidden("state", input.state),
     hidden("code_challenge", input.codeChallenge),
     hidden("code_challenge_method", "S256"),
-    hidden("resource", input.resource)
+    hidden("resource", input.resource),
+    hidden("csrf_token", csrfToken)
   ].join("");
+}
+
+function consentCsrfMessage(input: AuthorizationInput, userId: string, sessionId: string, issuedAt: number): string {
+  return JSON.stringify([
+    issuedAt,
+    userId,
+    sessionId,
+    input.client.client_id,
+    input.redirectUri,
+    input.scope,
+    input.state ?? null,
+    input.codeChallenge,
+    input.resource
+  ]);
+}
+
+function consentCsrfToken(app: FastifyInstance, input: AuthorizationInput, userId: string, sessionId: string, now = new Date()): string {
+  const issuedAt = Math.floor(now.getTime() / 1000);
+  const signature = createHmac("sha256", app.config.sessionSecret)
+    .update(consentCsrfMessage(input, userId, sessionId, issuedAt))
+    .digest("base64url");
+  return `${issuedAt.toString(36)}.${signature}`;
+}
+
+function validConsentCsrfToken(
+  app: FastifyInstance,
+  token: string | undefined,
+  input: AuthorizationInput,
+  userId: string,
+  sessionId: string,
+  now = new Date()
+): boolean {
+  const match = /^([0-9a-z]+)\.([A-Za-z0-9_-]{43})$/.exec(token ?? "");
+  if (!match) return false;
+  const issuedAt = Number.parseInt(match[1]!, 36);
+  const nowSeconds = Math.floor(now.getTime() / 1000);
+  if (!Number.isSafeInteger(issuedAt) || issuedAt > nowSeconds + 60 || issuedAt < nowSeconds - CONSENT_CSRF_TTL_MS / 1000) return false;
+  const expected = createHmac("sha256", app.config.sessionSecret)
+    .update(consentCsrfMessage(input, userId, sessionId, issuedAt))
+    .digest("base64url");
+  const expectedBytes = Buffer.from(expected);
+  const actualBytes = Buffer.from(match[2]!);
+  return expectedBytes.length === actualBytes.length && timingSafeEqual(expectedBytes, actualBytes);
 }
 
 function retryUrl(app: FastifyInstance, input: AuthorizationInput): string {
@@ -340,11 +385,15 @@ export async function registerOAuthRoutes(app: FastifyInstance): Promise<void> {
     }
     const profile = app.db.prepare("SELECT display_name FROM users WHERE id=?").get(request.auth.userId) as { display_name: string } | undefined;
     const workspaces = listWorkspaceSummaries(app.db, request.auth.userId);
-    return sendPage(reply, 200, "Разрешить доступ", `<h1>Разрешить доступ к истории?</h1><p><strong>${htmlEscape(input.client.client_name)}</strong> получит доступ к профилю ${htmlEscape(profile?.display_name ?? "Moapp")}.</p><ul><li>только чтение истории расходов;</li><li>все пространства, участником которых остаётся профиль;</li><li>без создания, изменения и удаления расходов.</li></ul><p class="muted">Получатель авторизации: ${htmlEscape(new URL(input.redirectUri).origin)}.<br>Сейчас доступно пространств: ${workspaces.length}${workspaces.length ? ` — ${workspaces.map((workspace) => htmlEscape(workspace.name)).join(", ")}` : ""}.</p><form method="post" action="/oauth/authorize">${authorizationFields(input)}<div class="actions"><button type="submit" name="decision" value="approve">Разрешить</button><button class="secondary" type="submit" name="decision" value="deny">Отмена</button></div></form>`);
+    const csrfToken = consentCsrfToken(app, input, request.auth.userId, request.auth.sessionId);
+    return sendPage(reply, 200, "Разрешить доступ", `<h1>Разрешить доступ к истории?</h1><p><strong>${htmlEscape(input.client.client_name)}</strong> получит доступ к профилю ${htmlEscape(profile?.display_name ?? "Moapp")}.</p><ul><li>только чтение истории расходов;</li><li>все пространства, участником которых остаётся профиль;</li><li>без создания, изменения и удаления расходов.</li></ul><p class="muted">Получатель авторизации: ${htmlEscape(new URL(input.redirectUri).origin)}.<br>Сейчас доступно пространств: ${workspaces.length}${workspaces.length ? ` — ${workspaces.map((workspace) => htmlEscape(workspace.name)).join(", ")}` : ""}.</p><form method="post" action="/oauth/authorize">${authorizationFields(input, csrfToken)}<div class="actions"><button type="submit" name="decision" value="approve">Разрешить</button><button class="secondary" type="submit" name="decision" value="deny">Отмена</button></div></form>`);
   });
 
   app.post("/oauth/authorize", { preHandler: app.optionalAuth }, async (request, reply) => {
-    if (request.headers.origin !== app.config.appOrigin) return authorizationErrorPage(reply, "access_denied", "Request origin is not allowed");
+    const requestOrigin = request.headers.origin;
+    if (requestOrigin !== undefined && requestOrigin !== "null" && requestOrigin !== app.config.appOrigin) {
+      return authorizationErrorPage(reply, "access_denied", "Request origin is not allowed");
+    }
     const raw = parseFormBody(request.body);
     const input = authorizationInput(app, raw);
     if ("error" in input) {
@@ -354,6 +403,9 @@ export async function registerOAuthRoutes(app: FastifyInstance): Promise<void> {
     }
     if (!request.auth || request.auth.sessionKind !== "normal") {
       return sendPage(reply, 401, "Нужен профиль", `<h1>Сессия Moapp не найдена</h1><p>Откройте Moapp в этом браузере и повторите подключение.</p>`);
+    }
+    if (!validConsentCsrfToken(app, stringValue(raw.csrf_token), input, request.auth.userId, request.auth.sessionId)) {
+      return authorizationErrorPage(reply, "access_denied", "Authorization form is invalid or expired");
     }
     if (raw.decision === "deny") {
       return redirectAuthorizationResult(app, reply, input.redirectUri, { error: "access_denied", state: input.state });

@@ -68,7 +68,11 @@ The authorization page does not introduce another identity provider. It uses
 the signed `SameSite=Strict` Moapp cookie but intentionally does not require
 the API expected-context headers, since it is a browser redirect rather than
 an API client request. The first cross-site navigation may not carry the strict
-cookie; the page provides a same-origin continuation before consent.
+cookie; the page provides a same-origin continuation before consent. Consent
+submissions use a ten-minute HMAC-signed CSRF token bound to the active session,
+OAuth client, redirect URI, resource, state, and PKCE challenge. A present
+foreign `Origin` is rejected; a missing or opaque `Origin` is accepted only
+with that valid form token for compatibility with sandboxed OAuth windows.
 
 Available read-only tools:
 
