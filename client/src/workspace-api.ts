@@ -1,6 +1,6 @@
 import { cacheBootstrap, queueMutation, queueMutations, readCachedBootstrap, readOutbox, removeMutation } from './workspace-offline'
 import type {
-  AnalyticsData, AuthenticatedSession, Category, DeviceLinkMetadata, DeviceLinkPreview, DeviceSession, Expense, InvitationMetadata,
+  AnalyticsData, AuthenticatedSession, BybitCardStatus, BybitCardTransaction, BybitRegion, Category, DeviceLinkMetadata, DeviceLinkPreview, DeviceSession, Expense, InvitationMetadata,
   InvitationPreview, Participant, RecoveryPrepareResponse, RecoveryPreview, SessionState, SyncResult, UserProfile, WorkspaceBootstrap,
   WorkspaceOutboxItem, WorkspaceSummary,
 } from './types'
@@ -38,6 +38,11 @@ const SERVER_ERROR_MESSAGES: Record<string, string> = {
   USE_LOGOUT: 'Для текущего устройства используйте кнопку выхода.',
   VALIDATION: 'Проверьте заполненные данные.',
   VERSION_CONFLICT: 'Данные на сервере уже изменились. Обновите экран и повторите действие.',
+  UNDO_CONFLICT: 'Созданный расход уже изменился, поэтому отменить его из разбора нельзя.',
+  BYBIT_KEY_NOT_READ_ONLY: 'Создайте для Moapp отдельный read-only API-ключ Bybit.',
+  BYBIT_CARD_PERMISSION_MISSING: 'У API-ключа не включено разрешение Bybit Card.',
+  BYBIT_REJECTED: 'Bybit отклонил запрос. Проверьте ключ, регион и ограничения по IP.',
+  BYBIT_UNAVAILABLE: 'Bybit сейчас недоступен. Повторите синхронизацию позже.',
   WORKSPACE_NOT_FOUND: 'Пространство не найдено или доступ к нему закрыт.',
 }
 
@@ -228,6 +233,38 @@ export function reorderCategories(workspaceId: string, ids: string[], signal?: A
 export function getAnalytics(workspaceId: string, from: string, to: string, currency: string, categoryId?: string, signal?: AbortSignal) {
   const query = new URLSearchParams({ from, to, currency }); if (categoryId) query.set('categoryId', categoryId)
   return request<AnalyticsData>(workspacePath(workspaceId, `/analytics?${query}`), { signal })
+}
+
+const bybitCardPath = (workspaceId: string, suffix = '') => workspacePath(workspaceId, `/integrations/bybit-card${suffix}`)
+export function getBybitCardStatus(workspaceId: string, signal?: AbortSignal) {
+  return request<BybitCardStatus>(bybitCardPath(workspaceId), { signal })
+}
+export function connectBybitCard(workspaceId: string, apiKey: string, apiSecret: string, region: BybitRegion, signal?: AbortSignal) {
+  assertMutationsAllowed()
+  return request<BybitCardStatus>(bybitCardPath(workspaceId), { method: 'POST', body: JSON.stringify({ apiKey, apiSecret, region }), signal })
+}
+export async function disconnectBybitCard(workspaceId: string, signal?: AbortSignal): Promise<void> {
+  assertMutationsAllowed()
+  await request<void>(bybitCardPath(workspaceId), { method: 'DELETE', body: JSON.stringify({}), signal })
+}
+export function syncBybitCard(workspaceId: string, signal?: AbortSignal) {
+  assertMutationsAllowed()
+  return request<BybitCardStatus & { imported: number }>(bybitCardPath(workspaceId, '/sync'), { method: 'POST', body: JSON.stringify({}), signal })
+}
+export function listBybitCardTransactions(workspaceId: string, signal?: AbortSignal) {
+  return request<{ transactions: BybitCardTransaction[]; pendingCount: number }>(bybitCardPath(workspaceId, '/transactions?limit=200'), { signal })
+}
+export function classifyBybitCardTransaction(workspaceId: string, transactionId: string, categoryId: string, comment: string, signal?: AbortSignal) {
+  assertMutationsAllowed()
+  return request<{ transaction: BybitCardTransaction; expense: Expense; pendingCount: number }>(bybitCardPath(workspaceId, `/transactions/${encodeURIComponent(transactionId)}/classify`), { method: 'POST', body: JSON.stringify({ categoryId, comment }), signal })
+}
+export function ignoreBybitCardTransaction(workspaceId: string, transactionId: string, signal?: AbortSignal) {
+  assertMutationsAllowed()
+  return request<{ pendingCount: number }>(bybitCardPath(workspaceId, `/transactions/${encodeURIComponent(transactionId)}/ignore`), { method: 'POST', body: JSON.stringify({}), signal })
+}
+export function undoBybitCardTransaction(workspaceId: string, transactionId: string, expense?: Pick<Expense, 'id'|'version'>, signal?: AbortSignal) {
+  assertMutationsAllowed()
+  return request<{ transaction: BybitCardTransaction; undoneExpenseId: string|null; pendingCount: number }>(bybitCardPath(workspaceId, `/transactions/${encodeURIComponent(transactionId)}/undo`), { method: 'POST', body: JSON.stringify(expense?{expenseId:expense.id,expenseVersion:expense.version}:{}), signal })
 }
 
 export function buildExpenseOperation(userId: string, workspaceId: string, type: WorkspaceOutboxItem['type'], expense: Expense, operationId: string, createdAt: string): WorkspaceOutboxItem {

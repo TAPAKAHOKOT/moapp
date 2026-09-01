@@ -2,6 +2,7 @@ import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo,
 import { QRCodeSVG } from 'qrcode.react'
 import {
   WorkspaceApiError as ApiError, allowWorkspaceMutations, blockWorkspaceMutations, createCategory, discardOutboxIssues, getAnalytics, getBootstrap,
+  classifyBybitCardTransaction, connectBybitCard, disconnectBybitCard, getBybitCardStatus, ignoreBybitCardTransaction, listBybitCardTransactions, syncBybitCard, undoBybitCardTransaction,
   createDeviceLink, createInvitation, getSession, isLinkInvalid, legacyClaim, leaveWorkspace, listInvitations, listMembers, listSessions, logoutExpected, prepareInitialOrManualRecovery,
   prepareRecovery, previewDeviceLink, previewInvitation, previewRecovery, removeMember, renameWorkspace, reorderCategories, revokeInvitation, revokeSession, submitExpenseOperation,
   setSessionContext, submitExpenseOperations, syncAllWorkspaces, transferOwnership, updateCategory, updateProfile,
@@ -12,13 +13,13 @@ import type { AppState } from './app-state'
 import { AccessFlowError, acceptDeviceWithProbe, acceptInvitationWithProbe, createIdentityWithProbe, createWorkspaceWithProbe, generateAttemptToken } from './access-flow'
 import { completeRecoverySafely, completeRotationSafely } from './recovery-flow'
 import { monitorServiceWorkerUpdates } from './service-worker-update'
-import type { AnalyticsData, AuthenticatedSession, CapabilityIntent, Category, Currency, Expense, RecoveryPrepareResponse, SessionState, WorkspaceBootstrap, WorkspaceOutboxItem, WorkspaceSummary } from './types'
+import type { AnalyticsData, AuthenticatedSession, BybitCardStatus, BybitCardTransaction, BybitRegion, CapabilityIntent, Category, Currency, Expense, RecoveryPrepareResponse, SessionState, WorkspaceBootstrap, WorkspaceOutboxItem, WorkspaceSummary } from './types'
 import { amountToMinor, applyKeypad, convertExpense, countCalendarWeekdays, isoToLocalInput, localDateKey, localInputToIso, monthDateRange, shiftDateKey, swipeDirection, weekdayFromDateKey, weekDateRange } from './utils'
 import { buildHistoryCsv, defaultHistoryPreferences, filterHistoryExpenses, parseHistoryPreferences, type HistoryPeriod, type HistoryPreferences } from './history'
 
 const AnalyticsChart = lazy(() => import('./AnalyticsCharts'))
 
-export type Tab = 'entry' | 'history' | 'analytics' | 'settings'
+export type Tab = 'entry' | 'history' | 'analytics' | 'review' | 'settings'
 type Theme = 'light' | 'dark'
 type AnalyticsPeriod = 'week' | 'month'
 const CHART_COLOR = '#758d69'
@@ -252,6 +253,11 @@ function Toast({ toast, onDismiss }: { toast: ToastState; onDismiss: () => void 
 function money(amountMinor: number, currency: string, currencies: Currency[]) {
   const decimals = currencies.find((item) => item.code === currency)?.decimals ?? 2
   return new Intl.NumberFormat('ru-RU', { style: 'currency', currency, maximumFractionDigits: decimals }).format(amountMinor / 10 ** decimals)
+}
+
+function amountNumber(amountMinor: number, currency: string, currencies: Currency[]) {
+  const decimals = currencies.find((item) => item.code === currency)?.decimals ?? 2
+  return new Intl.NumberFormat('ru-RU', { minimumFractionDigits: decimals, maximumFractionDigits: decimals }).format(amountMinor / 10 ** decimals)
 }
 
 function inputFromExpense(expense: Expense, currencies: Currency[]) {
@@ -1218,7 +1224,116 @@ function AccessSettings({ user, workspace, pendingCount, online, onSession, onCr
   </>
 }
 
-export function SettingsView({ user, workspace, workspaceId, bootstrap, setBootstrap, pendingCount, refreshPending, onLogout, theme, onThemeChange, onSession, onCreateWorkspace, online }: { user: AuthenticatedSession; workspace:WorkspaceSummary; workspaceId:string; bootstrap:Bootstrap; setBootstrap:React.Dispatch<React.SetStateAction<Bootstrap>>; pendingCount:number; refreshPending:()=>void;onLogout:()=>void;theme:Theme;onThemeChange:(theme:Theme)=>void;onSession:(session:SessionState)=>Promise<void>;onCreateWorkspace:()=>void;online:boolean }) {
+const bybitRegions: Array<{id:BybitRegion;label:string}> = [
+  {id:'global',label:'Global / Serbia'}, {id:'eu',label:'European Union'}, {id:'kz',label:'Kazakhstan'},
+  {id:'ge',label:'Georgia'}, {id:'ae',label:'UAE'}, {id:'tr',label:'Turkey'}, {id:'nl',label:'Netherlands'}, {id:'id',label:'Indonesia'},
+]
+
+function BybitConnectionPanel({ workspace, workspaceId, status, online, onStatus }: { workspace:WorkspaceSummary;workspaceId:string;status:BybitCardStatus|null;online:boolean;onStatus:(status:BybitCardStatus)=>void }) {
+  const [editing,setEditing]=useState(false)
+  const [apiKey,setApiKey]=useState('')
+  const [apiSecret,setApiSecret]=useState('')
+  const [region,setRegion]=useState<BybitRegion>('global')
+  const [busy,setBusy]=useState(false)
+  const [error,setError]=useState('')
+  const {confirm,confirmation}=useConfirm()
+  const manage=workspace.role==='owner'&&status?.canManage!==false
+  const connect=async(event:React.FormEvent)=>{
+    event.preventDefault();if(!apiKey.trim()||!apiSecret.trim())return setError('Введите API key и secret.')
+    setBusy(true);setError('')
+    try{
+      const next=await connectBybitCard(workspaceId,apiKey.trim(),apiSecret.trim(),region)
+      onStatus(next);setApiKey('');setApiSecret('');setEditing(false)
+    }catch(reason){setError(reason instanceof ApiError?reason.message:'Не удалось подключить Bybit Card')}
+    finally{setBusy(false)}
+  }
+  const sync=async()=>{
+    setBusy(true);setError('')
+    try{onStatus(await syncBybitCard(workspaceId))}catch(reason){setError(reason instanceof ApiError?reason.message:'Не удалось синхронизировать Bybit Card')}
+    finally{setBusy(false)}
+  }
+  const disconnect=async()=>{
+    if(!await confirm({title:'Отключить Bybit Card?',message:'Необработанные операции удалятся. Уже созданные расходы останутся в истории.',confirmLabel:'Отключить',danger:true}))return
+    setBusy(true);setError('')
+    try{await disconnectBybitCard(workspaceId);onStatus({connected:false,canManage:true,pendingCount:0});setEditing(false)}
+    catch(reason){setError(reason instanceof ApiError?reason.message:'Не удалось отключить Bybit Card')}
+    finally{setBusy(false)}
+  }
+  return <div className="settings-group bybit-settings"><h2>Bybit Card</h2><div className="integration-card">
+    <div className="integration-title"><span className="bybit-mark">B</span><span><b>Bybit Card</b><small>{status===null?'Проверяем подключение…':status.connected?status.status==='error'?'Подключено · нужна синхронизация':'Подключено':'Не подключено'}</small></span>{status?.connected&&<i className={status.status==='error'?'error':'active'}/>}</div>
+    {status?.connected?<>
+      <p>Новые платежи учитываются только с {new Date(status.enabledAt!).toLocaleString('ru-RU')}. Более ранняя история не импортируется.</p>
+      {status.lastSyncedAt&&<small className="integration-meta">Последняя синхронизация: {new Date(status.lastSyncedAt).toLocaleString('ru-RU')}</small>}
+      {status.lastError&&<p className="form-error" role="alert">{status.lastError}</p>}
+      <button type="button" className="sheet-cancel" disabled={!online||busy} onClick={()=>void sync()}>{busy?'Синхронизируем…':'Синхронизировать сейчас'}</button>
+      {manage&&<button type="button" className="danger-link" disabled={!online||busy} onClick={()=>void disconnect()}>Отключить интеграцию</button>}
+    </>:manage?<>
+      <p>Moapp загрузит только платежи, совершённые после включения интеграции. Нужен отдельный read-only ключ с разрешением BitCard.</p>
+      {!editing?<button type="button" className="primary" disabled={!online||status===null} onClick={()=>setEditing(true)}>Подключить Bybit Card</button>:<form className="integration-form" onSubmit={(event)=>void connect(event)}>
+        <label>Регион аккаунта<select value={region} disabled={busy} onChange={(event)=>setRegion(event.target.value as BybitRegion)}>{bybitRegions.map((item)=><option key={item.id} value={item.id}>{item.label}</option>)}</select></label>
+        <label>API key<input autoComplete="off" value={apiKey} disabled={busy} maxLength={256} onChange={(event)=>setApiKey(event.target.value)}/></label>
+        <label>API secret<input type="password" autoComplete="new-password" value={apiSecret} disabled={busy} maxLength={512} onChange={(event)=>setApiSecret(event.target.value)}/></label>
+        <button className="primary" disabled={busy||!online}>{busy?'Проверяем ключ…':'Включить интеграцию'}</button><button type="button" className="sheet-cancel" disabled={busy} onClick={()=>{setEditing(false);setError('')}}>Отмена</button>
+      </form>}
+    </>:<p>Подключить карту может владелец пространства.</p>}
+    {error&&<p className="form-error" role="alert">{error}</p>}
+  </div>{confirmation}</div>
+}
+
+type ReviewAction={transaction:BybitCardTransaction;expense?:Expense;categoryId?:string;comment:string}
+
+export function BybitReviewView({ workspaceId, categories, currencies, online, onExpense, onExpenseUndo, onStatus }: {workspaceId:string;categories:Category[];currencies:Currency[];online:boolean;onExpense:(expense:Expense)=>void;onExpenseUndo:(expenseId:string)=>void;onStatus:(status:Partial<BybitCardStatus>&Pick<BybitCardStatus,'pendingCount'>)=>void}) {
+  const [items,setItems]=useState<BybitCardTransaction[]>([])
+  const [deferred,setDeferred]=useState<BybitCardTransaction[]>([])
+  const [comment,setComment]=useState('')
+  const [selectedCategoryId,setSelectedCategoryId]=useState<string|null>(null)
+  const [loading,setLoading]=useState(true)
+  const [busy,setBusy]=useState(false)
+  const [error,setError]=useState('')
+  const {toast:notice,notify,dismiss}=useToast()
+  const {confirm,confirmation}=useConfirm()
+  const current=items[0]
+  const activeCategories=categories.filter((item)=>!item.archivedAt).sort((a,b)=>(a.placement==='main'?0:1)-(b.placement==='main'?0:1)||a.sortOrder-b.sortOrder)
+  useEffect(()=>{const controller=new AbortController();setLoading(true);setDeferred([]);listBybitCardTransactions(workspaceId,controller.signal).then((result)=>{setItems(result.transactions);onStatus({pendingCount:result.pendingCount})}).catch((reason)=>{if(!controller.signal.aborted)setError(reason instanceof ApiError?reason.message:'Не удалось загрузить операции')}).finally(()=>{if(!controller.signal.aborted)setLoading(false)});return()=>controller.abort()},[workspaceId]) // eslint-disable-line react-hooks/exhaustive-deps
+  const removeCurrent=(transaction:BybitCardTransaction,pendingCount:number)=>{setItems((value)=>value.filter((item)=>item.id!==transaction.id));setComment('');setSelectedCategoryId(null);onStatus({pendingCount})}
+  const undo=async(action:ReviewAction)=>{
+    if(busy||!online)return;setBusy(true);setError('')
+    try{const result=await undoBybitCardTransaction(workspaceId,action.transaction.id,action.expense);if(result.undoneExpenseId)onExpenseUndo(result.undoneExpenseId);setItems((value)=>[result.transaction,...value.filter((item)=>item.id!==result.transaction.id)]);setDeferred((value)=>value.filter((item)=>item.id!==result.transaction.id));setComment(action.comment);setSelectedCategoryId(action.categoryId??null);onStatus({pendingCount:result.pendingCount});tap(6)}
+    catch(reason){setError(reason instanceof ApiError?reason.message:'Не удалось отменить последнее действие')}
+    finally{setBusy(false)}
+  }
+  const classify=async(categoryId:string)=>{
+    if(!current||busy||!online)return;const transaction=current;const action:ReviewAction={transaction,categoryId,comment};setSelectedCategoryId(categoryId);setBusy(true);setError('')
+    try{const result=await classifyBybitCardTransaction(workspaceId,transaction.id,categoryId,comment);action.expense=result.expense;onExpense(result.expense);removeCurrent(transaction,result.pendingCount);notify('Расход добавлен',{label:'Отменить',run:()=>void undo(action)});tap(8)}
+    catch(reason){setError(reason instanceof ApiError?reason.message:'Не удалось классифицировать операцию')}
+    finally{setBusy(false)}
+  }
+  const ignore=async()=>{
+    if(!current||busy||!online||!await confirm({title:'Не учитывать операцию?',message:'Она исчезнет из очереди и не станет расходом. Это действие можно отменить до выхода из разбора.',confirmLabel:'Не учитывать',danger:true}))return
+    const transaction=current;const action:ReviewAction={transaction,comment,categoryId:selectedCategoryId??undefined};setBusy(true);setError('');try{const result=await ignoreBybitCardTransaction(workspaceId,transaction.id);removeCurrent(transaction,result.pendingCount);notify('Операция не учтена',{label:'Отменить',run:()=>void undo(action)})}catch(reason){setError(reason instanceof ApiError?reason.message:'Не удалось пропустить операцию')}finally{setBusy(false)}
+  }
+  const skip=()=>{if(!current||busy)return;setItems((value)=>value.slice(1));setDeferred((value)=>[...value,current]);setComment('');setSelectedCategoryId(null);tap(5)}
+  const restoreDeferred=()=>{setItems(deferred);setDeferred([]);setComment('');setSelectedCategoryId(null)}
+  return <><section className="page bybit-review-page" aria-labelledby="bybit-review-title">
+    <h1 className="sr-only" id="bybit-review-title">Разбор операций Bybit Card</h1>
+    {loading?<p className="management-state" role="status">Загружаем операции…</p>:current?<>
+      <header className="topline review-topline"><div><p className="eyebrow">Bybit Card · к разбору {items.length}</p><p className="review-date">{new Date(current.occurredAt).toLocaleString('ru-RU',{weekday:'short',day:'numeric',month:'long',hour:'2-digit',minute:'2-digit'})}</p></div>{deferred.length>0&&<span className="review-deferred">Отложено · {deferred.length}</span>}</header>
+      <div className="amount-row review-amount-row"><output className="amount-value" aria-label="Сумма">{amountNumber(current.amountMinor,current.currency,currencies)}</output><span className="review-currency">{current.currency}</span></div>
+      <article className="review-merchant">
+        <span className="bybit-mark">B</span><div><h3>{current.merchantName||'Без названия продавца'}</h3><p>{current.type==='atm'?'Снятие наличных':current.merchantCategory||'Покупка'}{current.merchantCity?` · ${[current.merchantCity,current.merchantCountry].filter(Boolean).join(', ')}`:''}{current.mccCode?` · MCC ${current.mccCode}`:''}</p></div>
+      </article>
+      <p className="review-hint">Выберите категорию — расход сохранится сразу</p>
+      <div className="review-categories">{activeCategories.map((category)=><button type="button" key={category.id} className={selectedCategoryId===category.id?'selected':''} aria-pressed={selectedCategoryId===category.id} disabled={busy||!online} onClick={()=>void classify(category.id)}><i style={{background:category.color??'#a9afa5'}}/><span>{category.name}</span></button>)}</div>
+      <label className="review-comment">Комментарий <span>необязательно</span><input maxLength={300} disabled={busy} placeholder="Добавить заметку к расходу" value={comment} onChange={(event)=>setComment(event.target.value)}/></label>
+      <div className="review-secondary"><button type="button" disabled={busy} onClick={skip}>Пропустить пока</button><button type="button" disabled={busy||!online} onClick={()=>void ignore()}>Не учитывать</button></div>
+    </>:<div className="review-done"><span>{deferred.length?'↪':'✓'}</span><h3>{deferred.length?'На сейчас всё':'Всё разобрано'}</h3><p>{deferred.length?`${deferred.length} ${deferred.length===1?'операция отложена':'операции отложены'} только в этой сессии разбора.`:'Новые операции появятся после следующей синхронизации.'}</p>{deferred.length>0&&<button type="button" className="primary" onClick={restoreDeferred}>Вернуться к отложенным · {deferred.length}</button>}</div>}
+    {!online&&<p className="management-state" role="status">Без сети можно просматривать и временно откладывать операции. Категория и отмена сохранятся после подключения.</p>}
+    {error&&<p className="form-error" role="alert">{error}</p>}
+  </section>{notice&&<Toast toast={notice} onDismiss={dismiss}/>} {confirmation}</>
+}
+
+export function SettingsView({ user, workspace, workspaceId, bootstrap, setBootstrap, pendingCount, refreshPending, onLogout, theme, onThemeChange, onSession, onCreateWorkspace, online, bybitStatus=null, onBybitStatus=()=>{} }: { user: AuthenticatedSession; workspace:WorkspaceSummary; workspaceId:string; bootstrap:Bootstrap; setBootstrap:React.Dispatch<React.SetStateAction<Bootstrap>>; pendingCount:number; refreshPending:()=>void;onLogout:()=>void;theme:Theme;onThemeChange:(theme:Theme)=>void;onSession:(session:SessionState)=>Promise<void>;onCreateWorkspace:()=>void;online:boolean;bybitStatus?:BybitCardStatus|null;onBybitStatus?:(status:BybitCardStatus)=>void }) {
+  const [section,setSection]=useState<'space'|'integrations'|'general'>('space')
   const [editing,setEditing]=useState<Category|null>(null)
   const [adding,setAdding]=useState(false)
   const [moving,setMoving]=useState<string|null>(null)
@@ -1266,11 +1381,20 @@ export function SettingsView({ user, workspace, workspaceId, bootstrap, setBoots
     setMoving(null)
   }
   const groups:[Category['placement'],string][]=[['main','Основные'],['additional','Дополнительные']]
-  return <section className="page"><header className="page-header settings-title"><div><p className="eyebrow">{workspace.name}</p><h1>Настройки</h1></div></header><AccessSettings user={user} workspace={workspace} pendingCount={pendingCount} online={online} onSession={onSession} onCreateWorkspace={onCreateWorkspace} onNotice={accessNotice} onBusyChange={setAccessBusy}/><p className="page-intro">Настройте быстрые кнопки и их порядок. Категории меняются только онлайн; архивные останутся в истории.</p>
-    {notice&&<Toast toast={notice} onDismiss={hideNotice}/>}<div className="settings-group"><button type="button" className="primary" disabled={!online} onClick={()=>setAdding(true)}>Новая категория</button></div>
-    {groups.map(([placement,title])=>{const items=bootstrap.categories.filter((x)=>x.placement===placement&&!x.archivedAt).sort((a,b)=>a.sortOrder-b.sortOrder);return <div className="settings-group" key={placement}><h2>{title}</h2>{items.map((category,index)=><div className="category-row" key={category.id}><i style={{background:category.color ?? '#a9afa5'}}/><button type="button" className="category-name" disabled={!online||Boolean(moving)} onClick={()=>setEditing(category)}>{category.name}</button><button type="button" disabled={!online||Boolean(moving)||index===0} onClick={()=>void move(category,-1)} aria-label={`Поднять категорию ${category.name}`}>↑</button><button type="button" disabled={!online||Boolean(moving)||index===items.length-1} onClick={()=>void move(category,1)} aria-label={`Опустить категорию ${category.name}`}>↓</button></div>)}{!items.length&&<p className="management-state" role="status">Категорий в этом разделе пока нет.</p>}</div>})}
-    {(editing||adding)&&<CategoryEditor category={editing} colors={colors} onClose={()=>{setEditing(null);setAdding(false)}} onSave={save}/>}
-    <div className="settings-group"><h2>Это устройство</h2><div className="theme-setting"><div><b>Оформление</b><small>Сохраняется только на этом устройстве</small></div><div className="theme-toggle" role="group" aria-label="Тема оформления"><button type="button" className={theme==='light'?'selected':''} aria-pressed={theme==='light'} onClick={()=>onThemeChange('light')}>Светлая</button><button type="button" className={theme==='dark'?'selected':''} aria-pressed={theme==='dark'} onClick={()=>onThemeChange('dark')}>Тёмная</button></div></div><p className="page-intro device-note">Для работы без интернета расходы и сессия доверенно сохраняются в этом браузере. Не используйте эту функцию на общем устройстве.</p><button type="button" className="danger-link" disabled={accessBusy||Boolean(moving)} onClick={onLogout}>Выйти и удалить локальные данные</button></div>
+  const sections=[
+    {id:'space' as const,label:'Пространство',caption:'Участники и доступ'},
+    {id:'integrations' as const,label:'Интеграции',caption:bybitStatus?.connected?'Bybit подключён':'Подключения'},
+    {id:'general' as const,label:'Общее',caption:'Тема и категории'},
+  ]
+  return <section className="page settings-page"><header className="page-header settings-title"><div><p className="eyebrow">{workspace.name}</p><h1>Настройки</h1></div></header>
+    <nav className="settings-sections" aria-label="Разделы настроек">{sections.map((item)=><button type="button" key={item.id} aria-current={section===item.id?'page':undefined} className={section===item.id?'selected':''} onClick={()=>setSection(item.id)}><b>{item.label}</b><small>{item.caption}</small></button>)}</nav>
+    {section==='space'&&<div className="settings-section-panel"><div className="settings-section-copy"><p className="eyebrow">Пространство</p><h2>Люди и доступ</h2><p>Название пространства, участники, устройства и восстановление.</p></div><AccessSettings user={user} workspace={workspace} pendingCount={pendingCount} online={online} onSession={onSession} onCreateWorkspace={onCreateWorkspace} onNotice={accessNotice} onBusyChange={setAccessBusy}/><div className="settings-group"><h2>Локальный профиль</h2><p className="page-intro device-note">Расходы и сессия сохраняются в этом браузере для работы без интернета. Не используйте эту функцию на общем устройстве.</p><button type="button" className="danger-link" disabled={accessBusy||Boolean(moving)} onClick={onLogout}>Выйти и удалить локальные данные</button></div></div>}
+    {section==='integrations'&&<div className="settings-section-panel"><div className="settings-section-copy"><p className="eyebrow">Интеграции</p><h2>Подключённые сервисы</h2><p>Автоматический импорт операций из внешних источников.</p></div><BybitConnectionPanel workspace={workspace} workspaceId={workspaceId} status={bybitStatus} online={online} onStatus={onBybitStatus}/></div>}
+    {section==='general'&&<div className="settings-section-panel"><div className="settings-section-copy"><p className="eyebrow">Общее</p><h2>Вид и категории</h2><p>Оформление этого устройства и структура быстрых кнопок расходов.</p></div><div className="settings-group"><h2>Оформление</h2><div className="theme-setting"><div><b>Тема</b><small>Сохраняется только на этом устройстве</small></div><div className="theme-toggle" role="group" aria-label="Тема оформления"><button type="button" className={theme==='light'?'selected':''} aria-pressed={theme==='light'} onClick={()=>onThemeChange('light')}>Светлая</button><button type="button" className={theme==='dark'?'selected':''} aria-pressed={theme==='dark'} onClick={()=>onThemeChange('dark')}>Тёмная</button></div></div></div><p className="page-intro">Настройте быстрые кнопки и их порядок. Категории меняются только онлайн; архивные останутся в истории.</p>
+      <div className="settings-group"><button type="button" className="primary" disabled={!online} onClick={()=>setAdding(true)}>Новая категория</button></div>
+      {groups.map(([placement,title])=>{const items=bootstrap.categories.filter((x)=>x.placement===placement&&!x.archivedAt).sort((a,b)=>a.sortOrder-b.sortOrder);return <div className="settings-group" key={placement}><h2>{title}</h2>{items.map((category,index)=><div className="category-row" key={category.id}><i style={{background:category.color ?? '#a9afa5'}}/><button type="button" className="category-name" disabled={!online||Boolean(moving)} onClick={()=>setEditing(category)}>{category.name}</button><button type="button" disabled={!online||Boolean(moving)||index===0} onClick={()=>void move(category,-1)} aria-label={`Поднять категорию ${category.name}`}>↑</button><button type="button" disabled={!online||Boolean(moving)||index===items.length-1} onClick={()=>void move(category,1)} aria-label={`Опустить категорию ${category.name}`}>↓</button></div>)}{!items.length&&<p className="management-state" role="status">Категорий в этом разделе пока нет.</p>}</div>})}
+      {(editing||adding)&&<CategoryEditor category={editing} colors={colors} onClose={()=>{setEditing(null);setAdding(false)}} onSave={save}/>}</div>}
+    {notice&&<Toast toast={notice} onDismiss={hideNotice}/>}
   </section>
 }
 
@@ -1291,12 +1415,14 @@ function CategoryEditor({ category, colors, onClose, onSave }:{category:Category
   return <><div className="sheet-backdrop" onMouseDown={()=>{if(!busy)onClose()}}><form ref={dialogRef as React.Ref<HTMLFormElement>} className="bottom-sheet editor" role="dialog" aria-modal="true" aria-labelledby="category-editor-title" noValidate onSubmit={(e)=>{e.preventDefault();void submit(draft)}} onMouseDown={(e)=>e.stopPropagation()}><div className="sheet-handle"/><div className="sheet-title"><h2 id="category-editor-title">{category?'Изменить':'Новая категория'}</h2><button type="button" className="icon-button" data-dialog-initial-focus disabled={busy} aria-label="Закрыть" onClick={onClose}>×</button></div><label>Название<input maxLength={40} aria-invalid={Boolean(validation)} value={draft.name} onChange={(e)=>{setValidation('');setDraft({...draft,name:e.target.value})}}/></label>{validation&&<p className="form-error" role="alert">{validation}</p>}<fieldset><legend>Цвет</legend><div className="colors">{colors.map((color,index)=><button aria-label={`Цвет: ${colorNames[index] ?? color}`} aria-pressed={draft.color===color} type="button" key={color} className={draft.color===color?'selected':''} style={{background:color}} onClick={()=>setDraft({...draft,color})}/>)}</div></fieldset><label>Размещение<select value={draft.placement} onChange={(e)=>setDraft({...draft,placement:e.target.value as Category['placement']})}><option value="main">Основные</option><option value="additional">Дополнительные</option></select></label><button className="primary" disabled={busy}>{busy?'Сохраняем…':'Сохранить'}</button>{category&&<button type="button" className="danger-link" disabled={busy} onClick={()=>void (async()=>{if(await confirm({title:'Архивировать категорию?',message:'Она исчезнет из выбора, но останется у старых расходов.',confirmLabel:'Архивировать',danger:true}))await submit({...draft,archivedAt:new Date().toISOString()})})()}>Архивировать</button>}</form></div>{confirmation}</>
 }
 
-const tabs:{id:Tab;label:string}[]=[{id:'entry',label:'Расход'},{id:'history',label:'История'},{id:'analytics',label:'Аналитика'},{id:'settings',label:'Настройки'}]
+const tabs:{id:Tab;label:string}[]=[{id:'entry',label:'Расход'},{id:'history',label:'История'},{id:'analytics',label:'Аналитика'},{id:'review',label:'Разбор'},{id:'settings',label:'Настройки'}]
+const tabsWithoutReview=tabs.filter((item)=>item.id!=='review')
 
 function NavIcon({ tab }: { tab: Tab }) {
   if(tab==='entry')return <svg className="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 8v8M8 12h8"/></svg>
   if(tab==='history')return <svg className="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 7.5V12l3 2"/></svg>
   if(tab==='analytics')return <svg className="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 19V13M12 19V5M19 19V9M3.5 19h17"/></svg>
+  if(tab==='review')return <svg className="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4h10v16H7zM9.5 8h5M9.5 12h5M9.5 16h3"/><path d="m4 8-2 2 2 2M20 12l2 2-2 2"/></svg>
   return <svg className="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h10M18 6h2M4 12h2M10 12h10M4 18h7M15 18h5"/><circle cx="16" cy="6" r="2"/><circle cx="8" cy="12" r="2"/><circle cx="13" cy="18" r="2"/></svg>
 }
 
@@ -1322,10 +1448,10 @@ function SyncIssuesSheet({ userId, workspaceId, online, onClose, onDiscard }: { 
   return <><div className="sheet-backdrop" onMouseDown={()=>{if(!busy)onClose()}}><section ref={dialogRef} className="bottom-sheet sync-issues-sheet" role="dialog" aria-modal="true" aria-labelledby="sync-issues-title" onMouseDown={(event)=>event.stopPropagation()}><div className="sheet-handle"/><div className="sheet-title"><h2 id="sync-issues-title">Нужна проверка</h2><button type="button" className="icon-button" data-dialog-initial-focus disabled={busy} onClick={onClose} aria-label="Закрыть">×</button></div><p>Сервер не принял некоторые локальные изменения. Их можно отменить и вернуть актуальную версию с сервера.</p>{loading&&<p className="management-state" role="status">Проверяем очередь…</p>}<div className="sync-issue-list">{items.map((item)=><div key={item.operationId}><b>{outboxActionLabel(item.type)}</b><span>{item.status==='conflict'?'Версия на сервере уже изменилась':'Не удалось отправить'}</span><small>{new Date(item.createdAt).toLocaleString('ru-RU')}</small></div>)}</div>{!loading&&!items.length&&!error&&<p className="management-state" role="status">Проблемных изменений уже нет.</p>}{!online&&<p className="form-error" role="status">Подключитесь к интернету, чтобы после отмены загрузить серверную версию.</p>}{error&&<p className="form-error" role="alert">{error}</p>}<button type="button" className="primary danger" disabled={!online||busy||loading||!items.length} onClick={()=>void discard()}>{busy?'Обновляем…':'Отменить проблемные изменения'}</button><button type="button" className="sheet-cancel" disabled={busy} onClick={onClose}>Закрыть</button></section></div>{confirmation}</>
 }
 
-export function pagerTabsAt(scrollLeft: number, clientWidth: number): Tab[] {
+export function pagerTabsAt(scrollLeft: number, clientWidth: number, items=tabs): Tab[] {
   if (clientWidth <= 0) return ['entry']
-  const position = Math.max(0, Math.min(tabs.length - 1, scrollLeft / clientWidth))
-  const touching = [Math.floor(position), Math.ceil(position)].map((index) => tabs[index]!.id)
+  const position = Math.max(0, Math.min(items.length - 1, scrollLeft / clientWidth))
+  const touching = [Math.floor(position), Math.ceil(position)].map((index) => items[index]!.id)
   return [...new Set<Tab>(['entry', ...touching])]
 }
 
@@ -1506,6 +1632,7 @@ export default function App({ capability = null }: { capability?: CapabilityInte
   const [createOpen,setCreateOpen]=useState(false)
   const [switchOpen,setSwitchOpen]=useState(false)
   const [issuesOpen,setIssuesOpen]=useState(false)
+  const [bybitRuntime,setBybitRuntime]=useState<{workspaceId:string;status:BybitCardStatus}|null>(null)
   const [initialRecovery,setInitialRecovery]=useState<RecoveryPrepareResponse|null>(null)
   const [error,setError]=useState('')
   const { toast: notice, notify: setNotice, dismiss: hideNotice } = useToast()
@@ -1518,6 +1645,8 @@ export default function App({ capability = null }: { capability?: CapabilityInte
   const stateRef=useRef(state); stateRef.current=state
   const tab=pagerState.workspaceId===state.activeWorkspaceId?pagerState.tab:'entry'
   const mountedTabs=pagerState.workspaceId===state.activeWorkspaceId?pagerState.mounted:['entry']
+  const reviewConnected=bybitRuntime?.workspaceId===state.activeWorkspaceId&&bybitRuntime.status.connected
+  const navigationTabs=reviewConnected?tabs:tabsWithoutReview
   const setTab=useCallback((next:Tab)=>{
     const workspaceId=stateRef.current.activeWorkspaceId
     setPagerState({workspaceId,tab:next,mounted:pagerTabsFor(next)})
@@ -1638,8 +1767,8 @@ export default function App({ capability = null }: { capability?: CapabilityInte
       setPagerState({workspaceId,tab:'entry',mounted:['entry']})
       return
     }
-    node.scrollLeft=tabs.findIndex((item)=>item.id===tab)*node.clientWidth
-  },[state.activeWorkspaceId,tab,Boolean(state.activeWorkspaceId&&state.runtimes[state.activeWorkspaceId]?.bootstrap)])
+    node.scrollLeft=Math.max(0,navigationTabs.findIndex((item)=>item.id===tab))*node.clientWidth
+  },[state.activeWorkspaceId,tab,reviewConnected,Boolean(state.activeWorkspaceId&&state.runtimes[state.activeWorkspaceId]?.bootstrap)])
   useEffect(()=>()=>clearTimeout(pagerTimer.current),[])
 
   const session=state.session
@@ -1647,6 +1776,30 @@ export default function App({ capability = null }: { capability?: CapabilityInte
   const settingsIdentityEpoch=identityEpoch.current
   const workspaceId=state.activeWorkspaceId
   const workspacesKey=auth?.workspaces.map((workspace)=>`${workspace.id}:${workspace.version}`).join('|')??''
+  const bybitStatus=bybitRuntime?.workspaceId===workspaceId?bybitRuntime.status:null
+  const updateBybitStatus=useCallback((next:Partial<BybitCardStatus>&Pick<BybitCardStatus,'pendingCount'>)=>{
+    const id=stateRef.current.activeWorkspaceId;if(!id)return
+    setBybitRuntime((current)=>({workspaceId:id,status:{connected:false,canManage:false,...(current?.workspaceId===id?current.status:{}),...next}}))
+  },[])
+
+  useEffect(()=>{
+    if(!auth||!workspaceId||!online){setBybitRuntime(null);return}
+    const controller=new AbortController();const id=workspaceId
+    setBybitRuntime((current)=>current?.workspaceId===id?current:null)
+    void getBybitCardStatus(id,controller.signal).then(async(status)=>{
+      if(controller.signal.aborted)return
+      setBybitRuntime({workspaceId:id,status})
+      if(status.connected){
+        try{const synced=await syncBybitCard(id,controller.signal);if(!controller.signal.aborted)setBybitRuntime({workspaceId:id,status:synced})}
+        catch{
+          try{const failed=await getBybitCardStatus(id,controller.signal);if(!controller.signal.aborted)setBybitRuntime({workspaceId:id,status:failed})}
+          catch{/* Bybit status is supplemental and must not block the workspace. */}
+        }
+      }
+    }).catch(()=>{/* Bybit status is supplemental and must not block the workspace. */})
+    return()=>controller.abort()
+  },[auth?.currentSessionId,auth?.user.id,online,workspaceId])
+  useEffect(()=>{if(tab==='review'&&!reviewConnected)setTab('settings')},[reviewConnected,setTab,tab])
 
   const refreshWorkspaceStats=useCallback(async(userId:string,id:string)=>{
     const stats=await outboxStats(userId,id)
@@ -1828,14 +1981,14 @@ export default function App({ capability = null }: { capability?: CapabilityInte
     const node=pager.current
     if(node?.clientWidth){
       const workspaceId=stateRef.current.activeWorkspaceId
-      const visible=pagerTabsAt(node.scrollLeft,node.clientWidth)
+      const visible=pagerTabsAt(node.scrollLeft,node.clientWidth,navigationTabs)
       setPagerState((previous)=>{
         const tab=previous.workspaceId===workspaceId?previous.tab:'entry'
         return previous.workspaceId===workspaceId&&previous.mounted.length===visible.length&&previous.mounted.every((item,index)=>item===visible[index])?previous:{workspaceId,tab,mounted:visible}
       })
     }
     clearTimeout(pagerTimer.current)
-    pagerTimer.current=setTimeout(()=>{const node=pager.current;if(!node?.clientWidth)return;const item=tabs[Math.max(0,Math.min(tabs.length-1,Math.round(node.scrollLeft/node.clientWidth)))];if(item)setTab(item.id)},90)
+    pagerTimer.current=setTimeout(()=>{const node=pager.current;if(!node?.clientWidth)return;const item=navigationTabs[Math.max(0,Math.min(navigationTabs.length-1,Math.round(node.scrollLeft/node.clientWidth)))];if(item)setTab(item.id)},90)
   }
 
   if(state.phase==='checking')return <div className="splash"><div className="brand-mark">m</div>{error&&<p>{error}</p>}</div>
@@ -1856,9 +2009,10 @@ export default function App({ capability = null }: { capability?: CapabilityInte
       <div className="page-slot" inert={tab!=='entry'} aria-hidden={tab!=='entry'}>{mountedTabs.includes('entry')&&<EntryView userId={auth.user.id} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} currentId={currentId} setCurrentId={setCurrentId} refreshPending={refreshPending} onDraftDirtyChange={setDraftDirty} active={tab==='entry'}/>}</div>
       <div className="page-slot" inert={tab!=='history'} aria-hidden={tab!=='history'}>{mountedTabs.includes('history')&&<HistoryView userId={auth.user.id} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} edit={(id)=>void openExpense(id)} createNew={()=>void openExpense(null)} refreshPending={refreshPending}/>}</div>
       <div className="page-slot" inert={tab!=='analytics'} aria-hidden={tab!=='analytics'}>{mountedTabs.includes('analytics')&&<AnalyticsView userId={auth.user.id} workspaceId={workspaceId} bootstrap={bootstrap} theme={theme} online={serverAvailable}/>}</div>
-      <div className="page-slot" inert={tab!=='settings'} aria-hidden={tab!=='settings'}>{mountedTabs.includes('settings')&&<SettingsView user={auth} workspace={workspace} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} pendingCount={stats.total} refreshPending={refreshPending} onLogout={()=>void logoutCurrent()} theme={theme} onThemeChange={setTheme} onSession={(next)=>hydrate(next,false,settingsIdentityEpoch)} onCreateWorkspace={()=>void openCreate()} online={serverAvailable}/>}</div>
+      {reviewConnected&&<div className="page-slot review-page-slot" inert={tab!=='review'} aria-hidden={tab!=='review'}>{mountedTabs.includes('review')&&<BybitReviewView workspaceId={workspaceId} categories={bootstrap.categories} currencies={bootstrap.currencies} online={serverAvailable} onStatus={updateBybitStatus} onExpense={(expense)=>setWorkspaceData((data)=>({...data,expenses:[expense,...data.expenses.filter((item)=>item.id!==expense.id)]}))} onExpenseUndo={(expenseId)=>setWorkspaceData((data)=>({...data,expenses:data.expenses.filter((item)=>item.id!==expenseId)}))}/>}</div>}
+      <div className="page-slot" inert={tab!=='settings'} aria-hidden={tab!=='settings'}>{mountedTabs.includes('settings')&&<SettingsView user={auth} workspace={workspace} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} pendingCount={stats.total} refreshPending={refreshPending} onLogout={()=>void logoutCurrent()} theme={theme} onThemeChange={setTheme} onSession={(next)=>hydrate(next,false,settingsIdentityEpoch)} onCreateWorkspace={()=>void openCreate()} online={serverAvailable} bybitStatus={bybitStatus} onBybitStatus={(status)=>updateBybitStatus(status)}/>}</div>
     </main>
-    <nav className="bottom-nav" aria-label="Основная навигация">{tabs.map((item)=><button type="button" key={item.id} aria-current={tab===item.id?'page':undefined} className={tab===item.id?'active':''} onClick={()=>setTab(item.id)}><span><NavIcon tab={item.id}/></span><small>{item.label}</small></button>)}</nav>
+    <nav className="bottom-nav" aria-label="Основная навигация">{navigationTabs.map((item)=><button type="button" key={item.id} aria-current={tab===item.id?'page':undefined} aria-label={item.id==='review'&&bybitStatus?.pendingCount?`Разбор: ${bybitStatus.pendingCount}`:item.label} className={tab===item.id?'active':''} onClick={()=>setTab(item.id)}><span><NavIcon tab={item.id}/>{item.id==='review'&&Boolean(bybitStatus?.pendingCount)&&<b className="nav-badge">{bybitStatus!.pendingCount>99?'99+':bybitStatus!.pendingCount}</b>}</span><small>{item.label}</small></button>)}</nav>
     {switchOpen&&<WorkspaceSwitcher items={auth.workspaces} active={workspaceId} runtimes={state.runtimes} online={serverAvailable} onSelect={(id)=>void switchWorkspace(id)} onCreate={()=>void openCreate()}/>} {createOpen&&<CreateWorkspaceSheet existing onClose={()=>setCreateOpen(false)} onCreate={create}/>} {issuesOpen&&<SyncIssuesSheet userId={auth.user.id} workspaceId={workspaceId} online={serverAvailable} onClose={()=>setIssuesOpen(false)} onDiscard={discardIssues}/>} {initialRecovery&&<RecoverySave key={initialRecovery.completionToken} prepared={initialRecovery} mode="initial" close={()=>setInitialRecovery(null)} complete={async()=>{
       const outcome=await completeRotationSafely({prepared:initialRecovery,targetUserId:auth.user.id})
       if(outcome.status!=='completed')throw new Error(outcome.status==='rotation-stale'?'Параллельно была завершена другая настройка восстановления.':'Не удалось подтвердить настройку. Повторите из настроек.')

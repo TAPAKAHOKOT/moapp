@@ -194,6 +194,16 @@ The client model matches this response shape. UI-created categories start with a
 
 Category mutations are online requests. A stale category or expense version returns `409 VERSION_CONFLICT`; `error.details.current` contains the canonical current object. Incompatible create retries return `409 IDEMPOTENCY_CONFLICT`.
 
+## Bybit Card integration
+
+The client exposes workspace-scoped status, connection, disconnection, manual
+sync, review-list, classify, ignore, and guarded undo calls. These mutations are online-only.
+The connection UI displays `enabledAt`: transactions before that instant are
+never imported. Review items remain outside `Expense[]` and analytics until
+classification returns a normal expense and adds it to the workspace bootstrap.
+Undo supplies the returned expense id/version, removes an unchanged classified
+expense from the bootstrap, and restores its provider transaction to review.
+
 ## Analytics and rates
 
 `GET /api/workspaces/:workspaceId/analytics?from=YYYY-MM-DD&to=YYYY-MM-DD&currency=RSD&categoryId=` returns:

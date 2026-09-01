@@ -22,14 +22,29 @@ function configuredOrigin(): string {
   return parsed.origin;
 }
 
+function localBybitApiBaseUrl(): string | undefined {
+  const configured = process.env.BYBIT_API_BASE_URL?.trim();
+  if (!configured) return undefined;
+  if (process.env.NODE_ENV === "production") throw new Error("BYBIT_API_BASE_URL is available only outside production");
+  const parsed = new URL(configured);
+  const localHosts = new Set(["localhost", "127.0.0.1", "[::1]"]);
+  if (parsed.protocol !== "http:" || !localHosts.has(parsed.hostname) || parsed.origin !== parsed.href.replace(/\/$/, "")) {
+    throw new Error("BYBIT_API_BASE_URL must be a local http origin without a path, query, or fragment");
+  }
+  return parsed.origin;
+}
+
 export function configFromEnv(): AppConfig {
   const pin = process.env.APP_PIN?.trim() || undefined;
   const sessionSecret = required("SESSION_SECRET");
   if (sessionSecret.length < 32) throw new Error("SESSION_SECRET must be at least 32 characters");
+  const integrationEncryptionKey = required("INTEGRATION_ENCRYPTION_KEY");
+  if (integrationEncryptionKey.length < 32) throw new Error("INTEGRATION_ENCRYPTION_KEY must be at least 32 characters");
   const invitationTtlHours = positiveInteger("INVITATION_TTL_HOURS", 72);
   if (invitationTtlHours < 24 || invitationTtlHours > 168) {
     throw new Error("INVITATION_TTL_HOURS must be between 24 and 168");
   }
+  const bybitApiBaseUrl = localBybitApiBaseUrl();
   return {
     databasePath: process.env.DATABASE_PATH ?? "/data/moapp.sqlite",
     ...(pin === undefined ? {} : { pin }),
@@ -52,6 +67,8 @@ export function configFromEnv(): AppConfig {
       manualRecoveryRateLimitPerHour: positiveInteger("MANUAL_RECOVERY_RATE_LIMIT_PER_HOUR", 3)
     },
     frankfurterUrl: (process.env.FRANKFURTER_URL ?? "https://api.frankfurter.dev/v2").replace(/\/$/, ""),
-    defaultAnalyticsCurrency: (process.env.DEFAULT_ANALYTICS_CURRENCY ?? "RSD").toUpperCase()
+    defaultAnalyticsCurrency: (process.env.DEFAULT_ANALYTICS_CURRENCY ?? "RSD").toUpperCase(),
+    integrationEncryptionKey,
+    ...(bybitApiBaseUrl === undefined ? {} : { bybitApiBaseUrl })
   };
 }

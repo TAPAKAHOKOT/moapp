@@ -884,3 +884,284 @@ html {
     background: var(--soft);
   }
 }
+
+/* The review destination is optional, so navigation must distribute either
+   four or five buttons without leaving an empty grid column. */
+.bottom-nav {
+  grid-template-columns: none;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+}
+
+.bottom-nav button > span {
+  position: relative;
+}
+
+.nav-badge {
+  position: absolute;
+  top: -5px;
+  right: -12px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border: 2px solid var(--paper);
+  border-radius: 9px;
+  background: var(--danger);
+  color: #fff;
+  font-size: 8px;
+  line-height: 12px;
+  text-align: center;
+}
+
+.review-page-slot {
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+.bybit-review-page {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 12px 16px 9px;
+}
+
+.bybit-review-page .review-topline {
+  flex: 0 0 auto;
+  align-items: center;
+  padding: 4px 4px 0;
+}
+
+.review-topline .eyebrow {
+  margin-bottom: 4px;
+}
+
+.review-date {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.review-deferred {
+  border-radius: 10px;
+  background: var(--soft);
+  padding: 7px 9px;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.bybit-review-page .review-amount-row {
+  flex: 0 0 92px;
+  height: 92px;
+  padding: 0 4px;
+}
+
+.review-currency {
+  flex: 0 0 auto;
+  margin-top: 14px;
+  border-radius: 12px;
+  background: var(--soft);
+  padding: 9px 11px;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.review-merchant {
+  flex: 0 0 auto;
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr);
+  align-items: center;
+  gap: 11px;
+  min-height: 62px;
+  margin-bottom: 6px;
+  padding: 9px 12px;
+  border: 1px solid var(--line);
+  border-radius: 17px;
+  background: var(--card);
+}
+
+.review-merchant h3 {
+  margin: 0 0 4px;
+  overflow: hidden;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.review-merchant p {
+  margin: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bybit-review-page .review-comment {
+  flex: 0 0 auto;
+  display: block;
+  position: relative;
+  margin: 7px 1px 0;
+}
+
+.bybit-review-page .review-comment > span {
+  float: right;
+}
+
+.bybit-review-page .review-comment input {
+  display: block;
+  clear: both;
+  width: 100%;
+  height: 40px;
+  margin-top: 5px;
+}
+
+.bybit-review-page .review-hint {
+  flex: 0 0 auto;
+  margin: 1px 4px 6px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.bybit-review-page .review-categories {
+  flex: 0 0 auto;
+  grid-template-columns: repeat(auto-fit, minmax(76px, 1fr));
+  grid-auto-rows: 67px;
+  gap: 7px;
+}
+
+.bybit-review-page .review-categories button {
+  min-height: 67px;
+  gap: 8px;
+  padding: 7px;
+  border-radius: 17px;
+  font-size: 11px;
+  font-weight: 600;
+  transition: transform .16s, border-color .16s;
+}
+
+.bybit-review-page .review-categories button:active {
+  transform: scale(.96);
+  border-color: #b5bbaa;
+}
+
+.bybit-review-page .review-categories button i {
+  width: 16px;
+  height: 16px;
+  border-radius: 6px;
+}
+
+.bybit-review-page .review-categories button.selected {
+  border-color: var(--sage);
+  background: var(--soft);
+  box-shadow: inset 0 0 0 1px var(--sage);
+}
+
+.bybit-review-page .review-secondary {
+  flex: 0 0 auto;
+  margin-top: 6px;
+}
+
+.bybit-review-page .review-secondary button {
+  min-height: 38px;
+}
+
+.bybit-review-page .review-done {
+  min-height: min(62dvh, 480px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+.bybit-review-page > .form-error,
+.bybit-review-page > .management-state {
+  margin-top: 12px;
+}
+
+.settings-sections {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px;
+  margin: 4px 16px 18px;
+  padding: 4px;
+  border: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
+  border-radius: 18px;
+  background: var(--soft);
+}
+
+.settings-sections button {
+  min-width: 0;
+  min-height: 58px;
+  border: 0;
+  border-radius: 14px;
+  background: transparent;
+  color: var(--muted);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 3px;
+  padding: 8px 10px;
+  text-align: left;
+}
+
+.settings-sections b {
+  max-width: 100%;
+  overflow: hidden;
+  color: inherit;
+  font-size: 10px;
+  text-overflow: ellipsis;
+}
+
+.settings-sections small {
+  max-width: 100%;
+  overflow: hidden;
+  font-size: 8px;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-sections button.selected {
+  background: var(--card);
+  color: var(--ink);
+  box-shadow: 0 2px 8px rgb(32 37 31 / 8%);
+}
+
+.settings-section-panel {
+  animation: settings-section-in .16s ease-out;
+}
+
+.settings-section-copy {
+  margin: 0 20px 14px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.settings-section-copy h2 {
+  margin: 0 0 5px;
+  font-size: 22px;
+  letter-spacing: -.025em;
+}
+
+.settings-section-copy > p:last-child {
+  margin: 0;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.settings-section-panel > .settings-group:first-of-type {
+  margin-top: 14px;
+}
+
+@keyframes settings-section-in {
+  from {
+    opacity: .45;
+    transform: translateY(3px);
+  }
+}

@@ -251,6 +251,27 @@ type SyncResult = {
 
 The response is exactly `{workspaceId,results,serverTime}`. Replay identity is `(workspaceId, operationId)`: a retry in the same workspace returns the stored result with `replayed: true` and never reapplies the mutation. Conflict results include the current expense when available. Membership is rechecked as the first read inside the batch transaction.
 
+## Bybit Card integration
+
+The optional integration is workspace-scoped. Only the workspace owner can
+connect, replace, or remove credentials; every member may read and classify the
+shared review queue. Credentials are accepted only for a read-only Bybit API key
+with the `BitCard` permission and are encrypted before storage.
+
+- `GET /api/workspaces/:workspaceId/integrations/bybit-card` returns connection state, `enabledAt`, last sync state, management capability, and `pendingCount`.
+- `POST /api/workspaces/:workspaceId/integrations/bybit-card` accepts `{apiKey,apiSecret,region}`. A successful replacement resets `enabledAt` to the current server instant and discards the old provider queue.
+- `DELETE /api/workspaces/:workspaceId/integrations/bybit-card` requires `{}`. Classified expenses remain.
+- `POST /api/workspaces/:workspaceId/integrations/bybit-card/sync` requires `{}` and polls cleared card transactions.
+- `GET /api/workspaces/:workspaceId/integrations/bybit-card/transactions?limit=` returns oldest-first pending transactions, capped at 200.
+- `POST .../transactions/:transactionId/classify` accepts `{categoryId,comment}` and atomically creates an expense. Compatible retries return the linked expense.
+- `POST .../transactions/:transactionId/ignore` requires `{}` and removes the item from review without creating an expense.
+- `POST .../transactions/:transactionId/undo` returns an ignored item to review. For a classified item it accepts `{expenseId,expenseVersion}` and soft-deletes the linked expense only if that version is still current; otherwise it returns `409 UNDO_CONFLICT`.
+
+Both the provider query and the storage transaction enforce
+`occurredAt >= enabledAt`. Subsequent polls overlap recent time to absorb delayed
+clearing but never move that boundary backwards. Only successful purchases,
+direct purchases, and ATM withdrawals enter review.
+
 ## Analytics and rates
 
 `GET /api/workspaces/:workspaceId/analytics?from=YYYY-MM-DD&to=YYYY-MM-DD&currency=RSD&categoryId=` returns:

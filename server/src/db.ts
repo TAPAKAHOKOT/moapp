@@ -71,7 +71,7 @@ const seeds = [
   ["other", "Прочее", "additional", 4, "#A8A8A8"]
 ] as const;
 
-const LATEST_SCHEMA_VERSION = 6;
+const LATEST_SCHEMA_VERSION = 7;
 
 type TableCount = {
   categories: number;
@@ -404,6 +404,49 @@ export function openDatabase(path: string): Database.Database {
           CREATE INDEX oauth_tokens_user_idx ON oauth_tokens(user_id,created_at);
           CREATE INDEX oauth_tokens_access_expiry_idx ON oauth_tokens(access_expires_at);
           CREATE INDEX oauth_tokens_refresh_expiry_idx ON oauth_tokens(refresh_expires_at);
+        `);
+        else if (version === 7) db.exec(`
+          CREATE TABLE bybit_card_connections (
+            id TEXT PRIMARY KEY,
+            workspace_id TEXT NOT NULL UNIQUE REFERENCES workspaces(id) ON DELETE CASCADE,
+            connected_by_user_id TEXT NOT NULL REFERENCES users(id),
+            credentials_encrypted TEXT NOT NULL,
+            region TEXT NOT NULL,
+            enabled_at TEXT NOT NULL,
+            last_synced_at TEXT,
+            status TEXT NOT NULL CHECK(status IN ('active','error')),
+            last_error TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+          );
+          CREATE INDEX bybit_card_connections_status_idx ON bybit_card_connections(status,last_synced_at);
+          CREATE TABLE bybit_card_transactions (
+            id TEXT PRIMARY KEY,
+            connection_id TEXT NOT NULL REFERENCES bybit_card_connections(id) ON DELETE CASCADE,
+            workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+            external_key TEXT NOT NULL,
+            txn_id TEXT,
+            order_no TEXT,
+            side TEXT NOT NULL,
+            trade_status TEXT NOT NULL,
+            provider_status TEXT NOT NULL,
+            amount_minor INTEGER NOT NULL CHECK(amount_minor > 0),
+            currency TEXT NOT NULL CHECK(length(currency)=3),
+            merchant_name TEXT,
+            merchant_country TEXT,
+            merchant_city TEXT,
+            mcc_code TEXT,
+            merchant_category TEXT,
+            occurred_at TEXT NOT NULL,
+            review_status TEXT NOT NULL CHECK(review_status IN ('pending','classified','ignored')),
+            expense_id TEXT,
+            raw_json TEXT NOT NULL CHECK(json_valid(raw_json)),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(connection_id,external_key)
+          );
+          CREATE INDEX bybit_card_transactions_review_idx ON bybit_card_transactions(workspace_id,review_status,occurred_at);
+          CREATE INDEX bybit_card_transactions_expense_idx ON bybit_card_transactions(workspace_id,expense_id);
         `);
         db.prepare("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)").run(version, appliedAt);
       }

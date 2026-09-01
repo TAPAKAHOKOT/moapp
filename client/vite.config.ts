@@ -20,6 +20,7 @@ export default defineConfig({
       const index = bundle['index.html']
       if (index?.type === 'asset') digest.update(typeof index.source === 'string' ? index.source : index.source)
       for (const source of publicShell) digest.update(source)
+      digest.update(WORKER_BODY)
       const cacheVersion = digest.digest('hex').slice(0, 12)
       const worker = `const CACHE='moapp-shell-${cacheVersion}';const PRECACHE=${JSON.stringify(precache)};${WORKER_BODY}`
       this.emitFile({ type: 'asset', fileName: 'sw.js', source: worker })
