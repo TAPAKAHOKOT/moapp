@@ -240,6 +240,8 @@ Tags are short workspace-level labels that can be attached to any expense regard
 type Tag = {
   id: string
   name: string
+  color: string | null
+  sortOrder: number
   version: number
   createdAt: string
   updatedAt: string
@@ -247,8 +249,9 @@ type Tag = {
 ```
 
 - `GET /api/workspaces/:workspaceId/tags` returns `{tags}` ordered by name.
-- `POST /api/workspaces/:workspaceId/tags` accepts `{id?,name}` and returns a `Tag` with `201`. Names are NFKC-normalized, trimmed, collapse inner whitespace, and are 1-30 characters. A compatible UUID retry returns `200`; a different name for an existing id returns `409 IDEMPOTENCY_CONFLICT`. A name that already exists (case-insensitive, including Cyrillic) returns `409 DUPLICATE` with the existing tag in `error.details.current`.
-- `PATCH /api/workspaces/:workspaceId/tags/:id` accepts `{name,version}` and returns the renamed `Tag`.
+- `POST /api/workspaces/:workspaceId/tags` accepts `{id?,name,color?}` and returns a `Tag` with `201`; `color` is `#RRGGBB` or `null`, and the new tag is appended to the end of the order. Names are NFKC-normalized, trimmed, collapse inner whitespace, and are 1-30 characters. A compatible UUID retry returns `200`; a different name for an existing id returns `409 IDEMPOTENCY_CONFLICT`. A name that already exists (case-insensitive, including Cyrillic) returns `409 DUPLICATE` with the existing tag in `error.details.current`.
+- `PATCH /api/workspaces/:workspaceId/tags/:id` accepts any of `name`, `color`, `sortOrder` plus required `version` and returns the updated `Tag`.
+- `PUT /api/workspaces/:workspaceId/tags/order` with `{ids}` returns `{tags}`; the unique array must list every tag of the workspace exactly once and becomes the display order (`sortOrder`).
 - `DELETE /api/workspaces/:workspaceId/tags/:id` requires JSON `{version}` and returns `204`. Deletion is hard: the tag is detached from every expense, the expenses themselves stay.
 
 A stale tag version returns `409 VERSION_CONFLICT` with `error.details.current`.

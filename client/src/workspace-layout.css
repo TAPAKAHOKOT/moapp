@@ -656,7 +656,7 @@ html {
 }
 
 /* 320 × 568 and similar compact phones: the category row stays above nav. */
-@media (max-width: 420px) and (max-height: 650px) {
+@media (max-width: 420px) and (max-height: 700px) {
   .entry-view {
     min-height: 431px;
   }

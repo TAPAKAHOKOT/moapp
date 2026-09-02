@@ -71,7 +71,7 @@ const seeds = [
   ["other", "Прочее", "additional", 4, "#A8A8A8"]
 ] as const;
 
-const LATEST_SCHEMA_VERSION = 8;
+const LATEST_SCHEMA_VERSION = 9;
 
 type TableCount = {
   categories: number;
@@ -469,6 +469,13 @@ export function openDatabase(path: string): Database.Database {
             FOREIGN KEY(workspace_id, tag_id) REFERENCES tags(workspace_id, id) ON DELETE CASCADE
           );
           CREATE INDEX expense_tags_tag_idx ON expense_tags(workspace_id, tag_id);
+        `);
+        else if (version === 9) db.exec(`
+          ALTER TABLE tags ADD COLUMN color TEXT;
+          ALTER TABLE tags ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0;
+          UPDATE tags SET sort_order = (SELECT count(*) FROM tags AS earlier
+            WHERE earlier.workspace_id = tags.workspace_id
+              AND (earlier.name_key < tags.name_key OR (earlier.name_key = tags.name_key AND earlier.id < tags.id)));
         `);
         db.prepare("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)").run(version, appliedAt);
       }

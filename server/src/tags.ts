@@ -8,6 +8,8 @@ export type TagRow = {
   id: string;
   name: string;
   name_key: string;
+  color: string | null;
+  sort_order: number;
   version: number;
   created_at: string;
   updated_at: string;
@@ -17,6 +19,7 @@ export const MAX_TAG_NAME_LENGTH = 30;
 // SQLite NOCASE складывает только латиницу, поэтому ключ уникальности считаем в JS: «Еда» и «еда» — один тег.
 export const tagNameKey = (name: string) => name.toLowerCase();
 const FORBIDDEN_NAME_CHARACTERS = /[\p{Cc}\p{Cf}]/u;
+const COLOR = /^#[0-9a-f]{6}$/i;
 
 // Тег — короткая плашка, поэтому имя ограничено 30 символами и схлопывает внутренние пробелы.
 export function normalizeTagName(value: unknown): string | undefined {
@@ -26,22 +29,29 @@ export function normalizeTagName(value: unknown): string | undefined {
   return length >= 1 && length <= MAX_TAG_NAME_LENGTH && !FORBIDDEN_NAME_CHARACTERS.test(normalized) ? normalized : undefined;
 }
 
-export function tagJson(row: TagRow) {
-  return { id: row.id, name: row.name, version: row.version, createdAt: row.created_at, updatedAt: row.updated_at };
+// undefined — поле не передано; null — цвет снят; строка — валидный #RRGGBB; false — ошибка.
+function parseColor(value: unknown): string | null | undefined | false {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  return typeof value === "string" && COLOR.test(value) ? value.toLowerCase() : false;
 }
 
-export const TAGS_ORDERED = "SELECT * FROM tags WHERE workspace_id=? ORDER BY name COLLATE NOCASE";
+export function tagJson(row: TagRow) {
+  return { id: row.id, name: row.name, color: row.color, sortOrder: row.sort_order, version: row.version, createdAt: row.created_at, updatedAt: row.updated_at };
+}
+
+export const TAGS_ORDERED = "SELECT * FROM tags WHERE workspace_id=? ORDER BY sort_order, name COLLATE NOCASE";
 
 export async function registerTagRoutes(app: FastifyInstance): Promise<void> {
   const prefix = "/api/workspaces/:workspaceId/tags";
   const requireMutation = (request: import("fastify").FastifyRequest, reply: import("fastify").FastifyReply) => requireMutationOrigin(app, request, reply);
   const byId = (workspaceId: string, id: string) => app.db.prepare("SELECT * FROM tags WHERE workspace_id=? AND id=?").get(workspaceId, id) as TagRow | undefined;
   const byName = (workspaceId: string, name: string) => app.db.prepare("SELECT * FROM tags WHERE workspace_id=? AND name_key=?").get(workspaceId, tagNameKey(name)) as TagRow | undefined;
+  const listOrdered = (workspaceId: string) => (app.db.prepare(TAGS_ORDERED).all(workspaceId) as TagRow[]).map(tagJson);
 
   app.get(prefix, { preHandler: app.requireWorkspaceMember, onSend: noStore }, async (request) => {
     const { workspaceId } = workspaceContext(request);
-    const rows = app.db.prepare(TAGS_ORDERED).all(workspaceId) as TagRow[];
-    return { tags: rows.map(tagJson) };
+    return { tags: listOrdered(workspaceId) };
   });
 
   app.post(prefix, { preHandler: [app.requireWorkspaceMember, requireMutation], onSend: noStore }, async (request, reply) => {
@@ -52,14 +62,18 @@ export async function registerTagRoutes(app: FastifyInstance): Promise<void> {
     if (!isUuid(id)) return reply.code(400).send(jsonError("VALIDATION", "id must be a UUID"));
     const name = normalizeTagName(body.name);
     if (!name) return reply.code(400).send(jsonError("VALIDATION", `name must contain 1-${MAX_TAG_NAME_LENGTH} characters`));
+    const color = parseColor(body.color);
+    if (color === false) return reply.code(400).send(jsonError("VALIDATION", "color must be #RRGGBB or null"));
     const outcome = app.db.transaction(() => {
       if (!hasWorkspaceMembership(app, workspaceId, userId)) return { member: false as const };
       const existing = byId(workspaceId, id);
-      if (existing) return { member: true as const, existing, compatible: existing.name === name };
+      if (existing) return { member: true as const, existing, compatible: existing.name === name && (color === undefined || existing.color === color) };
       const sameName = byName(workspaceId, name);
       if (sameName) return { member: true as const, duplicate: sameName };
       const now = new Date().toISOString();
-      app.db.prepare("INSERT INTO tags(workspace_id,id,name,name_key,version,created_at,updated_at) VALUES (?,?,?,?,1,?,?)").run(workspaceId, id, name, tagNameKey(name), now, now);
+      const next = app.db.prepare("SELECT COALESCE(MAX(sort_order), -1) + 1 AS next FROM tags WHERE workspace_id=?").get(workspaceId) as { next: number };
+      app.db.prepare("INSERT INTO tags(workspace_id,id,name,name_key,color,sort_order,version,created_at,updated_at) VALUES (?,?,?,?,?,?,1,?,?)")
+        .run(workspaceId, id, name, tagNameKey(name), color ?? null, next.next, now, now);
       return { member: true as const, created: byId(workspaceId, id)! };
     })();
     if (!outcome.member) return sendWorkspaceNotFound(reply);
@@ -67,9 +81,33 @@ export async function registerTagRoutes(app: FastifyInstance): Promise<void> {
     if ("existing" in outcome) {
       return outcome.compatible
         ? reply.code(200).send(tagJson(outcome.existing))
-        : reply.code(409).send(jsonError("IDEMPOTENCY_CONFLICT", "Tag id already exists with a different name", { current: tagJson(outcome.existing) }));
+        : reply.code(409).send(jsonError("IDEMPOTENCY_CONFLICT", "Tag id already exists with different fields", { current: tagJson(outcome.existing) }));
     }
     return reply.code(201).send(tagJson(outcome.created));
+  });
+
+  // Порядок задаётся целиком: клиент присылает все теги пространства в нужной последовательности.
+  app.put(`${prefix}/order`, { preHandler: [app.requireWorkspaceMember, requireMutation], onSend: noStore }, async (request, reply) => {
+    if (rejectsWorkspaceId(request.body)) return reply.code(400).send(jsonError("VALIDATION", "workspaceId is defined by the route"));
+    const { workspaceId, userId } = workspaceContext(request);
+    const { ids } = (request.body ?? {}) as { ids?: unknown };
+    if (!Array.isArray(ids) || ids.some((id) => typeof id !== "string") || new Set(ids).size !== ids.length) {
+      return reply.code(400).send(jsonError("VALIDATION", "ids must be a unique string array"));
+    }
+    const outcome = app.db.transaction(() => {
+      if (!hasWorkspaceMembership(app, workspaceId, userId)) return { member: false as const };
+      const existing = (app.db.prepare("SELECT id FROM tags WHERE workspace_id=?").all(workspaceId) as Array<{ id: string }>).map((row) => row.id);
+      if (existing.length !== ids.length || (ids as string[]).some((id) => !existing.includes(id))) {
+        return { member: true as const, validation: "ids must include every tag of the workspace exactly once" };
+      }
+      const set = app.db.prepare("UPDATE tags SET sort_order=?,version=version+1,updated_at=? WHERE workspace_id=? AND id=?");
+      const now = new Date().toISOString();
+      (ids as string[]).forEach((id, index) => set.run(index, now, workspaceId, id));
+      return { member: true as const, tags: listOrdered(workspaceId) };
+    })();
+    if (!outcome.member) return sendWorkspaceNotFound(reply);
+    if ("validation" in outcome) return reply.code(400).send(jsonError("VALIDATION", outcome.validation));
+    return { tags: outcome.tags };
   });
 
   app.patch(`${prefix}/:id`, { preHandler: [app.requireWorkspaceMember, requireMutation], onSend: noStore }, async (request, reply) => {
@@ -78,17 +116,21 @@ export async function registerTagRoutes(app: FastifyInstance): Promise<void> {
     const { id } = request.params as { id: string };
     const body = (request.body ?? {}) as Record<string, unknown>;
     if (typeof body.version !== "number" || !Number.isInteger(body.version)) return reply.code(400).send(jsonError("VALIDATION", "version is required"));
-    const name = normalizeTagName(body.name);
-    if (!name) return reply.code(400).send(jsonError("VALIDATION", `name must contain 1-${MAX_TAG_NAME_LENGTH} characters`));
+    const name = body.name === undefined ? undefined : normalizeTagName(body.name);
+    if (body.name !== undefined && !name) return reply.code(400).send(jsonError("VALIDATION", `name must contain 1-${MAX_TAG_NAME_LENGTH} characters`));
+    const color = parseColor(body.color);
+    if (color === false) return reply.code(400).send(jsonError("VALIDATION", "color must be #RRGGBB or null"));
+    if (body.sortOrder !== undefined && (!Number.isInteger(body.sortOrder) || (body.sortOrder as number) < 0)) return reply.code(400).send(jsonError("VALIDATION", "sortOrder must be a non-negative integer"));
     const outcome = app.db.transaction(() => {
       if (!hasWorkspaceMembership(app, workspaceId, userId)) return { member: false as const };
       const current = byId(workspaceId, id);
       if (!current) return { member: true as const, missing: true as const };
       if (current.version !== body.version) return { member: true as const, conflict: current };
-      const sameName = byName(workspaceId, name);
+      const nextName = name ?? current.name;
+      const sameName = byName(workspaceId, nextName);
       if (sameName && sameName.id !== id) return { member: true as const, duplicate: sameName };
-      app.db.prepare("UPDATE tags SET name=?,name_key=?,version=version+1,updated_at=? WHERE workspace_id=? AND id=? AND version=?")
-        .run(name, tagNameKey(name), new Date().toISOString(), workspaceId, id, body.version);
+      app.db.prepare("UPDATE tags SET name=?,name_key=?,color=?,sort_order=?,version=version+1,updated_at=? WHERE workspace_id=? AND id=? AND version=?")
+        .run(nextName, tagNameKey(nextName), color === undefined ? current.color : color, body.sortOrder ?? current.sort_order, new Date().toISOString(), workspaceId, id, body.version);
       return { member: true as const, row: byId(workspaceId, id)! };
     })();
     if (!outcome.member) return sendWorkspaceNotFound(reply);
