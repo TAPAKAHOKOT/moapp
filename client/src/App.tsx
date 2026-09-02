@@ -313,11 +313,15 @@ function TagStrip({ tags, selected, onChange, onCreate, disabled = false, online
     if (selected.includes(id)) onChange(selected.filter((item) => item !== id))
     else if (selected.length < MAX_EXPENSE_TAGS) onChange([...selected, id])
   }
-  return <div className="tag-strip" role="group" aria-label="Теги">
+  // Шторка рендерится рядом с полосой, а не внутри неё: iOS Safari удерживает position:fixed внутри прокручиваемого
+  // контейнера, и подложка оказывалась обрезанной полосой и под футером.
+  return <>
+    <div className="tag-strip" role="group" aria-label="Теги">
     <button type="button" className={`tag-add${ordered.length ? '' : ' tag-add-wide'}`} disabled={disabled} onClick={() => setOpen(true)} aria-label={ordered.length ? 'Найти или создать тег' : 'Добавить тег'}>{ordered.length ? '+' : '＋ Тег'}</button>
     {ordered.map((tag) => <TagChip key={tag.id} name={tag.name} color={tag.color} selected={selected.includes(tag.id)} disabled={disabled} onToggle={() => toggle(tag.id)}/>)}
+    </div>
     {open && <TagSheet tags={tags} selected={selected} online={online} onClose={() => setOpen(false)} onChange={onChange} onCreate={onCreate}/>}
-  </div>
+  </>
 }
 
 function TagSheet({ tags, selected, online, onClose, onChange, onCreate }: { tags: Tag[]; selected: string[]; online: boolean; onClose: () => void; onChange: (ids: string[]) => void; onCreate?: (name: string) => Promise<Tag | null> }) {
