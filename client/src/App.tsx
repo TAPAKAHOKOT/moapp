@@ -496,7 +496,8 @@ function DateSheet({ value, onClose, onPick }: { value: string; onClose: () => v
     setDraft(`${(valid ? draft : now()).slice(0, 10)}T${String(hour).padStart(2, '0')}:00`)
     tap(4)
   }
-  const nudges: Array<[number, string]> = [[-24, '−1 д'], [-8, '−8 ч'], [-3, '−3 ч'], [-1, '−1 ч'], [1, '+1 ч'], [3, '+3 ч'], [8, '+8 ч'], [24, '+1 д']]
+  // Две строки по четыре: минусы над такими же плюсами, шаг растёт слева направо.
+  const nudges: Array<[number, string]> = [[-1, '−1ч'], [-3, '−3ч'], [-8, '−8ч'], [-24, '−1д'], [1, '+1ч'], [3, '+3ч'], [8, '+8ч'], [24, '+1д']]
   return <div className="sheet-backdrop" onMouseDown={onClose}>
     <form ref={dialogRef as React.Ref<HTMLFormElement>} className="bottom-sheet editor" role="dialog" aria-modal="true" aria-labelledby="date-title" noValidate onSubmit={(event) => { event.preventDefault(); if (!draft) { setValidation('Выберите дату и время.'); return } onPick(draft) }} onMouseDown={(event) => event.stopPropagation()}>
       <div className="sheet-handle"/>
