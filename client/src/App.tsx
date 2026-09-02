@@ -1994,7 +1994,7 @@ export default function App({ capability = null }: { capability?: CapabilityInte
   const navigationTabs=reviewConnected?tabs:tabsWithoutReview
   const setTab=useCallback((next:Tab)=>{
     const workspaceId=stateRef.current.activeWorkspaceId
-    setPagerState({workspaceId,tab:next,mounted:pagerTabsFor(next)})
+    setPagerState((previous)=>previous.workspaceId===workspaceId?{workspaceId,tab:next,mounted:[...previous.mounted,...pagerTabsFor(next).filter((item)=>!previous.mounted.includes(item))]}:{workspaceId,tab:next,mounted:pagerTabsFor(next)})
   },[])
   const capabilityRef=useRef(capability)
   const monitor=useRef<ReturnType<typeof monitorServiceWorkerUpdates> | undefined>(undefined)
@@ -2324,12 +2324,15 @@ export default function App({ capability = null }: { capability?: CapabilityInte
   const activateUpdate=()=>{if(draftDirty){setError('Сначала сохраните или очистите черновик расхода.');return}monitor.current?.activateWaiting()}
   const onPagerScroll=()=>{
     const node=pager.current
-    if(node?.clientWidth){
+    // Пока лента едет к выбранной вкладке программно, промежуточные позиции ничего не монтируют: набор уже задан в setTab.
+    if(node?.clientWidth&&pagerTarget.current===null){
       const workspaceId=stateRef.current.activeWorkspaceId
       const visible=pagerTabsAt(node.scrollLeft,node.clientWidth,navigationTabs)
       setPagerState((previous)=>{
-        const tab=previous.workspaceId===workspaceId?previous.tab:'entry'
-        return previous.workspaceId===workspaceId&&previous.mounted.length===visible.length&&previous.mounted.every((item,index)=>item===visible[index])?previous:{workspaceId,tab,mounted:visible}
+        if(previous.workspaceId!==workspaceId)return {workspaceId,tab:'entry',mounted:visible}
+        // Страницы не размонтируются, пока открыто это пространство: повторное монтирование мигает и заново грузит аналитику.
+        const mounted=[...previous.mounted,...visible.filter((item)=>!previous.mounted.includes(item))]
+        return mounted.length===previous.mounted.length?previous:{...previous,mounted}
       })
     }
     clearTimeout(pagerTimer.current)
