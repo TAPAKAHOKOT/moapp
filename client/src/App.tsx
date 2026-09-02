@@ -314,7 +314,7 @@ function TagStrip({ tags, selected, onChange, onCreate, disabled = false, online
     else if (selected.length < MAX_EXPENSE_TAGS) onChange([...selected, id])
   }
   return <div className="tag-strip" role="group" aria-label="Теги">
-    <button type="button" className="tag-add" disabled={disabled} onClick={() => setOpen(true)} aria-label={ordered.length ? 'Найти или создать тег' : 'Добавить тег'}>{ordered.length ? '+' : '＋ Тег'}</button>
+    <button type="button" className={`tag-add${ordered.length ? '' : ' tag-add-wide'}`} disabled={disabled} onClick={() => setOpen(true)} aria-label={ordered.length ? 'Найти или создать тег' : 'Добавить тег'}>{ordered.length ? '+' : '＋ Тег'}</button>
     {ordered.map((tag) => <TagChip key={tag.id} name={tag.name} color={tag.color} selected={selected.includes(tag.id)} disabled={disabled} onToggle={() => toggle(tag.id)}/>)}
     {open && <TagSheet tags={tags} selected={selected} online={online} onClose={() => setOpen(false)} onChange={onChange} onCreate={onCreate}/>}
   </div>
@@ -545,7 +545,7 @@ function EntryLowerPreview({ main, category, tags, tagIds, note, ready, hint }: 
   const other = category && !main.some((item) => item.id === category.id) ? category : null
   return <>
     <div className={`categories${ready ? '' : ' locked'}`}><p>{hint}</p><div className="main-categories">{main.map((item) => <button type="button" key={item.id} disabled={!ready} tabIndex={-1} className={item.id === category?.id ? 'selected' : undefined}><i style={{backgroundColor:item.color ?? '#a9afa5'}}/><span>{item.name}</span></button>)}<button type="button" disabled={!ready} tabIndex={-1} className={other ? 'selected' : undefined}>{other ? <i style={{backgroundColor:other.color ?? '#a9afa5'}}/> : <i className="dots">•••</i>}<span>{other ? other.name : 'Другое'}</span></button></div></div>
-    <div className="tag-strip"><button type="button" className="tag-add" tabIndex={-1}>{tags.length ? '+' : '＋ Тег'}</button>{sortTags(tags).map((tag) => <TagChip key={tag.id} name={tag.name} color={tag.color} selected={tagIds.includes(tag.id)} onToggle={() => {}}/>)}</div>
+    <div className="tag-strip"><button type="button" className={`tag-add${tags.length ? '' : ' tag-add-wide'}`} tabIndex={-1}>{tags.length ? '+' : '＋ Тег'}</button>{sortTags(tags).map((tag) => <TagChip key={tag.id} name={tag.name} color={tag.color} selected={tagIds.includes(tag.id)} onToggle={() => {}}/>)}</div>
     <div className="note-block"><button type="button" className="text-button note-toggle" tabIndex={-1}>{note ? `✎ ${note}` : '＋ Добавить заметку'}</button></div>
   </>
 }
