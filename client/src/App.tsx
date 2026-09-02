@@ -52,6 +52,19 @@ function unlockDialogBackground(node: HTMLElement) {
   backgroundLocks.delete(node)
 }
 
+// Кольцо фокуса нужно при работе с клавиатуры. После закрытия шторки фокус возвращается на кнопку программно,
+// и при управлении пальцем или мышью это кольцо только мешает, поэтому запоминаем последний способ ввода.
+function useInputModality() {
+  useEffect(() => {
+    const root = document.documentElement
+    const pointer = () => { root.dataset.input = 'pointer' }
+    const keyboard = (event: KeyboardEvent) => { if (event.key === 'Tab' || event.key.startsWith('Arrow') || event.key === 'Enter' || event.key === ' ') root.dataset.input = 'keyboard' }
+    window.addEventListener('pointerdown', pointer, true)
+    window.addEventListener('keydown', keyboard, true)
+    return () => { window.removeEventListener('pointerdown', pointer, true); window.removeEventListener('keydown', keyboard, true) }
+  }, [])
+}
+
 function prefersReducedMotion() {
   return window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
 }
@@ -70,8 +83,30 @@ function useOnlineStatus() {
   return online
 }
 
+const SHEET_EXIT_MS = 180
+
 function useDialog(onClose: () => void, dismissible = true, instanceKey: unknown = null) {
   const ref = useRef<HTMLElement>(null)
+  // Выходная анимация шторки. React снимает узел мгновенно, поэтому на время анимации в body остаётся
+  // визуальный клон подложки: без обработчиков, скрытый от читалок и не ловящий касания.
+  useLayoutEffect(() => {
+    const dialog = ref.current
+    const backdrop = dialog?.parentElement
+    return () => {
+      // Без Web Animations API (например, в jsdom) клон некому анимировать и убирать, поэтому шторка просто исчезает.
+      if (!dialog || !backdrop || !backdrop.classList.contains('sheet-backdrop') || typeof backdrop.getAnimations !== 'function' || prefersReducedMotion()) return
+      queueMicrotask(() => {
+        if (dialog.isConnected) return
+        const ghost = backdrop.cloneNode(true) as HTMLElement
+        ghost.classList.add('closing')
+        ghost.setAttribute('aria-hidden', 'true')
+        ghost.setAttribute('inert', '')
+        for (const modal of ghost.querySelectorAll('[aria-modal]')) modal.removeAttribute('aria-modal')
+        document.body.append(ghost)
+        setTimeout(() => ghost.remove(), SHEET_EXIT_MS)
+      })
+    }
+  }, [instanceKey])
   const closeRef = useRef(onClose)
   const dismissibleRef = useRef(dismissible)
   closeRef.current = onClose
@@ -274,6 +309,7 @@ function TagStrip({ tags, selected, onChange, onCreate, disabled = false, online
   const [open, setOpen] = useState(false)
   const ordered = sortTags(tags)
   const toggle = (id: string) => {
+    tap(4)
     if (selected.includes(id)) onChange(selected.filter((item) => item !== id))
     else if (selected.length < MAX_EXPENSE_TAGS) onChange([...selected, id])
   }
@@ -369,25 +405,32 @@ function styleDeleteButton(node: HTMLButtonElement | null, presence: number, dur
   node.style.transform = `scale(${0.82 + presence * 0.18})`
 }
 
-type ToastState = { text: string; urgent?: boolean; action?: { label: string; run: () => void } }
+type ToastState = { text: string; urgent?: boolean; action?: { label: string; run: () => void }; id?: number; leaving?: boolean }
+const TOAST_EXIT_MS = 180
+let toastSequence = 0
 
 export function useToast(timeout = 2600) {
   const [toast, setToast] = useState<ToastState | null>(null)
+  const toastId = toast?.id
+  const longLived = Boolean(toast?.action || toast?.urgent)
   useEffect(() => {
-    if (!toast) return
-    // Тост с действием живёт дольше: на «Вернуть» нужно успеть среагировать.
-    const timer = setTimeout(() => setToast(null), toast.action || toast.urgent ? 5600 : timeout)
-    return () => clearTimeout(timer)
-  }, [toast, timeout])
-  const notify = useCallback((text: string, action?: ToastState['action'], urgent = false) => setToast({ text, action, urgent }), [])
+    if (toastId === undefined) return
+    // Тост с действием живёт дольше: на «Вернуть» нужно успеть среагировать. Последние TOAST_EXIT_MS он затухает.
+    const lifetime = longLived ? 5600 : timeout
+    const leave = setTimeout(() => setToast((current) => current?.id === toastId ? { ...current, leaving: true } : current), Math.max(0, lifetime - TOAST_EXIT_MS))
+    const remove = setTimeout(() => setToast((current) => current?.id === toastId ? null : current), lifetime)
+    return () => { clearTimeout(leave); clearTimeout(remove) }
+  }, [toastId, longLived, timeout])
+  const notify = useCallback((text: string, action?: ToastState['action'], urgent = false) => setToast({ text, action, urgent, id: ++toastSequence }), [])
   const dismiss = useCallback(() => setToast(null), [])
   return { toast, notify, dismiss }
 }
 
 function Toast({ toast, onDismiss }: { toast: ToastState; onDismiss: () => void }) {
   const action = toast.action
-  if (!action) return <div className="toast toast-message" role={toast.urgent ? 'alert' : 'status'} aria-live={toast.urgent ? 'assertive' : 'polite'}><span>{toast.text}</span><button type="button" onClick={onDismiss} aria-label="Закрыть уведомление">×</button></div>
-  return <div className="toast toast-undo" role="status" aria-live="polite"><span>{toast.text}</span><button type="button" onClick={() => { onDismiss(); action.run() }}>{action.label}</button></div>
+  const leaving = toast.leaving ? ' leaving' : ''
+  if (!action) return <div className={`toast toast-message${leaving}`} role={toast.urgent ? 'alert' : 'status'} aria-live={toast.urgent ? 'assertive' : 'polite'}><span>{toast.text}</span><button type="button" onClick={onDismiss} aria-label="Закрыть уведомление">×</button></div>
+  return <div className={`toast toast-undo${leaving}`} role="status" aria-live="polite"><span>{toast.text}</span><button type="button" onClick={() => { onDismiss(); action.run() }}>{action.label}</button></div>
 }
 
 function money(amountMinor: number, currency: string, currencies: Currency[]) {
@@ -589,6 +632,7 @@ export function EntryView({ userId, workspaceId, bootstrap, setBootstrap, curren
 
   const chooseCategory = (category: Category) => {
     if (!form.amount || Number(form.amount) <= 0) { notify('Сначала введите сумму'); return }
+    tap(6)
     if (current) {
       setEditCategoryId(category.id)
       setCategorySheet(false)
@@ -866,7 +910,7 @@ export function EntryView({ userId, workspaceId, bootstrap, setBootstrap, curren
     window.addEventListener('keydown',handle)
     return()=>window.removeEventListener('keydown',handle)
   },[active,physicalKey])
-  return <section ref={entryRef} className={`entry-view${current ? ' editing' : ''}`} aria-label="Ввод суммы" onPointerDown={swipeStart} onPointerMove={swipeMove} onPointerUpCapture={swipeEnd} onPointerCancel={swipeCancel}>
+  return <section ref={entryRef} className={`entry-view${current ? ' editing' : ''}${saving ? ' saving' : ''}`} aria-label="Ввод суммы" onPointerDown={swipeStart} onPointerMove={swipeMove} onPointerUpCapture={swipeEnd} onPointerCancel={swipeCancel}>
     <div className="swipe-area">
       <div className="entry-track" ref={trackRef}>
         {olderFace && <div className="entry-card aside older" aria-hidden="true"><EntryCard face={olderFace}/></div>}
@@ -1090,12 +1134,12 @@ export function AnalyticsView({ userId, workspaceId, bootstrap, theme, online }:
   const chartColor=theme==='dark'?'#b1cfa3':CHART_COLOR
   const chartText=theme==='dark'?'#b3b3ae':'#73776f'
   const chartGrid=theme==='dark'?'rgba(255,255,255,.06)':'rgba(32,37,31,.06)'
-  return <section className="page analytics"><header className="page-header analytics-title"><div><p className="eyebrow">{period==='week'?'Расходы за неделю':'Расходы за месяц'} · {selectedCategoryName}</p><h1>{new Intl.NumberFormat('ru-RU',{maximumFractionDigits:0}).format(total)} <small>{target}</small></h1>{period==='week'&&<p className="analytics-comparison">{weekComparisonLabel(total,previousTotal,currentWeekPartial)}</p>}</div><button className="currency-choice" onClick={()=>setCurrencySheet(true)}>{target}<ChevronIcon/></button></header>
+  return <section className={`page analytics${analyticsLoading?' loading':''}`}><header className="page-header analytics-title"><div><p className="eyebrow">{period==='week'?'Расходы за неделю':'Расходы за месяц'} · {selectedCategoryName}</p><h1 key={`${period}:${categoryId??''}:${target}:${from}`}>{new Intl.NumberFormat('ru-RU',{maximumFractionDigits:0}).format(total)} <small>{target}</small></h1>{period==='week'&&<p className="analytics-comparison">{weekComparisonLabel(total,previousTotal,currentWeekPartial)}</p>}</div><button className="currency-choice" onClick={()=>setCurrencySheet(true)}>{target}<ChevronIcon/></button></header>
     <div className="analytics-period" role="group" aria-label="Период аналитики"><button type="button" aria-pressed={period==='week'} className={period==='week'?'selected':''} onClick={()=>setPeriod('week')}>Неделя</button><button type="button" aria-pressed={period==='month'} className={period==='month'?'selected':''} onClick={()=>setPeriod('month')}>Месяц</button></div>
     <label className="analytics-category"><span>Категория</span><Select label="Категория расходов" title="Категория" value={categoryId??''} onChange={(next)=>{const value=next||null;setCategoryByPeriod((current)=>({...current,[period]:value}));setWorkspacePreference(userId,workspaceId,period==='week'?'analytics-week-category':'analytics-month-category',value??'')}} options={[{value:'',label:'Все категории'},...activeCategories.map((category)=>({value:category.id,label:category.name}))]}/></label>
     {period==='week'&&<div className="week-navigator"><button type="button" onClick={()=>setWeekOffset((value)=>value-1)} aria-label="Предыдущая неделя">‹</button><div><b>{weekOffset===0?'Текущая неделя':weekOffset===-1?'Прошлая неделя':'Выбранная неделя'}</b><span>{weekRange}</span></div><button type="button" onClick={()=>setWeekOffset((value)=>Math.min(0,value+1))} disabled={weekOffset===0} aria-label="Следующая неделя">›</button></div>}
     {period==='month'&&<div className="week-navigator"><button type="button" onClick={()=>setMonthOffset((value)=>value-1)} aria-label="Предыдущий месяц">‹</button><div><b>{monthOffset===0?'Текущий месяц':monthOffset===-1?'Прошлый месяц':'Выбранный месяц'}</b><span>{monthLabel}</span></div><button type="button" onClick={()=>setMonthOffset((value)=>Math.min(0,value+1))} disabled={monthOffset===0} aria-label="Следующий месяц">›</button></div>}
-    <div className="analytics-stats"><div><span>Среднее в день</span><strong>{formatAnalyticsAmount(total/elapsedDays,target)}</strong></div><div><span>Операций</span><strong>{data.expenseCount}</strong></div></div>
+    <div className="analytics-stats" key={`${period}:${categoryId??''}:${target}:${from}`}><div><span>Среднее в день</span><strong>{formatAnalyticsAmount(total/elapsedDays,target)}</strong></div><div><span>Операций</span><strong>{data.expenseCount}</strong></div></div>
     <div className={`rate-caption${analyticsOffline?' cached':''}`} role="status">{analyticsLoading?'Обновляем аналитику…':analyticsOffline?<>{analyticsError?'Не удалось обновить. ':''}Показаны сохранённые данные на {new Date(bootstrap.serverTime).toLocaleString('ru-RU')}{online&&<button type="button" onClick={()=>setRetryEpoch((value)=>value+1)}>Повторить</button>}</>:data.rateDate?`Исторические курсы с ${new Date(`${data.rateDate}T12:00:00Z`).toLocaleDateString('ru-RU')}`:data.expenseCount?'Курсы обновляются':'Курсы появятся после первого расхода'}{data.missingCurrencies.length?` · без ${data.missingCurrencies.join(', ')}`:''}</div>
     <div className="chart-card"><div><h2>Динамика</h2><p>{period==='week'?'Понедельник — воскресенье':'По дням выбранного месяца'}</p></div>{data.convertedCount?<div className="line-chart"><Suspense fallback={<ChartSkeleton/>}><AnalyticsChart kind="line" labels={days.map((d)=>new Date(`${d}T12:00`).toLocaleDateString('ru-RU',period==='week'?{weekday:'short'}:{day:'numeric',month:'short'}))} values={byDay} color={chartColor} fillColor={theme==='dark'?'rgba(177,207,163,.14)':'rgba(117,141,105,.12)'} pointRadius={period==='week'?3:0} target={target} textColor={chartText} gridColor={chartGrid} maxTicksLimit={period==='week'?7:6}/></Suspense></div>:<AnalyticsEmpty>{data.expenseCount?'Нет курса для выбранной валюты':'В этом периоде ещё нет расходов'}</AnalyticsEmpty>}</div>
     <div className={`chart-card${byCategory.length?' split':''}`}><div><h2>Категории</h2><p>{period==='week'?'За выбранную неделю':'За выбранный месяц'}</p></div>{byCategory.length?<><div className="donut-wrap"><Suspense fallback={<ChartSkeleton/>}><AnalyticsChart kind="doughnut" labels={byCategory.map((x)=>x.name)} values={byCategory.map((x)=>x.value)} colors={byCategory.map((x)=>x.color||'#a9afa5')} target={target}/></Suspense><span>{formatCompactNumber(total)}</span></div><div className="legend">{byCategory.slice(0,5).map((x)=><div key={x.categoryId}><i style={{background:x.color||'#a9afa5'}}/><span>{x.name}</span><span className="legend-value"><b>{formatAnalyticsAmount(x.value,target)}</b><small>{Math.round(x.value/total*100)||0}%</small></span></div>)}{byCategory.length>5&&<div className="legend-rest"><i/><span>Остальные</span><span className="legend-value"><b>{formatAnalyticsAmount(byCategory.slice(5).reduce((sum,item)=>sum+item.value,0),target)}</b><small>{byCategory.length-5}</small></span></div>}</div></>:<AnalyticsEmpty>Категории появятся после первого расхода</AnalyticsEmpty>}</div>
@@ -1823,6 +1867,7 @@ export function CapabilityScreen({ intent, session, knownUserId, finish, close, 
 }
 
 export default function App({ capability = null }: { capability?: CapabilityIntent | null }) {
+  useInputModality()
   const [state,setState]=useState(()=>createAppState(capability))
   const [pagerState,setPagerState]=useState<{workspaceId:string|null;tab:Tab;mounted:Tab[]}>({workspaceId:null,tab:'entry',mounted:['entry']})
   const [currentId,setCurrentId]=useState<string|null>(null)
@@ -1964,9 +2009,16 @@ export default function App({ capability = null }: { capability?: CapabilityInte
       setPagerState({workspaceId,tab:'entry',mounted:['entry']})
       return
     }
-    node.scrollLeft=Math.max(0,navigationTabs.findIndex((item)=>item.id===tab))*node.clientWidth
+    const left=Math.max(0,navigationTabs.findIndex((item)=>item.id===tab))*node.clientWidth
+    if(Math.abs(node.scrollLeft-left)<1)return
+    // Тап по вкладке едет так же плавно, как свайп между страницами. Пока лента в пути, обработчик скролла
+    // не должен переключать вкладку на промежуточную, иначе анимация развернётся обратно.
+    pagerTarget.current=left
+    if(typeof node.scrollTo==='function')node.scrollTo({left,behavior:prefersReducedMotion()?'auto':'smooth'})
+    else node.scrollLeft=left
   },[state.activeWorkspaceId,tab,reviewConnected,Boolean(state.activeWorkspaceId&&state.runtimes[state.activeWorkspaceId]?.bootstrap)])
   useEffect(()=>()=>clearTimeout(pagerTimer.current),[])
+  const pagerTarget=useRef<number|null>(null)
 
   const session=state.session
   const auth=session?.authenticated?session:null
@@ -2178,7 +2230,7 @@ export default function App({ capability = null }: { capability?: CapabilityInte
       })
     }
     clearTimeout(pagerTimer.current)
-    pagerTimer.current=setTimeout(()=>{const node=pager.current;if(!node?.clientWidth)return;const item=navigationTabs[Math.max(0,Math.min(navigationTabs.length-1,Math.round(node.scrollLeft/node.clientWidth)))];if(item)setTab(item.id)},90)
+    pagerTimer.current=setTimeout(()=>{const node=pager.current;if(!node?.clientWidth)return;if(pagerTarget.current!==null&&Math.abs(node.scrollLeft-pagerTarget.current)>1)return;pagerTarget.current=null;const item=navigationTabs[Math.max(0,Math.min(navigationTabs.length-1,Math.round(node.scrollLeft/node.clientWidth)))];if(item)setTab(item.id)},90)
   }
 
   if(state.phase==='checking')return <div className="splash"><div className="brand-mark">m</div>{error&&<p>{error}</p>}</div>
@@ -2195,14 +2247,14 @@ export default function App({ capability = null }: { capability?: CapabilityInte
   const serverAvailable=online&&!runtime.offline
   return <div className="app-shell" key={workspaceId}>
     <header className="workspace-header"><button type="button" className="workspace-name-button" onClick={()=>setSwitchOpen(true)}><span>{workspace.name}</span><ChevronIcon/></button><div className="workspace-header-actions">{updateWaiting&&<button type="button" className="update-button" onClick={activateUpdate}>Обновить</button>}{stats.conflicts||stats.failed?<button type="button" className="sync-status attention" onClick={()=>setIssuesOpen(true)} aria-label={`Нужна проверка: ${stats.conflicts+stats.failed}`}><span>Нужна проверка · {stats.conflicts+stats.failed}</span><i/></button>:!serverAvailable?<button type="button" className="sync-status offline" onClick={()=>setWorkspaceReloadEpoch((value)=>value+1)} aria-label="Нет связи с сервером. Повторить подключение"><span>{stats.total?`Нет связи · ${stats.total}`:'Нет связи с сервером'}</span><i/></button>:stats.total?<div className="sync-status" role="status" aria-live="polite"><span>Отправляем · {stats.total}</span><i/></div>:null}</div></header>
-    <main className="pager" ref={pager} onScroll={onPagerScroll}>
+    <main className="pager" ref={pager} onScroll={onPagerScroll} onPointerDown={()=>{pagerTarget.current=null}} onTouchStart={()=>{pagerTarget.current=null}}>
       <div className="page-slot" inert={tab!=='entry'} aria-hidden={tab!=='entry'}>{mountedTabs.includes('entry')&&<EntryView userId={auth.user.id} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} currentId={currentId} setCurrentId={setCurrentId} refreshPending={refreshPending} onDraftDirtyChange={setDraftDirty} active={tab==='entry'}/>}</div>
       <div className="page-slot" inert={tab!=='history'} aria-hidden={tab!=='history'}>{mountedTabs.includes('history')&&<HistoryView userId={auth.user.id} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} edit={(id)=>void openExpense(id)} createNew={()=>void openExpense(null)} refreshPending={refreshPending}/>}</div>
       <div className="page-slot" inert={tab!=='analytics'} aria-hidden={tab!=='analytics'}>{mountedTabs.includes('analytics')&&<AnalyticsView userId={auth.user.id} workspaceId={workspaceId} bootstrap={bootstrap} theme={theme} online={serverAvailable}/>}</div>
       {reviewConnected&&<div className="page-slot review-page-slot" inert={tab!=='review'} aria-hidden={tab!=='review'}>{mountedTabs.includes('review')&&<BybitReviewView workspaceId={workspaceId} categories={bootstrap.categories} currencies={bootstrap.currencies} tags={bootstrap.tags??[]} onTag={(tag)=>setWorkspaceData((data)=>({...data,tags:[tag,...(data.tags??[]).filter((item)=>item.id!==tag.id)]}))} online={serverAvailable} onStatus={updateBybitStatus} onExpense={(expense)=>setWorkspaceData((data)=>({...data,expenses:[expense,...data.expenses.filter((item)=>item.id!==expense.id)]}))} onExpenseUndo={(expenseId)=>setWorkspaceData((data)=>({...data,expenses:data.expenses.filter((item)=>item.id!==expenseId)}))}/>}</div>}
       <div className="page-slot" inert={tab!=='settings'} aria-hidden={tab!=='settings'}>{mountedTabs.includes('settings')&&<SettingsView user={auth} workspace={workspace} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} pendingCount={stats.total} refreshPending={refreshPending} onLogout={()=>void logoutCurrent()} theme={theme} onThemeChange={setTheme} onSession={(next)=>hydrate(next,false,settingsIdentityEpoch)} onCreateWorkspace={()=>void openCreate()} online={serverAvailable} bybitStatus={bybitStatus} onBybitStatus={(status)=>updateBybitStatus(status)}/>}</div>
     </main>
-    <nav className="bottom-nav" aria-label="Основная навигация">{navigationTabs.map((item)=><button type="button" key={item.id} aria-current={tab===item.id?'page':undefined} aria-label={item.id==='review'&&bybitStatus?.pendingCount?`Разбор: ${bybitStatus.pendingCount}`:item.label} className={tab===item.id?'active':''} onClick={()=>setTab(item.id)}><span><NavIcon tab={item.id}/>{item.id==='review'&&Boolean(bybitStatus?.pendingCount)&&<b className="nav-badge">{bybitStatus!.pendingCount>99?'99+':bybitStatus!.pendingCount}</b>}</span><small>{item.label}</small></button>)}</nav>
+    <nav className="bottom-nav" aria-label="Основная навигация">{navigationTabs.map((item)=><button type="button" key={item.id} aria-current={tab===item.id?'page':undefined} aria-label={item.id==='review'&&bybitStatus?.pendingCount?`Разбор: ${bybitStatus.pendingCount}`:item.label} className={tab===item.id?'active':''} onClick={()=>{if(tab!==item.id)tap(4);setTab(item.id)}}><span><NavIcon tab={item.id}/>{item.id==='review'&&Boolean(bybitStatus?.pendingCount)&&<b className="nav-badge">{bybitStatus!.pendingCount>99?'99+':bybitStatus!.pendingCount}</b>}</span><small>{item.label}</small></button>)}</nav>
     {switchOpen&&<WorkspaceSwitcher items={auth.workspaces} active={workspaceId} runtimes={state.runtimes} online={serverAvailable} onSelect={(id)=>void switchWorkspace(id)} onCreate={()=>void openCreate()}/>} {createOpen&&<CreateWorkspaceSheet existing onClose={()=>setCreateOpen(false)} onCreate={create}/>} {issuesOpen&&<SyncIssuesSheet userId={auth.user.id} workspaceId={workspaceId} online={serverAvailable} onClose={()=>setIssuesOpen(false)} onDiscard={discardIssues}/>} {initialRecovery&&<RecoverySave key={initialRecovery.completionToken} prepared={initialRecovery} mode="initial" close={()=>setInitialRecovery(null)} complete={async()=>{
       const outcome=await completeRotationSafely({prepared:initialRecovery,targetUserId:auth.user.id})
       if(outcome.status!=='completed')throw new Error(outcome.status==='rotation-stale'?'Параллельно была завершена другая настройка восстановления.':'Не удалось подтвердить настройку. Повторите из настроек.')
