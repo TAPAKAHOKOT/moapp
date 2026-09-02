@@ -5,8 +5,8 @@ import { registerBybitCardRoutes } from "../src/bybit-card.js";
 import { buildTestApp, testConfig } from "./test-app.js";
 
 const config = testConfig();
-let assetRequest: URLSearchParams | undefined;
-let assetRequestBody: string | undefined;
+let assetRequest: Record<string, unknown> | undefined;
+let validationTime = 0;
 
 const mockFetch: typeof fetch = async (input, init) => {
   const url = String(input);
@@ -15,15 +15,16 @@ const mockFetch: typeof fetch = async (input, init) => {
   assert.equal(headers["X-BAPI-API-KEY"], "read-only-card-key");
   assert.match(headers["X-BAPI-SIGN"], /^[0-9a-f]{64}$/);
   if (url.endsWith("/v5/user/query-api")) {
+    validationTime = Date.now();
     return new Response(JSON.stringify({ retCode: 0, retMsg: "OK", result: { readOnly: 1, permissions: { BitCard: ["BitCard"] } } }), {
       status: 200, headers: { "content-type": "application/json" }
     });
   }
   const requestUrl = new URL(url);
   assert.equal(requestUrl.pathname, "/v5/card/transaction/query-asset-records");
-  assetRequest = requestUrl.searchParams;
-  assetRequestBody = String(init?.body);
-  const boundary = Number(assetRequest.get("createBeginTime"));
+  assert.equal(requestUrl.search, "");
+  assetRequest = JSON.parse(String(init?.body)) as Record<string, unknown>;
+  const boundary = validationTime;
   return new Response(JSON.stringify({
     retCode: 0,
     retMsg: "OK",
@@ -33,7 +34,7 @@ const mockFetch: typeof fetch = async (input, init) => {
       data: [
         {
           tradeStatus: "1", status: "1", side: "3", transactionCurrencyAmount: "19.25", transactionCurrency: "EUR",
-          txnCreate: boundary - 1, merchName: "Old merchant", txnId: "old", orderNo: "old-order", mccCode: "5411"
+          txnCreate: boundary - 60_000, merchName: "Old merchant", txnId: "old", orderNo: "old-order", mccCode: "5411"
         },
         {
           tradeStatus: "1", status: "1", side: "3", transactionCurrencyAmount: "12.34", transactionCurrency: "EUR",
@@ -82,10 +83,7 @@ test("Bybit Card imports only records at or after the exact connection boundary"
   assert.equal(connected.statusCode, 201, connected.body);
   assert.equal(connected.json().connected, true);
   assert.equal(connected.json().pendingCount, 1);
-  assert.equal(assetRequest?.get("type"), "SIDE_QUERY_FINANCIAL");
-  assert.equal(assetRequest?.get("statusCode"), "1");
-  assert.equal(Number(assetRequest?.get("createBeginTime")), Date.parse(connected.json().enabledAt));
-  assert.equal(assetRequestBody, "{}");
+  assert.deepEqual(assetRequest, { limit: 500, page: 1 });
 
   const storedConnection = app.db.prepare("SELECT * FROM bybit_card_connections WHERE workspace_id=?").get(workspaceId) as { credentials_encrypted: string };
   assert.doesNotMatch(storedConnection.credentials_encrypted, /read-only-card-key|super-secret/);

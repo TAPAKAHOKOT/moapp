@@ -5,6 +5,7 @@ const API_KEY = "moapp-demo-key";
 const API_SECRET = "moapp-demo-secret";
 const port = Number(process.env.BYBIT_MOCK_PORT ?? 4010);
 let records: Array<Record<string, unknown>> | undefined;
+let validationTime = 0;
 
 function send(response: ServerResponse, status: number, payload: unknown): void {
   response.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
@@ -27,26 +28,25 @@ function authorized(request: IncomingMessage, body: string): boolean {
   return createHmac("sha256", API_SECRET).update(payload).digest("hex") === signature;
 }
 
-function demoRecords(boundary: number, upper: number): Array<Record<string, unknown>> {
-  const at = (offset: number) => Math.min(boundary + offset, upper);
+function demoRecords(now: number): Array<Record<string, unknown>> {
   return [
     {
       tradeStatus: "1", status: "1", side: "3", transactionCurrencyAmount: "99.99", transactionCurrency: "EUR",
-      txnCreate: boundary - 1, merchName: "OLD PAYMENT — MUST BE HIDDEN", txnId: "demo-before-boundary", mccCode: "5999"
+      txnCreate: now - 24 * 60 * 60 * 1000, merchName: "OLD PAYMENT — MUST BE HIDDEN", txnId: "demo-before-boundary", mccCode: "5999"
     },
     {
       tradeStatus: "1", status: "1", side: "3", transactionCurrencyAmount: "18.49", transactionCurrency: "EUR",
-      txnCreate: at(0), merchName: "Green Market", merchCity: "Belgrade", merchCountry: "RS", txnId: "demo-grocery",
+      txnCreate: now, merchName: "Green Market", merchCity: "Belgrade", merchCountry: "RS", txnId: "demo-grocery",
       orderNo: "demo-order-1", mccCode: "5411", merchCategoryDesc: "Grocery Stores"
     },
     {
       tradeStatus: "1", status: "1", side: "7", transactionCurrencyAmount: "7.20", transactionCurrency: "EUR",
-      txnCreate: at(1), merchName: "Coffee Corner", merchCity: "Belgrade", merchCountry: "RS", txnId: "demo-coffee",
+      txnCreate: now, merchName: "Coffee Corner", merchCity: "Belgrade", merchCountry: "RS", txnId: "demo-coffee",
       orderNo: "demo-order-2", mccCode: "5814", merchCategoryDesc: "Fast Food Restaurants"
     },
     {
       tradeStatus: "1", status: "1", side: "13", transactionCurrencyAmount: "50.00", transactionCurrency: "EUR",
-      txnCreate: at(2), merchName: "ATM Demo", merchCity: "Belgrade", merchCountry: "RS", txnId: "demo-atm",
+      txnCreate: now, merchName: "ATM Demo", merchCity: "Belgrade", merchCountry: "RS", txnId: "demo-atm",
       orderNo: "demo-order-3", mccCode: "6011", merchCategoryDesc: "ATM Withdrawal"
     }
   ];
@@ -61,17 +61,19 @@ const server = createServer(async (request, response) => {
   const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "127.0.0.1"}`);
   if (request.method === "GET" && url.pathname === "/v5/user/query-api") {
     records = undefined;
+    validationTime = Date.now();
     send(response, 200, { retCode: 0, retMsg: "OK", result: { readOnly: 1, permissions: { BitCard: ["BitCard"] } } });
     return;
   }
   if (request.method === "POST" && url.pathname === "/v5/card/transaction/query-asset-records") {
-    const boundary = Number(url.searchParams.get("createBeginTime"));
-    const upper = Number(url.searchParams.get("createEndTime"));
-    if (!Number.isFinite(boundary) || !Number.isFinite(upper)) {
-      send(response, 400, { retCode: 10001, retMsg: "Missing sync boundary", result: {} });
+    let input: { limit?: unknown; page?: unknown };
+    try { input = JSON.parse(body) as typeof input; }
+    catch { send(response, 400, { retCode: 10001, retMsg: "Invalid JSON", result: {} }); return; }
+    if (input.limit !== 500 || input.page !== 1) {
+      send(response, 400, { retCode: 120110001, retMsg: "param_illegal", result: {} });
       return;
     }
-    records ??= demoRecords(boundary, upper);
+    records ??= demoRecords(validationTime);
     send(response, 200, { retCode: 0, retMsg: "OK", result: { pageSize: records.length, totalCount: records.length, data: records } });
     return;
   }
