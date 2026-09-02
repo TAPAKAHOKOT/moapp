@@ -11,7 +11,7 @@ import {
   Tooltip,
 } from 'chart.js'
 import type { ChartOptions } from 'chart.js'
-import { useId } from 'react'
+import { useEffect, useId, useRef } from 'react'
 import { Bar, Doughnut, Line } from 'react-chartjs-2'
 
 ChartJS.register(ArcElement, BarElement, CategoryScale, Filler, Legend, LinearScale, LineElement, PointElement, Tooltip)
@@ -121,6 +121,11 @@ function ChartDataAlternative({
 
 export default function AnalyticsChart(props: AnalyticsChartProps) {
   const descriptionId = useId()
+  // Анимируем только первое появление графика: при смене фильтров данные должны обновляться сразу.
+  const firstRender = useRef(true)
+  useEffect(() => { firstRender.current = false }, [])
+  const reducedMotion = typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  const animation = firstRender.current && !reducedMotion ? { duration: 450, easing: 'easeOutQuart' as const } : false
   const accessibility = chartAccessibility(props)
   const accessibleCanvas = {
     role: 'img',
@@ -140,7 +145,7 @@ export default function AnalyticsChart(props: AnalyticsChartProps) {
     const options: ChartOptions<'line'> = {
       responsive: true,
       maintainAspectRatio: false,
-      animation: false,
+      animation,
       plugins: {
         legend: { display: false },
         tooltip: { callbacks: { label: (context) => formatAnalyticsAmount(context.parsed.y ?? 0, props.target) } },
@@ -162,7 +167,7 @@ export default function AnalyticsChart(props: AnalyticsChartProps) {
     const options: ChartOptions<'doughnut'> = {
       responsive: true,
       maintainAspectRatio: false,
-      animation: false,
+      animation,
       cutout: '72%',
       plugins: {
         legend: { display: false },
@@ -175,7 +180,7 @@ export default function AnalyticsChart(props: AnalyticsChartProps) {
   const options: ChartOptions<'bar'> = {
     responsive: true,
     maintainAspectRatio: false,
-    animation: false,
+    animation,
     plugins: {
       legend: { display: false },
       tooltip: { callbacks: { label: (context) => formatAnalyticsAmount(context.parsed.y ?? 0, props.target) } },
