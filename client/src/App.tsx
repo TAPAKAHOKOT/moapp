@@ -536,6 +536,17 @@ function CategorySheet({ categories, selectedId, onClose, onPick }: { categories
   </section></div>
 }
 
+// Нижняя часть экрана ввода для соседней записи: во время свайпа она проявляется поверх живой, чтобы категория,
+// теги и заметка менялись вместе с движением пальца, а не скачком при подмене. Слой чисто декоративный.
+function EntryLowerPreview({ main, category, tags, tagIds, note, ready, hint }: { main: Category[]; category?: Category; tags: Tag[]; tagIds: string[]; note: string; ready: boolean; hint: string }) {
+  const other = category && !main.some((item) => item.id === category.id) ? category : null
+  return <>
+    <div className={`categories${ready ? '' : ' locked'}`}><p>{hint}</p><div className="main-categories">{main.map((item) => <button type="button" key={item.id} disabled={!ready} tabIndex={-1} className={item.id === category?.id ? 'selected' : undefined}><i style={{backgroundColor:item.color ?? '#a9afa5'}}/><span>{item.name}</span></button>)}<button type="button" disabled={!ready} tabIndex={-1} className={other ? 'selected' : undefined}>{other ? <i style={{backgroundColor:other.color ?? '#a9afa5'}}/> : <i className="dots">•••</i>}<span>{other ? other.name : 'Другое'}</span></button></div></div>
+    <div className="tag-strip"><button type="button" className="tag-add" tabIndex={-1}>{tags.length ? '+' : '＋ Тег'}</button>{sortTags(tags).map((tag) => <TagChip key={tag.id} name={tag.name} color={tag.color} selected={tagIds.includes(tag.id)} onToggle={() => {}}/>)}</div>
+    <div className="note-block"><button type="button" className="text-button note-toggle" tabIndex={-1}>{note ? `✎ ${note}` : '＋ Добавить заметку'}</button></div>
+  </>
+}
+
 export function EntryView({ userId, workspaceId, bootstrap, setBootstrap, currentId, setCurrentId, refreshPending, onDraftDirtyChange, active }: {
   userId: string
   workspaceId: string
@@ -559,6 +570,24 @@ export function EntryView({ userId, workspaceId, bootstrap, setBootstrap, curren
   const trackRef = useRef<HTMLDivElement>(null)
   const actionsRef = useRef<HTMLDivElement>(null)
   const editActionsRef = useRef<HTMLDivElement>(null)
+  const lowerLiveRef = useRef<HTMLDivElement>(null)
+  const lowerPreviewRef = useRef<HTMLDivElement>(null)
+  const [swipePreview, setSwipePreview] = useState<'older' | 'newer' | null>(null)
+  const lastFade = useRef(0)
+  // Превью непрозрачное и лежит поверх живого слоя: где содержимое совпадает, картинка не меняется вовсе,
+  // а различия (выбранная категория, теги, заметка) проявляются пропорционально сдвигу.
+  const styleCrossfade = (fade: number, duration: number) => {
+    lastFade.current = fade
+    const node = lowerPreviewRef.current
+    if (!node) return
+    node.style.transition = duration && !prefersReducedMotion() ? `opacity ${duration}ms cubic-bezier(.25,.8,.3,1)` : 'none'
+    node.style.opacity = String(fade)
+  }
+  useLayoutEffect(() => {
+    // Слой мог смонтироваться уже после первого сдвига — догоняем текущее значение без перехода.
+    const node = lowerPreviewRef.current
+    if (node && swipePreview) { node.style.transition = 'none'; node.style.opacity = String(lastFade.current) }
+  }, [swipePreview])
   // Всё, что существует только у сохранённой записи (значки сверху и «Сохранить / Отменить»), проявляется одним движением.
   const setActionsPresence = (presence: number, duration: number) => {
     styleEntryActions(actionsRef.current, presence, duration)
@@ -587,6 +616,9 @@ export function EntryView({ userId, workspaceId, bootstrap, setBootstrap, curren
     }
     // При свайпе новое состояние уже достигнуто анимацией; при удалении и открытии из истории блок мягко гаснет или проявляется сам.
     setActionsPresence(currentId ? 1 : 0, didSwap ? 0 : 180)
+    // После подмены живой слой уже показывает новую запись — превью больше не нужно.
+    styleCrossfade(0, 0)
+    setSwipePreview(null)
   }, [currentId])
 
   useLayoutEffect(() => {
@@ -725,6 +757,10 @@ export function EntryView({ userId, workspaceId, bootstrap, setBootstrap, curren
       : direction === 'older' || Boolean(newerNeighbour) ? 1 : 0
     const progress = Math.min(Math.abs(dx) / (node.clientWidth + CARD_GAP), 1)
     setActionsPresence(sourcePresence + (targetPresence - sourcePresence) * progress, duration)
+    const previewDirection = direction && canMove(direction) ? direction : null
+    styleCrossfade(previewDirection ? progress : 0, duration)
+    // Превью остаётся смонтированным при откате в ноль: его прозрачность уже уходит в 0, а размонтирование оборвало бы переход.
+    if (previewDirection) setSwipePreview((previous) => previous === previewDirection ? previous : previewDirection)
   }
 
   const move = async (direction: 'older' | 'newer') => {
@@ -923,6 +959,15 @@ export function EntryView({ userId, workspaceId, bootstrap, setBootstrap, curren
   }
   useEffect(() => { onDraftDirtyChange(dirty) }, [dirty, onDraftDirtyChange])
   useEffect(() => () => onDraftDirtyChange(false), [onDraftDirtyChange])
+  const previewTarget = (() => {
+    if (!swipePreview) return null
+    const neighbour = swipePreview === 'older' ? olderNeighbour : newerNeighbour
+    if (swipePreview === 'older' && !neighbour) return null
+    if (neighbour) return { category: bootstrap.categories.find((item) => item.id === neighbour.categoryId), tagIds: neighbour.tagIds ?? [], note: neighbour.note ?? '', ready: true, hint: 'Категория расхода' }
+    const blank = draft.current
+    const blankReady = Boolean(blank.amount) && Number(blank.amount) > 0
+    return { category: undefined, tagIds: blank.tagIds, note: blank.note, ready: blankReady, hint: blankReady ? 'Выберите категорию, чтобы сохранить' : 'Сначала введите сумму' }
+  })()
   const categoryHint = !ready ? 'Сначала введите сумму' : current ? dirty ? 'Проверьте изменения и сохраните' : 'Категория расхода' : 'Выберите категорию, чтобы сохранить'
   const physicalKey = (event: KeyboardEvent) => {
     if (saving) return
@@ -953,9 +998,14 @@ export function EntryView({ userId, workspaceId, bootstrap, setBootstrap, curren
       <button type="button" className="icon-danger entry-delete" disabled={saving || !current} onClick={() => void remove()} aria-label="Удалить расход"><TrashIcon/></button>
     </div>
     <Keypad onKey={key} disabled={saving}/>
+    <div className="entry-lower">
+    <div ref={lowerLiveRef} className="entry-lower-live">
     <div className={`categories${ready ? '' : ' locked'}${dirty ? ' unsaved' : ''}`}><p>{categoryHint}</p><div className="main-categories">{main.map((category) => <button type="button" disabled={!ready || saving} aria-pressed={category.id === selectedCategoryId} key={category.id} className={category.id === selectedCategoryId ? 'selected' : undefined} onClick={() => chooseCategory(category)}><i style={{backgroundColor:category.color ?? '#a9afa5'}}/><span>{category.name}</span></button>)}<button type="button" disabled={!ready || saving} aria-pressed={Boolean(otherFace)} className={otherFace ? 'selected' : undefined} onClick={() => setCategorySheet(true)}>{otherFace ? <i style={{backgroundColor:otherFace.color ?? '#a9afa5'}}/> : <i className="dots">•••</i>}<span>{otherFace ? otherFace.name : 'Другое'}</span></button></div></div>
     <TagStrip tags={bootstrap.tags ?? []} selected={form.tagIds} disabled={saving} online={navigator.onLine} onChange={(tagIds) => setForm((value) => ({ ...value, tagIds }))} onCreate={(name) => createTagOrReuse(workspaceId, name, TAG_COLORS[(bootstrap.tags ?? []).length % TAG_COLORS.length] ?? null, (tag) => setBootstrap((data) => ({ ...data, tags: [tag, ...(data.tags ?? []).filter((item) => item.id !== tag.id)] })))}/>
     <div className="note-block">{!showNote ? <button key={form.note || 'empty'} type="button" className="text-button note-toggle" disabled={saving} onClick={() => setShowNote(true)}>{form.note ? `✎ ${form.note}` : '＋ Добавить заметку'}</button> : <label>Заметка <span>необязательно</span><input autoFocus maxLength={200} disabled={saving} placeholder="Например, IKEA" value={form.note} onFocus={(event) => { const node = event.currentTarget; requestAnimationFrame(() => node.scrollIntoView({ block: 'center' })) }} onChange={(e) => setForm({...form,note:e.target.value})}/></label>}</div>
+    </div>
+    {previewTarget && <div ref={lowerPreviewRef} className="entry-lower-preview" aria-hidden="true" inert><EntryLowerPreview main={main} tags={bootstrap.tags ?? []} {...previewTarget}/></div>}
+    </div>
     <div ref={editActionsRef} className={`edit-actions${current ? '' : ' empty'}`} style={ENTRY_ACTIONS_HIDDEN} inert={!current} aria-hidden={!current}><button type="button" className="primary" disabled={!current || !ready || !dirty || saving || !selectedCategoryId} onClick={() => selectedCategoryId && void submitExpense(selectedCategoryId)}>{saving ? 'Сохраняем…' : 'Сохранить'}</button><button type="button" className="sheet-cancel" disabled={!current || !dirty || saving} onClick={cancelEdit}>Отменить</button></div>
     {dateSheet && <DateSheet value={form.occurredAt} onClose={() => setDateSheet(false)} onPick={(value) => { setForm({ ...form, occurredAt: value }); setDateSheet(false) }}/>}
     {categorySheet && <CategorySheet categories={additional} selectedId={selectedCategoryId ?? undefined} onClose={() => setCategorySheet(false)} onPick={chooseCategory}/>}
