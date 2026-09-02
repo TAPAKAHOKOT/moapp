@@ -168,7 +168,7 @@ describe('expense editing and saving', () => {
     expect(screen.getByRole('region', { name: 'Ввод суммы' }).querySelector('.edit-actions:not(.empty)')).not.toBeNull()
     fireEvent.click(screen.getByRole('button', { name: '1' }))
     expect(submit).not.toHaveBeenCalled()
-    fireEvent.click(screen.getByRole('button', { name: 'Сохранить изменения' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }))
 
     await waitFor(() => expect(submit).toHaveBeenCalled())
     expect(submit.mock.calls[0]?.[3]).toEqual(expect.objectContaining({ categoryId: archived.id }))

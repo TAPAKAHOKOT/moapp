@@ -158,10 +158,10 @@ html {
 }
 
 :root[data-theme="dark"] {
-  --control-line: #697267;
-  --empty: #91988e;
+  --control-line: #5a5a5a;
+  --empty: #8f8f8f;
   --pending: #efbd69;
-  --focus: #acd09d;
+  --focus: #b7cbad;
 }
 
 :where(button, input, select, textarea, [tabindex]):focus-visible {
@@ -1120,7 +1120,7 @@ html {
 .settings-sections small {
   max-width: 100%;
   overflow: hidden;
-  font-size: 8px;
+  font-size: 9px;
   line-height: 1.25;
   text-overflow: ellipsis;
   white-space: nowrap;
