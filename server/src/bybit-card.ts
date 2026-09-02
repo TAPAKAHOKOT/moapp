@@ -281,30 +281,14 @@ function connectionStatus(app: FastifyInstance, workspaceId: string) {
 async function fetchRecords(fetchImpl: FetchLike, credentials: Credentials, from: number, to: number, baseUrl?: string): Promise<AssetRecord[]> {
   const records: AssetRecord[] = [];
   let fetched = 0;
-  let filteredQuery = true;
   for (let page = 1; page <= MAX_PAGES; page += 1) {
-    const query: RequestParameters = {
-      type: "SIDE_QUERY_FINANCIAL",
-      limit: 500,
-      page,
-      ...(filteredQuery ? { statusCode: "1", createBeginTime: from, createEndTime: to } : {})
-    };
-    let result: { pageSize?: unknown; totalCount?: unknown; data?: unknown };
-    try {
-      result = await signedRequest(fetchImpl, credentials, "POST", "/v5/card/transaction/query-asset-records", {
-        query,
-        body: {},
-        baseUrl
-      });
-    } catch (error) {
-      if (page !== 1 || !filteredQuery || !(error instanceof BybitError) || String(error.retCode) !== "120110001") throw error;
-      filteredQuery = false;
-      result = await signedRequest(fetchImpl, credentials, "POST", "/v5/card/transaction/query-asset-records", {
-        query: { type: "SIDE_QUERY_FINANCIAL", limit: 500, page },
-        body: {},
-        baseUrl
-      });
-    }
+    const result = await signedRequest<{ pageSize?: unknown; totalCount?: unknown; data?: unknown }>(
+      fetchImpl,
+      credentials,
+      "POST",
+      "/v5/card/transaction/query-asset-records",
+      { query: { limit: 10, page }, body: {}, baseUrl }
+    );
     const data = Array.isArray(result.data) ? result.data as AssetRecord[] : [];
     fetched += data.length;
     records.push(...data.filter((record) => {
@@ -313,7 +297,7 @@ async function fetchRecords(fetchImpl: FetchLike, credentials: Credentials, from
         && String(record.tradeStatus ?? "") === "1" && String(record.status ?? "") === "1";
     }));
     const total = typeof result.totalCount === "number" ? result.totalCount : fetched;
-    if (!data.length || fetched >= total || data.length < 500) break;
+    if (!data.length || fetched >= total || data.length < 10) break;
   }
   return records;
 }
