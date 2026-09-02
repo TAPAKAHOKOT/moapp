@@ -41,6 +41,7 @@ const SERVER_ERROR_MESSAGES: Record<string, string> = {
   UNDO_CONFLICT: 'Созданный расход уже изменился, поэтому отменить его из разбора нельзя.',
   BYBIT_KEY_NOT_READ_ONLY: 'Создайте для Moapp отдельный read-only API-ключ Bybit.',
   BYBIT_CARD_PERMISSION_MISSING: 'У API-ключа не включено разрешение Bybit Card.',
+  BYBIT_RATE_LIMITED: 'Bybit временно ограничил частоту запросов. Подождите немного и повторите.',
   BYBIT_REJECTED: 'Bybit отклонил запрос. Проверьте ключ, регион и ограничения по IP.',
   BYBIT_UNAVAILABLE: 'Bybit сейчас недоступен. Повторите синхронизацию позже.',
   WORKSPACE_NOT_FOUND: 'Пространство не найдено или доступ к нему закрыт.',

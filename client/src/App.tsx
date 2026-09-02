@@ -1787,16 +1787,9 @@ export default function App({ capability = null }: { capability?: CapabilityInte
     if(!auth||!workspaceId||!online){setBybitRuntime(null);return}
     const controller=new AbortController();const id=workspaceId
     setBybitRuntime((current)=>current?.workspaceId===id?current:null)
-    void getBybitCardStatus(id,controller.signal).then(async(status)=>{
+    void getBybitCardStatus(id,controller.signal).then((status)=>{
       if(controller.signal.aborted)return
       setBybitRuntime({workspaceId:id,status})
-      if(status.connected){
-        try{const synced=await syncBybitCard(id,controller.signal);if(!controller.signal.aborted)setBybitRuntime({workspaceId:id,status:synced})}
-        catch{
-          try{const failed=await getBybitCardStatus(id,controller.signal);if(!controller.signal.aborted)setBybitRuntime({workspaceId:id,status:failed})}
-          catch{/* Bybit status is supplemental and must not block the workspace. */}
-        }
-      }
     }).catch(()=>{/* Bybit status is supplemental and must not block the workspace. */})
     return()=>controller.abort()
   },[auth?.currentSessionId,auth?.user.id,online,workspaceId])
