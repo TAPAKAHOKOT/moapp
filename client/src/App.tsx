@@ -1271,6 +1271,7 @@ function BybitConnectionPanel({ workspace, workspaceId, status, online, onStatus
       <p>Moapp загрузит только платежи, совершённые после включения интеграции. Нужен отдельный read-only ключ с разрешением BitCard.</p>
       {!editing?<button type="button" className="primary" disabled={!online||status===null} onClick={()=>setEditing(true)}>Подключить Bybit Card</button>:<form className="integration-form" onSubmit={(event)=>void connect(event)}>
         <label>Регион аккаунта<select value={region} disabled={busy} onChange={(event)=>setRegion(event.target.value as BybitRegion)}>{bybitRegions.map((item)=><option key={item.id} value={item.id}>{item.label}</option>)}</select></label>
+        {region==='eu'&&<small className="integration-meta">Для EU Bybit требует ключ, созданный через Connect to Third-Party Applications.</small>}
         <label>API key<input autoComplete="off" value={apiKey} disabled={busy} maxLength={256} onChange={(event)=>setApiKey(event.target.value)}/></label>
         <label>API secret<input type="password" autoComplete="new-password" value={apiSecret} disabled={busy} maxLength={512} onChange={(event)=>setApiSecret(event.target.value)}/></label>
         <button className="primary" disabled={busy||!online}>{busy?'Проверяем ключ…':'Включить интеграцию'}</button><button type="button" className="sheet-cancel" disabled={busy} onClick={()=>{setEditing(false);setError('')}}>Отмена</button>

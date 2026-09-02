@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { createHmac, randomUUID } from "node:crypto";
 import { after, before, test } from "node:test";
 import { registerBybitCardRoutes } from "../src/bybit-card.js";
 import { buildTestApp, testConfig } from "./test-app.js";
 
 const config = testConfig();
-let assetRequest: Record<string, unknown> | undefined;
+const assetRequests: Array<Record<string, string>> = [];
 let validationTime = 0;
 
 const mockFetch: typeof fetch = async (input, init) => {
@@ -13,17 +13,32 @@ const mockFetch: typeof fetch = async (input, init) => {
   assert.equal(init?.headers instanceof Headers, false);
   const headers = init?.headers as Record<string, string>;
   assert.equal(headers["X-BAPI-API-KEY"], "read-only-card-key");
-  assert.match(headers["X-BAPI-SIGN"], /^[0-9a-f]{64}$/);
+  assert.equal(headers["X-BAPI-RECV-WINDOW"], "5000");
+  assert.match(headers["cdn-request-id"], /^[0-9a-f-]{36}$/);
+  const requestBody = String(init?.body ?? "");
+  const signaturePayload = `${headers["X-BAPI-TIMESTAMP"]}read-only-card-key5000${init?.method === "POST" ? requestBody : ""}`;
+  assert.equal(headers["X-BAPI-SIGN"], createHmac("sha256", "super-secret").update(signaturePayload).digest("hex"));
   if (url.endsWith("/v5/user/query-api")) {
+    assert.equal(init?.method, "GET");
+    assert.equal(requestBody, "");
+    assert.equal(headers["Content-Type"], undefined);
     validationTime = Date.now();
     return new Response(JSON.stringify({ retCode: 0, retMsg: "OK", result: { readOnly: 1, permissions: { BitCard: ["BitCard"] } } }), {
       status: 200, headers: { "content-type": "application/json" }
     });
   }
   const requestUrl = new URL(url);
+  assert.equal(init?.method, "POST");
   assert.equal(requestUrl.pathname, "/v5/card/transaction/query-asset-records");
-  assert.equal(requestUrl.search, "");
-  assetRequest = JSON.parse(String(init?.body)) as Record<string, unknown>;
+  assert.equal(requestBody, "{}");
+  assert.equal(headers["Content-Type"], "application/json");
+  const assetRequest = Object.fromEntries(requestUrl.searchParams);
+  assetRequests.push(assetRequest);
+  if (requestUrl.searchParams.has("statusCode")) {
+    return new Response(JSON.stringify({ retCode: 120110001, retMsg: "param_illegal", result: {} }), {
+      status: 200, headers: { "content-type": "application/json" }
+    });
+  }
   const boundary = validationTime;
   return new Response(JSON.stringify({
     retCode: 0,
@@ -83,7 +98,12 @@ test("Bybit Card imports only records at or after the exact connection boundary"
   assert.equal(connected.statusCode, 201, connected.body);
   assert.equal(connected.json().connected, true);
   assert.equal(connected.json().pendingCount, 1);
-  assert.deepEqual(assetRequest, { limit: 500, page: 1 });
+  assert.deepEqual(assetRequests.map(({ type, statusCode, limit, page }) => ({ type, statusCode, limit, page })), [
+    { type: "SIDE_QUERY_FINANCIAL", statusCode: "1", limit: "500", page: "1" },
+    { type: "SIDE_QUERY_FINANCIAL", statusCode: undefined, limit: "500", page: "1" }
+  ]);
+  assert.equal(Number(assetRequests[0]?.createBeginTime), Date.parse(connected.json().enabledAt));
+  assert.ok(Number(assetRequests[0]?.createEndTime) >= Number(assetRequests[0]?.createBeginTime));
 
   const storedConnection = app.db.prepare("SELECT * FROM bybit_card_connections WHERE workspace_id=?").get(workspaceId) as { credentials_encrypted: string };
   assert.doesNotMatch(storedConnection.credentials_encrypted, /read-only-card-key|super-secret/);

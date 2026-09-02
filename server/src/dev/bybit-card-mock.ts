@@ -66,10 +66,8 @@ const server = createServer(async (request, response) => {
     return;
   }
   if (request.method === "POST" && url.pathname === "/v5/card/transaction/query-asset-records") {
-    let input: { limit?: unknown; page?: unknown };
-    try { input = JSON.parse(body) as typeof input; }
-    catch { send(response, 400, { retCode: 10001, retMsg: "Invalid JSON", result: {} }); return; }
-    if (input.limit !== 500 || input.page !== 1) {
+    if (body !== "{}" || url.searchParams.get("type") !== "SIDE_QUERY_FINANCIAL"
+      || url.searchParams.get("limit") !== "500" || url.searchParams.get("page") !== "1") {
       send(response, 400, { retCode: 120110001, retMsg: "param_illegal", result: {} });
       return;
     }
