@@ -717,7 +717,7 @@ html {
   }
 
   .keypad button {
-    min-height: 44px;
+    min-height: 0;
     border-radius: 14px;
     font-size: 24px;
   }
