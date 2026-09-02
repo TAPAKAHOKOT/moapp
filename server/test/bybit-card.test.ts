@@ -5,7 +5,8 @@ import { registerBybitCardRoutes } from "../src/bybit-card.js";
 import { buildTestApp, testConfig } from "./test-app.js";
 
 const config = testConfig();
-let assetRequest: Record<string, unknown> | undefined;
+let assetRequest: URLSearchParams | undefined;
+let assetRequestBody: string | undefined;
 
 const mockFetch: typeof fetch = async (input, init) => {
   const url = String(input);
@@ -18,9 +19,11 @@ const mockFetch: typeof fetch = async (input, init) => {
       status: 200, headers: { "content-type": "application/json" }
     });
   }
-  assert.ok(url.endsWith("/v5/card/transaction/query-asset-records"));
-  assetRequest = JSON.parse(String(init?.body)) as Record<string, unknown>;
-  const boundary = Number(assetRequest.createBeginTime);
+  const requestUrl = new URL(url);
+  assert.equal(requestUrl.pathname, "/v5/card/transaction/query-asset-records");
+  assetRequest = requestUrl.searchParams;
+  assetRequestBody = String(init?.body);
+  const boundary = Number(assetRequest.get("createBeginTime"));
   return new Response(JSON.stringify({
     retCode: 0,
     retMsg: "OK",
@@ -79,9 +82,10 @@ test("Bybit Card imports only records at or after the exact connection boundary"
   assert.equal(connected.statusCode, 201, connected.body);
   assert.equal(connected.json().connected, true);
   assert.equal(connected.json().pendingCount, 1);
-  assert.equal(assetRequest?.type, "SIDE_QUERY_FINANCIAL");
-  assert.equal(assetRequest?.statusCode, "1");
-  assert.equal(assetRequest?.createBeginTime, Date.parse(connected.json().enabledAt));
+  assert.equal(assetRequest?.get("type"), "SIDE_QUERY_FINANCIAL");
+  assert.equal(assetRequest?.get("statusCode"), "1");
+  assert.equal(Number(assetRequest?.get("createBeginTime")), Date.parse(connected.json().enabledAt));
+  assert.equal(assetRequestBody, "{}");
 
   const storedConnection = app.db.prepare("SELECT * FROM bybit_card_connections WHERE workspace_id=?").get(workspaceId) as { credentials_encrypted: string };
   assert.doesNotMatch(storedConnection.credentials_encrypted, /read-only-card-key|super-secret/);

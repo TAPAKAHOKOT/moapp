@@ -58,17 +58,15 @@ const server = createServer(async (request, response) => {
     send(response, 401, { retCode: 10003, retMsg: "Invalid demo API key or signature", result: {} });
     return;
   }
-  if (request.method === "GET" && request.url === "/v5/user/query-api") {
+  const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "127.0.0.1"}`);
+  if (request.method === "GET" && url.pathname === "/v5/user/query-api") {
     records = undefined;
     send(response, 200, { retCode: 0, retMsg: "OK", result: { readOnly: 1, permissions: { BitCard: ["BitCard"] } } });
     return;
   }
-  if (request.method === "POST" && request.url === "/v5/card/transaction/query-asset-records") {
-    let input: { createBeginTime?: unknown; createEndTime?: unknown };
-    try { input = JSON.parse(body) as typeof input; }
-    catch { send(response, 400, { retCode: 10001, retMsg: "Invalid JSON", result: {} }); return; }
-    const boundary = Number(input.createBeginTime);
-    const upper = Number(input.createEndTime);
+  if (request.method === "POST" && url.pathname === "/v5/card/transaction/query-asset-records") {
+    const boundary = Number(url.searchParams.get("createBeginTime"));
+    const upper = Number(url.searchParams.get("createEndTime"));
     if (!Number.isFinite(boundary) || !Number.isFinite(upper)) {
       send(response, 400, { retCode: 10001, retMsg: "Missing sync boundary", result: {} });
       return;
