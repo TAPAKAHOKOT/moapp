@@ -158,10 +158,10 @@ html {
 }
 
 :root[data-theme="dark"] {
-  --control-line: #5a5a5a;
-  --empty: #8f8f8f;
+  --control-line: #454646;
+  --empty: #686965;
   --pending: #efbd69;
-  --focus: #b7cbad;
+  --focus: #b1cfa3;
 }
 
 :where(button, input, select, textarea, [tabindex]):focus-visible {
@@ -299,7 +299,7 @@ html {
 }
 
 :root[data-theme="dark"] .bottom-nav button {
-  color: var(--muted);
+  color: var(--text-tertiary);
 }
 
 .history-row em,
