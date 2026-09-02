@@ -76,7 +76,12 @@ type AssetRecord = {
 };
 
 class BybitError extends Error {
-  constructor(message: string, readonly code = "BYBIT_UNAVAILABLE") { super(message); }
+  constructor(
+    message: string,
+    readonly code = "BYBIT_UNAVAILABLE",
+    readonly retCode: string | number | undefined = undefined,
+    readonly requestId: string | undefined = undefined
+  ) { super(message); }
 }
 
 const activeSyncs = new WeakMap<FastifyInstance, Set<string>>();
@@ -132,6 +137,7 @@ async function signedRequest<T>(
   const signaturePayload = `${timestamp}${credentials.apiKey}${RECV_WINDOW}${signatureParameters}`;
   const signature = createHmac("sha256", credentials.apiSecret).update(signaturePayload).digest("hex");
   const url = `${options.baseUrl ?? BYBIT_REGIONS[credentials.region]}${path}${queryString ? `?${queryString}` : ""}`;
+  const requestId = randomUUID();
   let response: Response;
   try {
     response = await fetchImpl(url, {
@@ -141,22 +147,24 @@ async function signedRequest<T>(
         "X-BAPI-TIMESTAMP": timestamp,
         "X-BAPI-RECV-WINDOW": RECV_WINDOW,
         "X-BAPI-SIGN": signature,
+        "cdn-request-id": requestId,
         ...(jsonBody ? { "Content-Type": "application/json" } : {})
       },
       ...(jsonBody ? { body: jsonBody } : {}),
       signal: AbortSignal.timeout(15_000)
     });
   } catch (error) {
-    throw new BybitError(error instanceof Error ? `Bybit connection failed: ${error.message}` : "Bybit connection failed");
+    throw new BybitError(error instanceof Error ? `Bybit connection failed: ${error.message}` : "Bybit connection failed", "BYBIT_UNAVAILABLE", undefined, requestId);
   }
   let payload: unknown;
   try { payload = await response.json(); }
-  catch { throw new BybitError(`Bybit returned an unreadable response (${response.status})`); }
+  catch { throw new BybitError(`Bybit returned an unreadable response (${response.status})`, "BYBIT_UNAVAILABLE", undefined, requestId); }
   const envelope = payload as { retCode?: unknown; retMsg?: unknown; result?: T };
   if (!response.ok || envelope.retCode !== 0 || envelope.result === undefined) {
     const message = typeof envelope.retMsg === "string" && envelope.retMsg ? envelope.retMsg : `HTTP ${response.status}`;
-    const retCode = typeof envelope.retCode === "number" || typeof envelope.retCode === "string" ? ` (${envelope.retCode})` : "";
-    throw new BybitError(`Bybit rejected the request${retCode}: ${message}`, "BYBIT_REJECTED");
+    const rawRetCode = typeof envelope.retCode === "number" || typeof envelope.retCode === "string" ? envelope.retCode : undefined;
+    const retCode = rawRetCode === undefined ? "" : ` (${rawRetCode})`;
+    throw new BybitError(`Bybit rejected the request${retCode}: ${message}`, "BYBIT_REJECTED", rawRetCode, requestId);
   }
   return envelope.result;
 }
@@ -255,11 +263,30 @@ function connectionStatus(app: FastifyInstance, workspaceId: string) {
 async function fetchRecords(fetchImpl: FetchLike, credentials: Credentials, from: number, to: number, baseUrl?: string): Promise<AssetRecord[]> {
   const records: AssetRecord[] = [];
   let fetched = 0;
+  let filteredQuery = true;
   for (let page = 1; page <= MAX_PAGES; page += 1) {
-    const result = await signedRequest<{ pageSize?: unknown; totalCount?: unknown; data?: unknown }>(fetchImpl, credentials, "POST", "/v5/card/transaction/query-asset-records", {
-      body: { limit: 500, page },
-      baseUrl
-    });
+    const query: RequestParameters = {
+      type: "SIDE_QUERY_FINANCIAL",
+      limit: 500,
+      page,
+      ...(filteredQuery ? { statusCode: "1", createBeginTime: from, createEndTime: to } : {})
+    };
+    let result: { pageSize?: unknown; totalCount?: unknown; data?: unknown };
+    try {
+      result = await signedRequest(fetchImpl, credentials, "POST", "/v5/card/transaction/query-asset-records", {
+        query,
+        body: {},
+        baseUrl
+      });
+    } catch (error) {
+      if (page !== 1 || !filteredQuery || !(error instanceof BybitError) || String(error.retCode) !== "120110001") throw error;
+      filteredQuery = false;
+      result = await signedRequest(fetchImpl, credentials, "POST", "/v5/card/transaction/query-asset-records", {
+        query: { type: "SIDE_QUERY_FINANCIAL", limit: 500, page },
+        body: {},
+        baseUrl
+      });
+    }
     const data = Array.isArray(result.data) ? result.data as AssetRecord[] : [];
     fetched += data.length;
     records.push(...data.filter((record) => {
