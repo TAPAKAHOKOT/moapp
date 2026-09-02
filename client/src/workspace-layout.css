@@ -1165,3 +1165,16 @@ html {
     transform: translateY(3px);
   }
 }
+
+/* Совсем низкий экран (iPhone SE в браузере с панелями): всё ужимается ещё сильнее, но остаётся без прокрутки. */
+@media (max-height: 600px) {
+  .swipe-area { min-height: 84px; }
+  .keypad { min-height: 130px; gap: 4px; padding: 3px 12px; }
+  .categories { padding-top: 6px; }
+  .main-categories button { min-height: 54px; gap: 5px; }
+  .tag-strip { padding-top: 2px; }
+  .note-block { height: 44px; padding: 2px 16px; }
+  .note-block:focus-within { height: 72px; }
+  .edit-actions { flex-basis: 50px; min-height: 50px; padding: 2px 16px 6px; }
+  .edit-actions .primary, .edit-actions .sheet-cancel { min-height: 40px; }
+}
