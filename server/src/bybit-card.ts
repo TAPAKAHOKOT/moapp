@@ -254,23 +254,21 @@ function connectionStatus(app: FastifyInstance, workspaceId: string) {
 
 async function fetchRecords(fetchImpl: FetchLike, credentials: Credentials, from: number, to: number, baseUrl?: string): Promise<AssetRecord[]> {
   const records: AssetRecord[] = [];
+  let fetched = 0;
   for (let page = 1; page <= MAX_PAGES; page += 1) {
     const result = await signedRequest<{ pageSize?: unknown; totalCount?: unknown; data?: unknown }>(fetchImpl, credentials, "POST", "/v5/card/transaction/query-asset-records", {
-      query: {
-        type: "SIDE_QUERY_FINANCIAL",
-        statusCode: "1",
-        createBeginTime: from,
-        createEndTime: to,
-        limit: 500,
-        page
-      },
-      body: {},
+      body: { limit: 500, page },
       baseUrl
     });
     const data = Array.isArray(result.data) ? result.data as AssetRecord[] : [];
-    records.push(...data);
-    const total = typeof result.totalCount === "number" ? result.totalCount : records.length;
-    if (!data.length || records.length >= total || data.length < 500) break;
+    fetched += data.length;
+    records.push(...data.filter((record) => {
+      const occurredAt = Number(record.txnCreate);
+      return Number.isFinite(occurredAt) && occurredAt >= from && occurredAt <= to
+        && String(record.tradeStatus ?? "") === "1" && String(record.status ?? "") === "1";
+    }));
+    const total = typeof result.totalCount === "number" ? result.totalCount : fetched;
+    if (!data.length || fetched >= total || data.length < 500) break;
   }
   return records;
 }
@@ -377,7 +375,10 @@ export async function registerBybitCardRoutes(app: FastifyInstance, options: { f
     })();
     if (!saved) return fail(reply, 403, "FORBIDDEN", "Only the workspace owner can connect Bybit Card");
     try { await syncBybitCard(app, request.workspaceAccess.workspaceId, fetchImpl); }
-    catch { /* The verified connection stays enabled and exposes its sync error in status. */ }
+    catch (error) {
+      request.log.warn({ err: error, workspaceId: request.workspaceAccess.workspaceId }, "Initial Bybit Card sync failed");
+      /* The verified connection stays enabled and exposes its sync error in status. */
+    }
     return reply.code(201).send({ ...connectionStatus(app, request.workspaceAccess.workspaceId), canManage: true });
   });
 
@@ -395,6 +396,7 @@ export async function registerBybitCardRoutes(app: FastifyInstance, options: { f
     const { workspaceId } = workspaceContext(request);
     try { return { ...(await syncBybitCard(app, workspaceId, fetchImpl)), ...connectionStatus(app, workspaceId) }; }
     catch (error) {
+      request.log.warn({ err: error, workspaceId }, "Manual Bybit Card sync failed");
       const bybit = error instanceof BybitError ? error : new BybitError("Could not synchronize Bybit Card");
       return fail(reply, bybit.code === "BYBIT_NOT_CONNECTED" ? 404 : 502, bybit.code, bybit.message);
     }
