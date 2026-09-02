@@ -1,4 +1,4 @@
-import { lazy, memo, Suspense, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { lazy, memo, startTransition, Suspense, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { QRCodeSVG } from 'qrcode.react'
 import {
   WorkspaceApiError as ApiError, allowWorkspaceMutations, blockWorkspaceMutations, createCategory, discardOutboxIssues, getAnalytics, getBootstrap,
@@ -538,7 +538,7 @@ function CategorySheet({ categories, selectedId, onClose, onPick }: { categories
 
 // Нижняя часть экрана ввода для соседней записи: во время свайпа она проявляется поверх живой, чтобы категория,
 // теги и заметка менялись вместе с движением пальца, а не скачком при подмене. Слой чисто декоративный.
-const LOWER_TRANSITION_MS = 220
+const SETTLE_MS = 80
 type LowerPreviewState = { key: string; category?: Category; tagIds: string[]; note: string; ready: boolean; hint: string }
 
 function EntryLowerPreview({ main, category, tags, tagIds, note, ready, hint }: { main: Category[]; category?: Category; tags: Tag[]; tagIds: string[]; note: string; ready: boolean; hint: string }) {
@@ -625,9 +625,11 @@ export function EntryView({ userId, workspaceId, bootstrap, setBootstrap, curren
     setActionsPresence(currentId ? 1 : 0, didSwap ? 0 : 180)
     clearTimeout(previewTimer.current)
     if (didSwap) {
-      // Живой слой получает новую запись следующим рендером и ещё LOWER_TRANSITION_MS анимирует подсветку.
-      // Превью с тем же содержимым прикрывает это, иначе на мгновение мелькнёт старое состояние.
-      previewTimer.current = setTimeout(() => { styleCrossfade(0, 0); setSwipePreview(null) }, LOWER_TRANSITION_MS + 40)
+      // Живой слой получает новую запись следующим рендером; на этот кадр его переходы выключены, чтобы под превью
+      // не тянулась анимация от старого состояния, иначе следующий быстрый свайп покажет её.
+      const live = lowerLiveRef.current
+      live?.classList.add('settling')
+      previewTimer.current = setTimeout(() => { styleCrossfade(0, 0); setSwipePreview(null); live?.classList.remove('settling') }, SETTLE_MS)
     } else {
       styleCrossfade(0, 0)
       setSwipePreview(null)
@@ -2087,7 +2089,9 @@ export default function App({ capability = null }: { capability?: CapabilityInte
   const navigationTabs=reviewConnected?tabs:tabsWithoutReview
   const setTab=useCallback((next:Tab)=>{
     const workspaceId=stateRef.current.activeWorkspaceId
-    setPagerState((previous)=>previous.workspaceId===workspaceId?{workspaceId,tab:next,mounted:[...previous.mounted,...pagerTabsFor(next).filter((item)=>!previous.mounted.includes(item))]}:{workspaceId,tab:next,mounted:pagerTabsFor(next)})
+    // Сначала срочно меняем вкладку (лента поехала), а тяжёлые страницы монтируем в transition — нажатие не ждёт их рендера.
+    setPagerState((previous)=>previous.workspaceId===workspaceId?{...previous,tab:next}:{workspaceId,tab:next,mounted:['entry']})
+    startTransition(()=>setPagerState((previous)=>previous.workspaceId===workspaceId?{...previous,mounted:[...previous.mounted,...pagerTabsFor(next).filter((item)=>!previous.mounted.includes(item))]}:{workspaceId,tab:next,mounted:pagerTabsFor(next)}))
   },[])
   const capabilityRef=useRef(capability)
   const monitor=useRef<ReturnType<typeof monitorServiceWorkerUpdates> | undefined>(undefined)
@@ -2206,15 +2210,40 @@ export default function App({ capability = null }: { capability?: CapabilityInte
       return
     }
     const left=Math.max(0,navigationTabs.findIndex((item)=>item.id===tab))*node.clientWidth
-    if(Math.abs(node.scrollLeft-left)<1)return
+    if(Math.abs(node.scrollLeft-left)<1&&pagerAnimation.current===null)return
     // Тап по вкладке едет так же плавно, как свайп между страницами. Пока лента в пути, обработчик скролла
     // не должен переключать вкладку на промежуточную, иначе анимация развернётся обратно.
     pagerTarget.current=left
-    if(typeof node.scrollTo==='function')node.scrollTo({left,behavior:prefersReducedMotion()?'auto':'smooth'})
-    else node.scrollLeft=left
+    animatePager(node,left)
   },[state.activeWorkspaceId,tab,reviewConnected,Boolean(state.activeWorkspaceId&&state.runtimes[state.activeWorkspaceId]?.bootstrap)])
   useEffect(()=>()=>clearTimeout(pagerTimer.current),[])
   const pagerTarget=useRef<number|null>(null)
+  const pagerAnimation=useRef<number|null>(null)
+  // Прокрутку к вкладке ведём сами через requestAnimationFrame: нативный smooth scroll в WebKit при новой команде
+  // поверх незавершённой делает скачок, а при остановке между точками привязки зависает мимо страницы.
+  const stopPagerAnimation=()=>{
+    if(pagerAnimation.current!==null){cancelAnimationFrame(pagerAnimation.current);pagerAnimation.current=null}
+    const node=pager.current;if(node)node.style.scrollSnapType=''
+  }
+  const animatePager=(node:HTMLElement,left:number)=>{
+    stopPagerAnimation()
+    const from=node.scrollLeft,distance=left-from
+    if(Math.abs(distance)<1||prefersReducedMotion()){node.scrollLeft=left;return}
+    // Привязку отключаем на время анимации: иначе браузер притягивает каждый промежуточный кадр к странице.
+    node.style.scrollSnapType='none'
+    const duration=Math.min(320,200+Math.abs(distance)/node.clientWidth*40)
+    const started=performance.now()
+    const frame=(now:number)=>{
+      const progress=Math.min(1,(now-started)/duration)
+      const eased=1-Math.pow(1-progress,3)
+      node.scrollLeft=from+distance*eased
+      if(progress<1){pagerAnimation.current=requestAnimationFrame(frame);return}
+      pagerAnimation.current=null
+      node.style.scrollSnapType=''
+      node.scrollLeft=left
+    }
+    pagerAnimation.current=requestAnimationFrame(frame)
+  }
 
   const session=state.session
   const auth=session?.authenticated?session:null
@@ -2447,7 +2476,7 @@ if(Math.abs(node.scrollLeft-pagerTarget.current)>1)node.scrollLeft=pagerTarget.c
   const serverAvailable=online&&!runtime.offline
   return <div className="app-shell" key={workspaceId}>
     <header className="workspace-header"><button type="button" className="workspace-name-button" onClick={()=>setSwitchOpen(true)}><span>{workspace.name}</span><ChevronIcon/></button><div className="workspace-header-actions">{updateWaiting&&<button type="button" className="update-button" onClick={activateUpdate}>Обновить</button>}{stats.conflicts||stats.failed?<button type="button" className="sync-status attention" onClick={()=>setIssuesOpen(true)} aria-label={`Нужна проверка: ${stats.conflicts+stats.failed}`}><span>Нужна проверка · {stats.conflicts+stats.failed}</span><i/></button>:!serverAvailable?<button type="button" className="sync-status offline" onClick={()=>setWorkspaceReloadEpoch((value)=>value+1)} aria-label="Нет связи с сервером. Повторить подключение"><span>{stats.total?`Нет связи · ${stats.total}`:'Нет связи с сервером'}</span><i/></button>:stats.total?<div className="sync-status" role="status" aria-live="polite"><span>Отправляем · {stats.total}</span><i/></div>:null}</div></header>
-    <main className="pager" ref={pager} onScroll={onPagerScroll} onPointerDown={()=>{pagerTarget.current=null}} onTouchStart={()=>{pagerTarget.current=null}}>
+    <main className="pager" ref={pager} onScroll={onPagerScroll} onPointerDown={()=>{stopPagerAnimation();pagerTarget.current=null}} onTouchStart={()=>{stopPagerAnimation();pagerTarget.current=null}}>
       <div className="page-slot" inert={tab!=='entry'} aria-hidden={tab!=='entry'}>{mountedTabs.includes('entry')&&<EntryView userId={auth.user.id} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} currentId={currentId} setCurrentId={setCurrentId} refreshPending={refreshPending} onDraftDirtyChange={setDraftDirty} active={tab==='entry'}/>}</div>
       <div className="page-slot" inert={tab!=='history'} aria-hidden={tab!=='history'}>{mountedTabs.includes('history')&&<HistoryView userId={auth.user.id} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} edit={(id)=>void openExpense(id)} createNew={()=>void openExpense(null)} refreshPending={refreshPending}/>}</div>
       <div className="page-slot" inert={tab!=='analytics'} aria-hidden={tab!=='analytics'}>{mountedTabs.includes('analytics')&&<AnalyticsView userId={auth.user.id} workspaceId={workspaceId} bootstrap={bootstrap} theme={theme} online={serverAvailable}/>}</div>
