@@ -558,6 +558,12 @@ export function EntryView({ userId, workspaceId, bootstrap, setBootstrap, curren
   const entryRef = useRef<HTMLElement>(null)
   const trackRef = useRef<HTMLDivElement>(null)
   const actionsRef = useRef<HTMLDivElement>(null)
+  const editActionsRef = useRef<HTMLDivElement>(null)
+  // Всё, что существует только у сохранённой записи (значки сверху и «Сохранить / Отменить»), проявляется одним движением.
+  const setActionsPresence = (presence: number, duration: number) => {
+    styleEntryActions(actionsRef.current, presence, duration)
+    styleEntryActions(editActionsRef.current, presence, duration)
+  }
   const offset = useRef(0)
   const swapped = useRef(false)
   const committing = useRef(false)
@@ -580,7 +586,7 @@ export function EntryView({ userId, workspaceId, bootstrap, setBootstrap, curren
       if (node) { node.style.transition = 'none'; node.style.transform = ''; offset.current = 0 }
     }
     // При свайпе новое состояние уже достигнуто анимацией; при удалении и открытии из истории блок мягко гаснет или проявляется сам.
-    styleEntryActions(actionsRef.current, currentId ? 1 : 0, didSwap ? 0 : 180)
+    setActionsPresence(currentId ? 1 : 0, didSwap ? 0 : 180)
   }, [currentId])
 
   useLayoutEffect(() => {
@@ -718,7 +724,7 @@ export function EntryView({ userId, workspaceId, bootstrap, setBootstrap, curren
       ? sourcePresence
       : direction === 'older' || Boolean(newerNeighbour) ? 1 : 0
     const progress = Math.min(Math.abs(dx) / (node.clientWidth + CARD_GAP), 1)
-    styleEntryActions(actionsRef.current, sourcePresence + (targetPresence - sourcePresence) * progress, duration)
+    setActionsPresence(sourcePresence + (targetPresence - sourcePresence) * progress, duration)
   }
 
   const move = async (direction: 'older' | 'newer') => {
@@ -945,7 +951,7 @@ export function EntryView({ userId, workspaceId, bootstrap, setBootstrap, curren
     </div>
     <Keypad onKey={key} disabled={saving}/>
     <div className={`categories${ready ? '' : ' locked'}${dirty ? ' unsaved' : ''}`}><p>{categoryHint}</p><div className="main-categories">{main.map((category) => <button type="button" disabled={!ready || saving} aria-pressed={category.id === selectedCategoryId} key={category.id} className={category.id === selectedCategoryId ? 'selected' : undefined} onClick={() => chooseCategory(category)}><i style={{backgroundColor:category.color ?? '#a9afa5'}}/><span>{category.name}</span></button>)}<button type="button" disabled={!ready || saving} aria-pressed={Boolean(otherFace)} className={otherFace ? 'selected' : undefined} onClick={() => setCategorySheet(true)}>{otherFace ? <i style={{backgroundColor:otherFace.color ?? '#a9afa5'}}/> : <i className="dots">•••</i>}<span>{otherFace ? otherFace.name : 'Другое'}</span></button></div></div>
-    <div className={`edit-actions${current ? '' : ' empty'}`} aria-hidden={!current}>{current && <><button type="button" className="primary" disabled={!ready || !dirty || saving || !selectedCategoryId} onClick={() => selectedCategoryId && void submitExpense(selectedCategoryId)}>{saving ? 'Сохраняем…' : 'Сохранить'}</button><button type="button" className="sheet-cancel" disabled={!dirty || saving} onClick={cancelEdit}>Отменить</button></>}</div>
+    <div ref={editActionsRef} className={`edit-actions${current ? '' : ' empty'}`} style={ENTRY_ACTIONS_HIDDEN} inert={!current} aria-hidden={!current}><button type="button" className="primary" disabled={!current || !ready || !dirty || saving || !selectedCategoryId} onClick={() => selectedCategoryId && void submitExpense(selectedCategoryId)}>{saving ? 'Сохраняем…' : 'Сохранить'}</button><button type="button" className="sheet-cancel" disabled={!current || !dirty || saving} onClick={cancelEdit}>Отменить</button></div>
     <TagStrip tags={bootstrap.tags ?? []} selected={form.tagIds} disabled={saving} online={navigator.onLine} onChange={(tagIds) => setForm((value) => ({ ...value, tagIds }))} onCreate={(name) => createTagOrReuse(workspaceId, name, TAG_COLORS[(bootstrap.tags ?? []).length % TAG_COLORS.length] ?? null, (tag) => setBootstrap((data) => ({ ...data, tags: [tag, ...(data.tags ?? []).filter((item) => item.id !== tag.id)] })))}/>
     <div className="note-block">{!showNote ? <button type="button" className="text-button" disabled={saving} onClick={() => setShowNote(true)}>{form.note ? `✎ ${form.note}` : '＋ Добавить заметку'}</button> : <label>Заметка <span>необязательно</span><input autoFocus maxLength={200} disabled={saving} placeholder="Например, IKEA" value={form.note} onFocus={(event) => { const node = event.currentTarget; requestAnimationFrame(() => node.scrollIntoView({ block: 'center' })) }} onChange={(e) => setForm({...form,note:e.target.value})}/></label>}</div>
     {dateSheet && <DateSheet value={form.occurredAt} onClose={() => setDateSheet(false)} onPick={(value) => { setForm({ ...form, occurredAt: value }); setDateSheet(false) }}/>}
