@@ -165,7 +165,7 @@ async function copyText(value: string) {
   await navigator.clipboard.writeText(value)
 }
 
-function tap(pattern = 8) {
+function tap(pattern: number | number[] = 8) {
   navigator.vibrate?.(pattern)
 }
 
@@ -200,23 +200,24 @@ const CARD_GAP = 18
 
 type CardFace = { title: string; date: string; amount: string; currency: string }
 
-function EntryCard({ face, onDate, onCurrency, disabled = false }: { face: CardFace; onDate?: () => void; onCurrency?: () => void; disabled?: boolean }) {
+function EntryCard({ face, onDate, onCurrency, disabled = false, limitHit = 0 }: { face: CardFace; onDate?: () => void; onCurrency?: () => void; disabled?: boolean; limitHit?: number }) {
   const inert = onCurrency ? undefined : -1
   const amountSize = face.amount.replace(/\D/g, '').length > 10 ? 'long' : face.amount.replace(/\D/g, '').length > 7 ? 'medium' : 'normal'
   return <>
     <header className="topline">
       <div>
         <p className="eyebrow">{face.title}</p>
-        <button type="button" className="date-chip" onClick={onDate} tabIndex={inert} disabled={disabled}>{face.date}<span>⌄</span></button>
+        <button type="button" className="date-chip" onClick={onDate} tabIndex={inert} disabled={disabled}><span>{face.date}</span><ChevronIcon/></button>
       </div>
     </header>
     <div className="amount-row">
-      <output className={`amount-value${face.amount ? '' : ' empty'}`} data-size={amountSize} aria-label="Сумма">{face.amount || '0'}</output>
-      <button type="button" onClick={onCurrency} tabIndex={inert} disabled={disabled}>{face.currency}<span>⌄</span></button>
+      <output key={limitHit} className={`amount-value${face.amount ? '' : ' empty'}${limitHit ? ' limit' : ''}`} data-size={amountSize} aria-label="Сумма">{face.amount || '0'}</output>
+      <button type="button" onClick={onCurrency} tabIndex={inert} disabled={disabled}>{face.currency}<ChevronIcon/></button>
     </div>
   </>
 }
 
+const ChevronIcon = () => <svg className="chevron" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 6l5 5 5-5"/></svg>
 const TrashIcon = () => <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"/></svg>
 const PlusIcon = () => <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
 
@@ -390,7 +391,17 @@ export function EntryView({ userId, workspaceId, bootstrap, setBootstrap, curren
     setShowNote(false)
   }, [currentId, current?.version]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  const key = useCallback((value: string) => setForm((previous) => ({ ...previous, amount: applyKeypad(previous.amount, value, bootstrap.currencies.find((item) => item.code === previous.currency)?.decimals ?? 2) })), [bootstrap.currencies])
+  const [limitHit, setLimitHit] = useState(0)
+  const key = useCallback((value: string) => {
+    const decimalsFor = (currency: string) => bootstrap.currencies.find((item) => item.code === currency)?.decimals ?? 2
+    const latest = formRef.current
+    if (applyKeypad(latest.amount, value, decimalsFor(latest.currency)) === latest.amount) {
+      // Отклонённая цифра (лимит разрядов или десятичных): без этого клавиатура молчит и кажется сломанной.
+      if (value !== '⌫') { tap([10, 40, 10]); setLimitHit((count) => count + 1) }
+      return
+    }
+    setForm((previous) => ({ ...previous, amount: applyKeypad(previous.amount, value, decimalsFor(previous.currency)) }))
+  }, [bootstrap.currencies])
 
   const buildExpense = (categoryId: string, submittedForm = form, submittedCurrent = current): Expense => {
     const now = new Date().toISOString()
@@ -719,7 +730,7 @@ export function EntryView({ userId, workspaceId, bootstrap, setBootstrap, curren
     <div className="swipe-area">
       <div className="entry-track" ref={trackRef}>
         {olderFace && <div className="entry-card aside older" aria-hidden="true"><EntryCard face={olderFace}/></div>}
-        <div className="entry-card"><EntryCard face={liveFace} disabled={saving} onDate={() => setDateSheet(true)} onCurrency={() => setCurrencySheet(true)}/></div>
+        <div className="entry-card"><EntryCard face={liveFace} disabled={saving} limitHit={limitHit} onDate={() => setDateSheet(true)} onCurrency={() => setCurrencySheet(true)}/></div>
         {newerFace && <div className="entry-card aside newer" aria-hidden="true"><EntryCard face={newerFace}/></div>}
       </div>
     </div>
@@ -729,7 +740,7 @@ export function EntryView({ userId, workspaceId, bootstrap, setBootstrap, curren
     </div>}
     <Keypad onKey={key} disabled={saving}/>
     <div className={`categories${ready ? '' : ' locked'}${dirty ? ' unsaved' : ''}`}><p>{categoryHint}</p><div className="main-categories">{main.map((category) => <button type="button" disabled={!ready || saving} aria-pressed={category.id === selectedCategoryId} key={category.id} className={category.id === selectedCategoryId ? 'selected' : undefined} onClick={() => chooseCategory(category)}><i style={{backgroundColor:category.color ?? '#a9afa5'}}/><span>{category.name}</span></button>)}<button type="button" disabled={!ready || saving} aria-pressed={Boolean(otherFace)} className={otherFace ? 'selected' : undefined} onClick={() => setCategorySheet(true)}>{otherFace ? <i style={{backgroundColor:otherFace.color ?? '#a9afa5'}}/> : <i className="dots">•••</i>}<span>{otherFace ? otherFace.name : 'Другое'}</span></button></div></div>
-    <div className={`edit-actions${current ? '' : ' empty'}`} aria-hidden={!current}>{current && <><button type="button" className="primary" disabled={!ready || !dirty || saving || !selectedCategoryId} onClick={() => selectedCategoryId && void submitExpense(selectedCategoryId)}>{saving ? 'Сохраняем…' : 'Сохранить изменения'}</button><button type="button" className="sheet-cancel" disabled={!dirty || saving} onClick={cancelEdit}>Отменить изменения</button></>}</div>
+    <div className={`edit-actions${current ? '' : ' empty'}`} aria-hidden={!current}>{current && <><button type="button" className="primary" disabled={!ready || !dirty || saving || !selectedCategoryId} onClick={() => selectedCategoryId && void submitExpense(selectedCategoryId)}>{saving ? 'Сохраняем…' : 'Сохранить'}</button><button type="button" className="sheet-cancel" disabled={!dirty || saving} onClick={cancelEdit}>Отменить</button></>}</div>
     <div className="note-block">{!showNote ? <button type="button" className="text-button" disabled={saving} onClick={() => setShowNote(true)}>{form.note ? `✎ ${form.note}` : '＋ Добавить заметку'}</button> : <label>Заметка <span>необязательно</span><input autoFocus maxLength={200} disabled={saving} placeholder="Например, IKEA" value={form.note} onFocus={(event) => { const node = event.currentTarget; requestAnimationFrame(() => node.scrollIntoView({ block: 'center' })) }} onChange={(e) => setForm({...form,note:e.target.value})}/></label>}</div>
     {dateSheet && <DateSheet value={form.occurredAt} onClose={() => setDateSheet(false)} onPick={(value) => { setForm({ ...form, occurredAt: value }); setDateSheet(false) }}/>}
     {categorySheet && <CategorySheet categories={additional} selectedId={selectedCategoryId ?? undefined} onClose={() => setCategorySheet(false)} onPick={chooseCategory}/>}
@@ -927,17 +938,17 @@ export function AnalyticsView({ userId, workspaceId, bootstrap, theme, online }:
   const weekRange=formatWeekRange(selectedWeek.from,selectedWeek.to)
   const monthLabel=new Date(`${selectedMonth.from}T12:00:00Z`).toLocaleDateString('ru-RU',{timeZone:'UTC',month:'long',year:'numeric'})
   const selectedCategoryName=categoryId?activeCategories.find((category)=>category.id===categoryId)?.name:'Все категории'
-  const chartColor=theme==='dark'?'#9ab58e':CHART_COLOR
-  const chartText=theme==='dark'?'#a6aaa1':'#73776f'
+  const chartColor=theme==='dark'?'#a0b796':CHART_COLOR
+  const chartText=theme==='dark'?'#a3a3a3':'#73776f'
   const chartGrid=theme==='dark'?'rgba(255,255,255,.06)':'rgba(32,37,31,.06)'
-  return <section className="page analytics"><header className="page-header analytics-title"><div><p className="eyebrow">{period==='week'?'Расходы за неделю':'Расходы за месяц'} · {selectedCategoryName}</p><h1>{new Intl.NumberFormat('ru-RU',{maximumFractionDigits:0}).format(total)} <small>{target}</small></h1>{period==='week'&&<p className="analytics-comparison">{weekComparisonLabel(total,previousTotal,currentWeekPartial)}</p>}</div><button className="currency-choice" onClick={()=>setCurrencySheet(true)}>{target}⌄</button></header>
+  return <section className="page analytics"><header className="page-header analytics-title"><div><p className="eyebrow">{period==='week'?'Расходы за неделю':'Расходы за месяц'} · {selectedCategoryName}</p><h1>{new Intl.NumberFormat('ru-RU',{maximumFractionDigits:0}).format(total)} <small>{target}</small></h1>{period==='week'&&<p className="analytics-comparison">{weekComparisonLabel(total,previousTotal,currentWeekPartial)}</p>}</div><button className="currency-choice" onClick={()=>setCurrencySheet(true)}>{target}<ChevronIcon/></button></header>
     <div className="analytics-period" role="group" aria-label="Период аналитики"><button type="button" aria-pressed={period==='week'} className={period==='week'?'selected':''} onClick={()=>setPeriod('week')}>Неделя</button><button type="button" aria-pressed={period==='month'} className={period==='month'?'selected':''} onClick={()=>setPeriod('month')}>Месяц</button></div>
     <label className="analytics-category"><span>Категория</span><select aria-label="Категория расходов" value={categoryId??''} onChange={(event)=>{const value=event.target.value||null;setCategoryByPeriod((current)=>({...current,[period]:value}));setWorkspacePreference(userId,workspaceId,period==='week'?'analytics-week-category':'analytics-month-category',value??'')}}><option value="">Все категории</option>{activeCategories.map((category)=><option key={category.id} value={category.id}>{category.name}</option>)}</select></label>
     {period==='week'&&<div className="week-navigator"><button type="button" onClick={()=>setWeekOffset((value)=>value-1)} aria-label="Предыдущая неделя">‹</button><div><b>{weekOffset===0?'Текущая неделя':weekOffset===-1?'Прошлая неделя':'Выбранная неделя'}</b><span>{weekRange}</span></div><button type="button" onClick={()=>setWeekOffset((value)=>Math.min(0,value+1))} disabled={weekOffset===0} aria-label="Следующая неделя">›</button></div>}
     {period==='month'&&<div className="week-navigator"><button type="button" onClick={()=>setMonthOffset((value)=>value-1)} aria-label="Предыдущий месяц">‹</button><div><b>{monthOffset===0?'Текущий месяц':monthOffset===-1?'Прошлый месяц':'Выбранный месяц'}</b><span>{monthLabel}</span></div><button type="button" onClick={()=>setMonthOffset((value)=>Math.min(0,value+1))} disabled={monthOffset===0} aria-label="Следующий месяц">›</button></div>}
     <div className="analytics-stats"><div><span>Среднее в день</span><strong>{formatAnalyticsAmount(total/elapsedDays,target)}</strong></div><div><span>Операций</span><strong>{data.expenseCount}</strong></div></div>
-    <div className={`rate-caption${analyticsOffline?' cached':''}`} role="status">{analyticsLoading?'Обновляем аналитику…':analyticsOffline?<>{analyticsError?'Не удалось обновить. ':''}Показаны сохранённые данные на {new Date(bootstrap.serverTime).toLocaleString('ru-RU')}{online&&<button type="button" onClick={()=>setRetryEpoch((value)=>value+1)}>Повторить</button>}</>:data.rateDate?`Исторические курсы с ${new Date(`${data.rateDate}T12:00:00Z`).toLocaleDateString('ru-RU')}`:'Курсы обновляются'}{data.missingCurrencies.length?` · без ${data.missingCurrencies.join(', ')}`:''}</div>
-    <div className="chart-card"><div><h2>Динамика</h2><p>{period==='week'?'Понедельник — воскресенье':'По дням выбранного месяца'}</p></div>{data.convertedCount?<div className="line-chart"><Suspense fallback={<ChartSkeleton/>}><AnalyticsChart kind="line" labels={days.map((d)=>new Date(`${d}T12:00`).toLocaleDateString('ru-RU',period==='week'?{weekday:'short'}:{day:'numeric',month:'short'}))} values={byDay} color={chartColor} fillColor={theme==='dark'?'rgba(154,181,142,.16)':'rgba(117,141,105,.12)'} pointRadius={period==='week'?3:0} target={target} textColor={chartText} gridColor={chartGrid} maxTicksLimit={period==='week'?7:6}/></Suspense></div>:<AnalyticsEmpty>{data.expenseCount?'Нет курса для выбранной валюты':'В этом периоде ещё нет расходов'}</AnalyticsEmpty>}</div>
+    <div className={`rate-caption${analyticsOffline?' cached':''}`} role="status">{analyticsLoading?'Обновляем аналитику…':analyticsOffline?<>{analyticsError?'Не удалось обновить. ':''}Показаны сохранённые данные на {new Date(bootstrap.serverTime).toLocaleString('ru-RU')}{online&&<button type="button" onClick={()=>setRetryEpoch((value)=>value+1)}>Повторить</button>}</>:data.rateDate?`Исторические курсы с ${new Date(`${data.rateDate}T12:00:00Z`).toLocaleDateString('ru-RU')}`:data.expenseCount?'Курсы обновляются':'Курсы появятся после первого расхода'}{data.missingCurrencies.length?` · без ${data.missingCurrencies.join(', ')}`:''}</div>
+    <div className="chart-card"><div><h2>Динамика</h2><p>{period==='week'?'Понедельник — воскресенье':'По дням выбранного месяца'}</p></div>{data.convertedCount?<div className="line-chart"><Suspense fallback={<ChartSkeleton/>}><AnalyticsChart kind="line" labels={days.map((d)=>new Date(`${d}T12:00`).toLocaleDateString('ru-RU',period==='week'?{weekday:'short'}:{day:'numeric',month:'short'}))} values={byDay} color={chartColor} fillColor={theme==='dark'?'rgba(160,183,150,.16)':'rgba(117,141,105,.12)'} pointRadius={period==='week'?3:0} target={target} textColor={chartText} gridColor={chartGrid} maxTicksLimit={period==='week'?7:6}/></Suspense></div>:<AnalyticsEmpty>{data.expenseCount?'Нет курса для выбранной валюты':'В этом периоде ещё нет расходов'}</AnalyticsEmpty>}</div>
     <div className={`chart-card${byCategory.length?' split':''}`}><div><h2>Категории</h2><p>{period==='week'?'За выбранную неделю':'За выбранный месяц'}</p></div>{byCategory.length?<><div className="donut-wrap"><Suspense fallback={<ChartSkeleton/>}><AnalyticsChart kind="doughnut" labels={byCategory.map((x)=>x.name)} values={byCategory.map((x)=>x.value)} colors={byCategory.map((x)=>x.color||'#a9afa5')} target={target}/></Suspense><span>{formatCompactNumber(total)}</span></div><div className="legend">{byCategory.slice(0,5).map((x)=><div key={x.categoryId}><i style={{background:x.color||'#a9afa5'}}/><span>{x.name}</span><span className="legend-value"><b>{formatAnalyticsAmount(x.value,target)}</b><small>{Math.round(x.value/total*100)||0}%</small></span></div>)}{byCategory.length>5&&<div className="legend-rest"><i/><span>Остальные</span><span className="legend-value"><b>{formatAnalyticsAmount(byCategory.slice(5).reduce((sum,item)=>sum+item.value,0),target)}</b><small>{byCategory.length-5}</small></span></div>}</div></>:<AnalyticsEmpty>Категории появятся после первого расхода</AnalyticsEmpty>}</div>
     {period==='month'&&<div className="chart-card"><div><h2>По дням недели</h2><p>Средние траты за календарный день</p></div>{data.convertedCount?<div className="bar-chart"><Suspense fallback={<ChartSkeleton/>}><AnalyticsChart kind="bar" labels={['Пн','Вт','Ср','Чт','Пт','Сб','Вс']} values={weekdays} color={chartColor} target={target} textColor={chartText} gridColor={chartGrid}/></Suspense></div>:<AnalyticsEmpty>Недостаточно данных для сравнения</AnalyticsEmpty>}</div>}
     {currencySheet && <CurrencySheet currencies={bootstrap.currencies} selected={target} onClose={()=>setCurrencySheet(false)} onSelect={(code)=>{setTarget(code);setWorkspacePreference(userId, workspaceId, 'analytics-currency', code);setCurrencySheet(false)}}/>}
@@ -1495,7 +1506,7 @@ export function RecoverySave({ prepared, complete, close, allowLater = true, mod
     : mode === 'public'
       ? 'Сохраните новую ссылку прежде чем продолжить. После завершения старая ссылка перестанет работать, а все прежние устройства будут отключены.'
       : 'После завершения старая ссылка сразу перестанет работать. Любой, у кого есть новая ссылка, получит полный доступ.'
-  return <div className="sheet-backdrop" onMouseDown={()=>{if(allowLater&&!busy)close()}}><section ref={dialogRef} className="bottom-sheet access-sheet" role="dialog" aria-modal="true" aria-labelledby="recovery-save-title" onMouseDown={(event)=>event.stopPropagation()}><div className="sheet-handle"/><h2 id="recovery-save-title">Сохраните ссылку восстановления</h2><p>{warning}</p><p>Подтвердить нужно до {new Date(prepared.expiresAt).toLocaleString('ru-RU')}.</p><div className="qr"><QRCodeSVG value={prepared.recoveryUrl} size={180}/></div><code className="access-link">{prepared.recoveryUrl}</code>{feedback&&<p className="inline-feedback" role={feedbackError?'alert':'status'}>{feedback}</p>}<button type="button" className="sheet-cancel" data-dialog-initial-focus onClick={()=>void copyRecovery()}>Скопировать</button>{typeof navigator.share==='function'&&<button type="button" className="sheet-cancel" onClick={()=>void shareRecovery()}>Поделиться</button>}<label className="check-line"><input type="checkbox" checked={saved} onChange={(event)=>setSaved(event.target.checked)}/> Я сохранил ссылку</label>{error&&<p className="form-error" role="alert">{error}</p>}<button type="button" className="primary" disabled={!saved||busy} onClick={()=>void finish()}>{busy?'Проверяем…':'Завершить'}</button>{allowLater&&<button type="button" className="sheet-cancel" disabled={busy} onClick={close}>Позже</button>}</section></div>
+  return <div className="sheet-backdrop" onMouseDown={()=>{if(allowLater&&!busy)close()}}><section ref={dialogRef} className="bottom-sheet access-sheet" role="dialog" aria-modal="true" aria-labelledby="recovery-save-title" onMouseDown={(event)=>event.stopPropagation()}><div className="sheet-handle"/><h2 id="recovery-save-title">Сохраните ссылку восстановления</h2><p>{warning}</p><p>Подтвердить нужно до {new Date(prepared.expiresAt).toLocaleString('ru-RU',{dateStyle:'short',timeStyle:'short'})}.</p><div className="qr"><QRCodeSVG value={prepared.recoveryUrl} size={180}/></div><code className="access-link">{prepared.recoveryUrl}</code>{feedback&&<p className="inline-feedback" role={feedbackError?'alert':'status'}>{feedback}</p>}<button type="button" className="sheet-cancel" data-dialog-initial-focus onClick={()=>void copyRecovery()}>Скопировать</button>{typeof navigator.share==='function'&&<button type="button" className="sheet-cancel" onClick={()=>void shareRecovery()}>Поделиться</button>}<label className="check-line"><input type="checkbox" checked={saved} onChange={(event)=>setSaved(event.target.checked)}/> Я сохранил ссылку</label>{error&&<p className="form-error" role="alert">{error}</p>}<button type="button" className="primary" disabled={!saved||busy} onClick={()=>void finish()}>{busy?'Проверяем…':'Завершить'}</button>{allowLater&&<button type="button" className="sheet-cancel" disabled={busy} onClick={close}>Позже</button>}</section></div>
 }
 
 function LegacyClaimFlow({ hydrate, cancel }: { hydrate: (session: SessionState) => Promise<void>; cancel: () => void }) {
@@ -1998,7 +2009,7 @@ export default function App({ capability = null }: { capability?: CapabilityInte
   const stats=runtime.outbox
   const serverAvailable=online&&!runtime.offline
   return <div className="app-shell" key={workspaceId}>
-    <header className="workspace-header"><button type="button" className="workspace-name-button" onClick={()=>setSwitchOpen(true)}><span>{workspace.name}</span><span aria-hidden="true">⌄</span></button><div className="workspace-header-actions">{updateWaiting&&<button type="button" className="update-button" onClick={activateUpdate}>Обновить</button>}{stats.conflicts||stats.failed?<button type="button" className="sync-status attention" onClick={()=>setIssuesOpen(true)} aria-label={`Нужна проверка: ${stats.conflicts+stats.failed}`}><span>Нужна проверка · {stats.conflicts+stats.failed}</span><i/></button>:!serverAvailable?<button type="button" className="sync-status offline" onClick={()=>setWorkspaceReloadEpoch((value)=>value+1)} aria-label="Нет связи с сервером. Повторить подключение"><span>{stats.total?`Нет связи · ${stats.total}`:'Нет связи с сервером'}</span><i/></button>:stats.total?<div className="sync-status" role="status" aria-live="polite"><span>Отправляем · {stats.total}</span><i/></div>:null}</div></header>
+    <header className="workspace-header"><button type="button" className="workspace-name-button" onClick={()=>setSwitchOpen(true)}><span>{workspace.name}</span><ChevronIcon/></button><div className="workspace-header-actions">{updateWaiting&&<button type="button" className="update-button" onClick={activateUpdate}>Обновить</button>}{stats.conflicts||stats.failed?<button type="button" className="sync-status attention" onClick={()=>setIssuesOpen(true)} aria-label={`Нужна проверка: ${stats.conflicts+stats.failed}`}><span>Нужна проверка · {stats.conflicts+stats.failed}</span><i/></button>:!serverAvailable?<button type="button" className="sync-status offline" onClick={()=>setWorkspaceReloadEpoch((value)=>value+1)} aria-label="Нет связи с сервером. Повторить подключение"><span>{stats.total?`Нет связи · ${stats.total}`:'Нет связи с сервером'}</span><i/></button>:stats.total?<div className="sync-status" role="status" aria-live="polite"><span>Отправляем · {stats.total}</span><i/></div>:null}</div></header>
     <main className="pager" ref={pager} onScroll={onPagerScroll}>
       <div className="page-slot" inert={tab!=='entry'} aria-hidden={tab!=='entry'}>{mountedTabs.includes('entry')&&<EntryView userId={auth.user.id} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} currentId={currentId} setCurrentId={setCurrentId} refreshPending={refreshPending} onDraftDirtyChange={setDraftDirty} active={tab==='entry'}/>}</div>
       <div className="page-slot" inert={tab!=='history'} aria-hidden={tab!=='history'}>{mountedTabs.includes('history')&&<HistoryView userId={auth.user.id} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} edit={(id)=>void openExpense(id)} createNew={()=>void openExpense(null)} refreshPending={refreshPending}/>}</div>
