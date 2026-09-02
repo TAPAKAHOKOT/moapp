@@ -2,7 +2,7 @@ import { cacheBootstrap, queueMutation, queueMutations, readCachedBootstrap, rea
 import type {
   AnalyticsData, AuthenticatedSession, BybitCardStatus, BybitCardTransaction, BybitRegion, Category, DeviceLinkMetadata, DeviceLinkPreview, DeviceSession, Expense, InvitationMetadata,
   InvitationPreview, Participant, RecoveryPrepareResponse, RecoveryPreview, SessionState, SyncResult, UserProfile, WorkspaceBootstrap,
-  WorkspaceOutboxItem, WorkspaceSummary,
+  Tag, WorkspaceOutboxItem, WorkspaceSummary,
 } from './types'
 
 type ErrorEnvelope = { error?: { code?: string; message?: string; details?: unknown }; message?: string }
@@ -230,6 +230,10 @@ export function updateCategory(workspaceId: string, categoryId: string, update: 
   return request<Category>(workspacePath(workspaceId, `/categories/${encodeURIComponent(categoryId)}`), { method: 'PATCH', body: JSON.stringify({ name, placement, sortOrder, color, archivedAt, version }), signal })
 }
 export async function deleteCategory(workspaceId: string, categoryId: string, version: number, signal?: AbortSignal): Promise<void> { assertMutationsAllowed(); return request<void>(workspacePath(workspaceId, `/categories/${encodeURIComponent(categoryId)}`), { method: 'DELETE', body: JSON.stringify({ version }), signal }) }
+export function listTags(workspaceId: string, signal?: AbortSignal) { return request<{ tags: Tag[] }>(workspacePath(workspaceId, '/tags'), { signal }) }
+export function createTag(workspaceId: string, name: string, id = crypto.randomUUID(), signal?: AbortSignal) { assertMutationsAllowed(); return request<Tag>(workspacePath(workspaceId, '/tags'), { method: 'POST', body: JSON.stringify({ id, name }), signal }) }
+export function updateTag(workspaceId: string, tagId: string, name: string, version: number, signal?: AbortSignal) { assertMutationsAllowed(); return request<Tag>(workspacePath(workspaceId, `/tags/${encodeURIComponent(tagId)}`), { method: 'PATCH', body: JSON.stringify({ name, version }), signal }) }
+export async function deleteTag(workspaceId: string, tagId: string, version: number, signal?: AbortSignal): Promise<void> { assertMutationsAllowed(); return request<void>(workspacePath(workspaceId, `/tags/${encodeURIComponent(tagId)}`), { method: 'DELETE', body: JSON.stringify({ version }), signal }) }
 export function reorderCategories(workspaceId: string, ids: string[], signal?: AbortSignal) { assertMutationsAllowed(); return request<{ categories: Category[] }>(workspacePath(workspaceId, '/categories/order'), { method: 'PUT', body: JSON.stringify({ ids }), signal }) }
 export function getAnalytics(workspaceId: string, from: string, to: string, currency: string, categoryId?: string, signal?: AbortSignal) {
   const query = new URLSearchParams({ from, to, currency }); if (categoryId) query.set('categoryId', categoryId)
@@ -255,9 +259,9 @@ export function syncBybitCard(workspaceId: string, signal?: AbortSignal) {
 export function listBybitCardTransactions(workspaceId: string, signal?: AbortSignal) {
   return request<{ transactions: BybitCardTransaction[]; pendingCount: number }>(bybitCardPath(workspaceId, '/transactions?limit=200'), { signal })
 }
-export function classifyBybitCardTransaction(workspaceId: string, transactionId: string, categoryId: string, comment: string, signal?: AbortSignal) {
+export function classifyBybitCardTransaction(workspaceId: string, transactionId: string, categoryId: string, comment: string, tagIds: string[] = [], signal?: AbortSignal) {
   assertMutationsAllowed()
-  return request<{ transaction: BybitCardTransaction; expense: Expense; pendingCount: number }>(bybitCardPath(workspaceId, `/transactions/${encodeURIComponent(transactionId)}/classify`), { method: 'POST', body: JSON.stringify({ categoryId, comment }), signal })
+  return request<{ transaction: BybitCardTransaction; expense: Expense; pendingCount: number }>(bybitCardPath(workspaceId, `/transactions/${encodeURIComponent(transactionId)}/classify`), { method: 'POST', body: JSON.stringify({ categoryId, comment, tagIds }), signal })
 }
 export function ignoreBybitCardTransaction(workspaceId: string, transactionId: string, signal?: AbortSignal) {
   assertMutationsAllowed()
@@ -269,7 +273,7 @@ export function undoBybitCardTransaction(workspaceId: string, transactionId: str
 }
 
 export function buildExpenseOperation(userId: string, workspaceId: string, type: WorkspaceOutboxItem['type'], expense: Expense, operationId: string, createdAt: string): WorkspaceOutboxItem {
-  const common = { id: expense.id, amountMinor: expense.amountMinor, currency: expense.currency, categoryId: expense.categoryId, note: expense.note, occurredAt: expense.occurredAt }
+  const common = { id: expense.id, amountMinor: expense.amountMinor, currency: expense.currency, categoryId: expense.categoryId, note: expense.note, occurredAt: expense.occurredAt, tagIds: expense.tagIds ?? [] }
   const payload = type === 'createExpense' ? common : type === 'updateExpense' ? { ...common, version: Math.max(1, expense.version - 1) } : { id: expense.id, version: expense.version }
   return { userId, workspaceId, operationId, type, payload, createdAt, status: 'queued' }
 }

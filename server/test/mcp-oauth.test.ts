@@ -296,6 +296,8 @@ test("MCP exposes paginated read-only history and rechecks workspace membership"
     currency: "EUR",
     categoryId: "products",
     category: "Продукты",
+    tagIds: [],
+    tags: [],
     note: "кофе"
   }]);
   assert.equal(history.json().result.structuredContent.nextCursor, null);

@@ -1,7 +1,8 @@
 import type { FastifyInstance } from "fastify";
 import { registerAnalyticsRoutes } from "./analytics.js";
 import { categoryJson, registerCategoryRoutes, type CategoryRow } from "./categories.js";
-import { expenseJson, registerExpenseRoutes, type ExpenseRow } from "./expenses.js";
+import { EXPENSE_SELECT, expenseJson, registerExpenseRoutes, type ExpenseRow } from "./expenses.js";
+import { registerTagRoutes, TAGS_ORDERED, tagJson, type TagRow } from "./tags.js";
 import { registerRateRoutes } from "./rates.js";
 import { registerSyncRoutes } from "./sync.js";
 import { noStore, workspaceContext } from "./tenant-domain-guard.js";
@@ -47,12 +48,14 @@ async function registerBootstrapRoute(app: FastifyInstance): Promise<void> {
     if (!workspace) return reply.code(404).send(jsonError("WORKSPACE_NOT_FOUND", "Workspace not found"));
     const categories = app.db.prepare(`SELECT * FROM categories WHERE workspace_id=?
       ORDER BY CASE placement WHEN 'main' THEN 0 ELSE 1 END,sort_order,name`).all(workspaceId) as CategoryRow[];
-    const expenses = app.db.prepare(`SELECT * FROM expenses
-      WHERE workspace_id=? AND deleted_at IS NULL ORDER BY occurred_at DESC,id DESC`).all(workspaceId) as ExpenseRow[];
+    const expenses = app.db.prepare(`${EXPENSE_SELECT}
+      WHERE e.workspace_id=? AND e.deleted_at IS NULL ORDER BY e.occurred_at DESC,e.id DESC`).all(workspaceId) as ExpenseRow[];
+    const tags = app.db.prepare(TAGS_ORDERED).all(workspaceId) as TagRow[];
     return {
       workspaceId,
       workspace,
       categories: categories.map(categoryJson),
+      tags: tags.map(tagJson),
       expenses: expenses.map(expenseJson),
       currencies: availableCurrencies(),
       rates: bootstrapRates(app.db),
@@ -86,6 +89,7 @@ async function registerUpgradeRequiredRoutes(app: FastifyInstance): Promise<void
 export async function registerTenantDomainRoutes(app: FastifyInstance): Promise<void> {
   await registerBootstrapRoute(app);
   await registerCategoryRoutes(app);
+  await registerTagRoutes(app);
   await registerExpenseRoutes(app);
   await registerAnalyticsRoutes(app);
   await registerSyncRoutes(app);

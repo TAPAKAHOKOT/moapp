@@ -3,7 +3,7 @@ import { QRCodeSVG } from 'qrcode.react'
 import {
   WorkspaceApiError as ApiError, allowWorkspaceMutations, blockWorkspaceMutations, createCategory, discardOutboxIssues, getAnalytics, getBootstrap,
   classifyBybitCardTransaction, connectBybitCard, disconnectBybitCard, getBybitCardStatus, ignoreBybitCardTransaction, listBybitCardTransactions, syncBybitCard, undoBybitCardTransaction,
-  createDeviceLink, createInvitation, getSession, isLinkInvalid, legacyClaim, leaveWorkspace, listInvitations, listMembers, listSessions, logoutExpected, prepareInitialOrManualRecovery,
+  createDeviceLink, createInvitation, createTag, deleteTag, updateTag, getSession, isLinkInvalid, legacyClaim, leaveWorkspace, listInvitations, listMembers, listSessions, logoutExpected, prepareInitialOrManualRecovery,
   prepareRecovery, previewDeviceLink, previewInvitation, previewRecovery, removeMember, renameWorkspace, reorderCategories, revokeInvitation, revokeSession, submitExpenseOperation,
   setSessionContext, submitExpenseOperations, syncAllWorkspaces, transferOwnership, updateCategory, updateProfile,
 } from './workspace-api'
@@ -13,9 +13,9 @@ import type { AppState } from './app-state'
 import { AccessFlowError, acceptDeviceWithProbe, acceptInvitationWithProbe, createIdentityWithProbe, createWorkspaceWithProbe, generateAttemptToken } from './access-flow'
 import { completeRecoverySafely, completeRotationSafely } from './recovery-flow'
 import { monitorServiceWorkerUpdates } from './service-worker-update'
-import type { AnalyticsData, AuthenticatedSession, BybitCardStatus, BybitCardTransaction, BybitRegion, CapabilityIntent, Category, Currency, Expense, RecoveryPrepareResponse, SessionState, WorkspaceBootstrap, WorkspaceOutboxItem, WorkspaceSummary } from './types'
+import type { AnalyticsData, AuthenticatedSession, BybitCardStatus, BybitCardTransaction, BybitRegion, CapabilityIntent, Category, Currency, Expense, RecoveryPrepareResponse, SessionState, Tag, WorkspaceBootstrap, WorkspaceOutboxItem, WorkspaceSummary } from './types'
 import { amountToMinor, applyKeypad, convertExpense, countCalendarWeekdays, isoToLocalInput, localDateKey, localInputToIso, monthDateRange, shiftDateKey, swipeDirection, weekdayFromDateKey, weekDateRange } from './utils'
-import { buildHistoryCsv, defaultHistoryPreferences, filterHistoryExpenses, parseHistoryPreferences, type HistoryPeriod, type HistoryPreferences } from './history'
+import { buildHistoryCsv, defaultHistoryPreferences, expenseTagNames, filterHistoryExpenses, parseHistoryPreferences, type HistoryPeriod, type HistoryPreferences } from './history'
 
 const AnalyticsChart = lazy(() => import('./AnalyticsCharts'))
 
@@ -23,7 +23,7 @@ export type Tab = 'entry' | 'history' | 'analytics' | 'review' | 'settings'
 type Theme = 'light' | 'dark'
 type AnalyticsPeriod = 'week' | 'month'
 const CHART_COLOR = '#758d69'
-const EMPTY_FORM = { amount: '', currency: 'RSD', note: '', occurredAt: '' }
+const EMPTY_FORM = { amount: '', currency: 'RSD', note: '', occurredAt: '', tagIds: [] as string[] }
 
 const SWIPE_START = 14
 const SWIPE_COMMIT = 64
@@ -249,6 +249,96 @@ function SelectSheet({ title, value, options, searchable, onClose, onSelect }: {
   </div>
 }
 
+const MAX_EXPENSE_TAGS = 20
+
+// Тег — короткая плашка поверх категории. Один расход может нести несколько тегов, любой тег подходит любой категории.
+function TagChip({ name, onRemove, disabled = false }: { name: string; onRemove?: () => void; disabled?: boolean }) {
+  return <span className="tag-chip">{name}{onRemove && <button type="button" aria-label={`Убрать тег ${name}`} disabled={disabled} onClick={onRemove}>×</button>}</span>
+}
+
+function TagPicker({ tags, selected, onChange, onCreate, disabled = false, online = true }: { tags: Tag[]; selected: string[]; onChange: (ids: string[]) => void; onCreate?: (name: string) => Promise<Tag | null>; disabled?: boolean; online?: boolean }) {
+  const [open, setOpen] = useState(false)
+  const byId = new Map(tags.map((tag) => [tag.id, tag]))
+  const chosen = selected.map((id) => byId.get(id)).filter((tag): tag is Tag => Boolean(tag))
+  return <div className="tag-picker">
+    {chosen.map((tag) => <TagChip key={tag.id} name={tag.name} disabled={disabled} onRemove={() => onChange(selected.filter((id) => id !== tag.id))}/>)}
+    <button type="button" className="tag-add" disabled={disabled} onClick={() => setOpen(true)} aria-label={chosen.length ? 'Изменить теги' : 'Добавить тег'}>{chosen.length ? '+' : '＋ Тег'}</button>
+    {open && <TagSheet tags={tags} selected={selected} online={online} onClose={() => setOpen(false)} onChange={onChange} onCreate={onCreate}/>}
+  </div>
+}
+
+function TagSheet({ tags, selected, online, onClose, onChange, onCreate }: { tags: Tag[]; selected: string[]; online: boolean; onClose: () => void; onChange: (ids: string[]) => void; onCreate?: (name: string) => Promise<Tag | null> }) {
+  const [query, setQuery] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const dialogRef = useDialog(onClose, !busy)
+  const titleId = useId()
+  const normalized = query.trim().toLowerCase()
+  const sorted = [...tags].sort((left, right) => left.name.localeCompare(right.name, 'ru-RU'))
+  const filtered = normalized ? sorted.filter((tag) => tag.name.toLowerCase().includes(normalized)) : sorted
+  const exact = tags.find((tag) => tag.name.toLowerCase() === normalized)
+  const canCreate = Boolean(onCreate) && normalized.length > 0 && !exact
+  const toggle = (id: string) => {
+    if (selected.includes(id)) onChange(selected.filter((item) => item !== id))
+    else if (selected.length < MAX_EXPENSE_TAGS) onChange([...selected, id])
+  }
+  const create = async () => {
+    if (!onCreate || !canCreate || busy || !online) return
+    setBusy(true); setError('')
+    try {
+      const tag = await onCreate(query.trim())
+      if (tag) { if (!selected.includes(tag.id) && selected.length < MAX_EXPENSE_TAGS) onChange([...selected, tag.id]); setQuery('') }
+    } catch (reason) { setError(reason instanceof ApiError ? reason.message : 'Не удалось создать тег') }
+    finally { setBusy(false) }
+  }
+  return <div className="sheet-backdrop" onMouseDown={() => { if (!busy) onClose() }}>
+    <section ref={dialogRef} className="bottom-sheet tall select-sheet tag-sheet" role="dialog" aria-modal="true" aria-labelledby={titleId} onMouseDown={(event) => event.stopPropagation()}>
+      <div className="sheet-handle"/><div className="sheet-title"><h2 id={titleId}>Теги</h2><button type="button" className="icon-button" data-dialog-initial-focus onClick={onClose} aria-label="Закрыть">×</button></div>
+      <input className="search" type="search" maxLength={30} placeholder={onCreate ? 'Найти или создать тег' : 'Найти тег'} aria-label="Поиск тега" value={query} disabled={busy} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => { if (event.key !== 'Enter') return; event.preventDefault(); if (canCreate) void create(); else if (exact) toggle(exact.id) }}/>
+      {canCreate && <button type="button" className="tag-create" disabled={busy || !online} onClick={() => void create()}>{busy ? 'Создаём…' : `Создать тег «${query.trim()}»`}</button>}
+      {canCreate && !online && <p className="sheet-empty" role="status">Новые теги создаются только онлайн.</p>}
+      {error && <p className="form-error" role="alert">{error}</p>}
+      <div className="select-options" role="listbox" aria-label="Теги" aria-multiselectable="true">{filtered.map((tag) => { const active = selected.includes(tag.id); return <button type="button" role="option" key={tag.id} aria-selected={active} className="select-option" onClick={() => toggle(tag.id)}><span><b>{tag.name}</b></span>{active && <CheckIcon/>}</button> })}</div>
+      {!tags.length && !normalized && <p className="sheet-empty" role="status">Тегов пока нет. Введите название, чтобы создать первый.</p>}
+      <button type="button" className="primary sheet-done" onClick={onClose}>Готово</button>
+    </section>
+  </div>
+}
+
+function TagEditor({ tag, onClose, onSave, onDelete }: { tag: Tag | null; onClose: () => void; onSave: (name: string) => Promise<void>; onDelete?: () => Promise<void> }) {
+  const [name, setName] = useState(tag?.name ?? '')
+  const [busy, setBusy] = useState(false)
+  const [validation, setValidation] = useState('')
+  const { confirm, confirmation } = useConfirm()
+  const dialogRef = useDialog(onClose, !busy)
+  const submit = async () => {
+    const trimmed = name.trim()
+    if (!trimmed) { setValidation('Введите название тега.'); return }
+    setValidation(''); setBusy(true)
+    try { await onSave(trimmed) } finally { setBusy(false) }
+  }
+  const remove = async () => {
+    if (!onDelete || !await confirm({ title: 'Удалить тег?', message: 'Он исчезнет со всех расходов, сами расходы останутся.', confirmLabel: 'Удалить', danger: true })) return
+    setBusy(true)
+    try { await onDelete() } finally { setBusy(false) }
+  }
+  return <><div className="sheet-backdrop" onMouseDown={() => { if (!busy) onClose() }}><form ref={dialogRef as React.Ref<HTMLFormElement>} className="bottom-sheet editor" role="dialog" aria-modal="true" aria-labelledby="tag-editor-title" noValidate onSubmit={(event) => { event.preventDefault(); void submit() }} onMouseDown={(event) => event.stopPropagation()}><div className="sheet-handle"/><div className="sheet-title"><h2 id="tag-editor-title">{tag ? 'Изменить тег' : 'Новый тег'}</h2><button type="button" className="icon-button" data-dialog-initial-focus disabled={busy} aria-label="Закрыть" onClick={onClose}>×</button></div><label>Название<input maxLength={30} aria-invalid={Boolean(validation)} value={name} onChange={(event) => { setValidation(''); setName(event.target.value) }}/></label>{validation && <p className="form-error" role="alert">{validation}</p>}<button className="primary" disabled={busy}>{busy ? 'Сохраняем…' : 'Сохранить'}</button>{tag && onDelete && <button type="button" className="danger-link" disabled={busy} onClick={() => void remove()}>Удалить</button>}</form></div>{confirmation}</>
+}
+
+// Создание тега из любого экрана: дубликат имени не ошибка, а уже существующий тег.
+async function createTagOrReuse(workspaceId: string, name: string, publish: (tag: Tag) => void): Promise<Tag> {
+  try {
+    const tag = await createTag(workspaceId, name)
+    publish(tag)
+    return tag
+  } catch (error) {
+    const current = error instanceof ApiError && error.code === 'DUPLICATE' ? (error.details as { current?: Tag } | undefined)?.current : undefined
+    if (!current) throw error
+    publish(current)
+    return current
+  }
+}
+
 const TrashIcon = () => <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"/></svg>
 const PlusIcon = () => <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
 
@@ -299,6 +389,7 @@ function inputFromExpense(expense: Expense, currencies: Currency[]) {
     currency: expense.currency,
     note: expense.note || '',
     occurredAt: isoToLocalInput(expense.occurredAt),
+    tagIds: [...(expense.tagIds ?? [])].sort(),
   }
 }
 
@@ -438,7 +529,7 @@ export function EntryView({ userId, workspaceId, bootstrap, setBootstrap, curren
     const now = new Date().toISOString()
     return {
       id: submittedCurrent?.id || crypto.randomUUID(), amountMinor: amountToMinor(submittedForm.amount, submittedForm.currency, bootstrap.currencies), currency: submittedForm.currency,
-      categoryId, note: submittedForm.note.trim() || null, occurredAt: submittedForm.occurredAt ? localInputToIso(submittedForm.occurredAt) : now,
+      categoryId, note: submittedForm.note.trim() || null, occurredAt: submittedForm.occurredAt ? localInputToIso(submittedForm.occurredAt) : now, tagIds: [...submittedForm.tagIds].sort(),
       createdAt: submittedCurrent?.createdAt || now, updatedAt: now, version: submittedCurrent ? submittedCurrent.version + 1 : 1, deletedAt: null, pending: !navigator.onLine,
     }
   }
@@ -772,7 +863,7 @@ export function EntryView({ userId, workspaceId, bootstrap, setBootstrap, curren
     <Keypad onKey={key} disabled={saving}/>
     <div className={`categories${ready ? '' : ' locked'}${dirty ? ' unsaved' : ''}`}><p>{categoryHint}</p><div className="main-categories">{main.map((category) => <button type="button" disabled={!ready || saving} aria-pressed={category.id === selectedCategoryId} key={category.id} className={category.id === selectedCategoryId ? 'selected' : undefined} onClick={() => chooseCategory(category)}><i style={{backgroundColor:category.color ?? '#a9afa5'}}/><span>{category.name}</span></button>)}<button type="button" disabled={!ready || saving} aria-pressed={Boolean(otherFace)} className={otherFace ? 'selected' : undefined} onClick={() => setCategorySheet(true)}>{otherFace ? <i style={{backgroundColor:otherFace.color ?? '#a9afa5'}}/> : <i className="dots">•••</i>}<span>{otherFace ? otherFace.name : 'Другое'}</span></button></div></div>
     <div className={`edit-actions${current ? '' : ' empty'}`} aria-hidden={!current}>{current && <><button type="button" className="primary" disabled={!ready || !dirty || saving || !selectedCategoryId} onClick={() => selectedCategoryId && void submitExpense(selectedCategoryId)}>{saving ? 'Сохраняем…' : 'Сохранить'}</button><button type="button" className="sheet-cancel" disabled={!dirty || saving} onClick={cancelEdit}>Отменить</button></>}</div>
-    <div className="note-block">{!showNote ? <button type="button" className="text-button" disabled={saving} onClick={() => setShowNote(true)}>{form.note ? `✎ ${form.note}` : '＋ Добавить заметку'}</button> : <label>Заметка <span>необязательно</span><input autoFocus maxLength={200} disabled={saving} placeholder="Например, IKEA" value={form.note} onFocus={(event) => { const node = event.currentTarget; requestAnimationFrame(() => node.scrollIntoView({ block: 'center' })) }} onChange={(e) => setForm({...form,note:e.target.value})}/></label>}</div>
+    <div className="note-block">{!showNote ? <div className="entry-extras"><button type="button" className="text-button" disabled={saving} onClick={() => setShowNote(true)}>{form.note ? `✎ ${form.note}` : '＋ Добавить заметку'}</button><TagPicker tags={bootstrap.tags ?? []} selected={form.tagIds} disabled={saving} online={navigator.onLine} onChange={(tagIds) => setForm((value) => ({ ...value, tagIds }))} onCreate={(name) => createTagOrReuse(workspaceId, name, (tag) => setBootstrap((data) => ({ ...data, tags: [tag, ...(data.tags ?? []).filter((item) => item.id !== tag.id)] })))}/></div> : <label>Заметка <span>необязательно</span><input autoFocus maxLength={200} disabled={saving} placeholder="Например, IKEA" value={form.note} onFocus={(event) => { const node = event.currentTarget; requestAnimationFrame(() => node.scrollIntoView({ block: 'center' })) }} onChange={(e) => setForm({...form,note:e.target.value})}/></label>}</div>
     {dateSheet && <DateSheet value={form.occurredAt} onClose={() => setDateSheet(false)} onPick={(value) => { setForm({ ...form, occurredAt: value }); setDateSheet(false) }}/>}
     {categorySheet && <CategorySheet categories={additional} selectedId={selectedCategoryId ?? undefined} onClose={() => setCategorySheet(false)} onPick={chooseCategory}/>}
     {currencySheet && <CurrencySheet
@@ -807,7 +898,11 @@ export function HistoryView({ userId, workspaceId, bootstrap, setBootstrap, edit
   const [deleting, setDeleting] = useState(false)
   const { toast, notify, dismiss } = useToast()
   const categoryMap = new Map(bootstrap.categories.map((category) => [category.id, category]))
+  const tags = bootstrap.tags ?? []
   const activeExpenses = bootstrap.expenses.filter((item) => !item.deletedAt)
+  const tagOptions = tags
+    .filter((tag) => tag.id === filters.tagId || activeExpenses.some((expense) => expense.tagIds?.includes(tag.id)))
+    .sort((left, right) => left.name.localeCompare(right.name, 'ru-RU'))
   const categoryOptions = bootstrap.categories
     .filter((category) => category.id === filters.categoryId || activeExpenses.some((expense) => expense.categoryId === category.id))
     .sort((left, right) => left.name.localeCompare(right.name, 'ru-RU'))
@@ -820,6 +915,7 @@ export function HistoryView({ userId, workspaceId, bootstrap, setBootstrap, edit
     const date = new Date(item.occurredAt)
     const searchText = [
       categoryMap.get(item.categoryId)?.name,
+      ...expenseTagNames(item, tags),
       item.currency,
       item.note,
       money(item.amountMinor, item.currency, bootstrap.currencies),
@@ -844,7 +940,7 @@ export function HistoryView({ userId, workspaceId, bootstrap, setBootstrap, edit
     else next.add(id)
     return next
   })
-  const filtersActive = Boolean(normalizedQuery || filters.categoryId || filters.currency || filters.period !== 'all')
+  const filtersActive = Boolean(normalizedQuery || filters.categoryId || filters.tagId || filters.currency || filters.period !== 'all')
   const resetFilters = () => {
     setFilters(defaultHistoryPreferences(localDateKey(new Date())))
     setSelected(new Set())
@@ -852,7 +948,7 @@ export function HistoryView({ userId, workspaceId, bootstrap, setBootstrap, edit
   const exportExpenses = () => {
     if (!expenses.length) return
     try {
-      const blob = new Blob(['\uFEFF', buildHistoryCsv(expenses, bootstrap.categories, bootstrap.currencies)], { type: 'text/csv;charset=utf-8' })
+      const blob = new Blob(['\uFEFF', buildHistoryCsv(expenses, bootstrap.categories, bootstrap.currencies, tags)], { type: 'text/csv;charset=utf-8' })
       const url = URL.createObjectURL(blob)
       const link = document.createElement('a')
       link.href = url
@@ -907,13 +1003,16 @@ export function HistoryView({ userId, workspaceId, bootstrap, setBootstrap, edit
         <label>Категория<Select label="Категория истории" title="Категория" value={filters.categoryId} onChange={(value) => updateFilters({ categoryId: value })} options={[{ value: '', label: 'Все категории' }, ...categoryOptions.map((category) => ({ value: category.id, label: category.name, ...(category.archivedAt ? { hint: 'архив' } : {}) }))]}/></label>
         <label>Валюта<Select label="Валюта истории" title="Валюта" value={filters.currency} onChange={(value) => updateFilters({ currency: value })} options={[{ value: '', label: 'Все валюты' }, ...currencyOptions.map((currency) => ({ value: currency.code, label: currency.code, hint: currency.name }))]}/></label>
       </div>
-      <label className="history-date-filter">Период<Select label="Период истории" title="Период" value={filters.period} onChange={(value) => updateFilters({ period: value as HistoryPeriod })} options={[{ value: 'all', label: 'Все даты' }, { value: 'day', label: 'День' }, { value: 'week', label: 'Неделя' }, { value: 'range', label: 'Интервал' }]}/></label>
+      <div className="history-filter-grid">
+        <label>Тег<Select label="Тег истории" title="Тег" value={filters.tagId} onChange={(value) => updateFilters({ tagId: value })} options={[{ value: '', label: 'Все теги' }, ...tagOptions.map((tag) => ({ value: tag.id, label: tag.name }))]}/></label>
+        <label className="history-date-filter">Период<Select label="Период истории" title="Период" value={filters.period} onChange={(value) => updateFilters({ period: value as HistoryPeriod })} options={[{ value: 'all', label: 'Все даты' }, { value: 'day', label: 'День' }, { value: 'week', label: 'Неделя' }, { value: 'range', label: 'Интервал' }]}/></label>
+      </div>
       {filters.period === 'day' && <label className="history-date-filter">День<input type="date" value={filters.date} onChange={(event) => updateFilters({ date: event.target.value })}/></label>}
       {filters.period === 'week' && <label className="history-date-filter">Любой день нужной недели<input type="date" value={filters.date} onChange={(event) => updateFilters({ date: event.target.value })}/></label>}
       {filters.period === 'range' && <div className="history-filter-grid history-range"><label>С<input type="date" value={filters.from} onChange={(event) => updateFilters({ from: event.target.value })}/></label><label>По<input type="date" value={filters.to} onChange={(event) => updateFilters({ to: event.target.value })}/></label></div>}
       <div className="history-filter-summary"><span>Показано {expenses.length} из {activeExpenses.length}</span><div>{filtersActive && <button type="button" onClick={resetFilters}>Сбросить</button>}<button type="button" className="history-export" disabled={!expenses.length} onClick={exportExpenses}>Экспорт CSV</button></div></div>
     </div>}
-    <div className="history-list">{groups.map(([date, items]) => <div key={date} className="history-day"><div className="history-date"><span>{formatHistoryDate(date)}</span><b>{items?.length}</b></div>{items?.map((expense) => { const category=categoryMap.get(expense.categoryId); const checked=selected.has(expense.id); return <div key={expense.id} className={`history-expense${checked ? ' selected' : ''}`}><label className="expense-check" aria-label={`Выбрать расход ${category?.name || ''}`}><input type="checkbox" checked={checked} onChange={()=>toggle(expense.id)}/><span/></label><button type="button" className="history-row" onClick={() => edit(expense.id)}><i style={{backgroundColor:category?.color ?? '#a9afa5'}}/><span><b>{category?.name || 'Архивная категория'}</b><small>{new Date(expense.occurredAt).toLocaleTimeString('ru-RU',{timeZone:'Europe/Belgrade',hour:'2-digit',minute:'2-digit'})}{expense.note ? ` · ${expense.note}`:''}</small></span><strong>{money(expense.amountMinor,expense.currency,bootstrap.currencies)}</strong>{expense.pending && <em aria-label="Ожидает синхронизации">●</em>}</button></div>})}</div>)}</div>
+    <div className="history-list">{groups.map(([date, items]) => <div key={date} className="history-day"><div className="history-date"><span>{formatHistoryDate(date)}</span><b>{items?.length}</b></div>{items?.map((expense) => { const category=categoryMap.get(expense.categoryId); const checked=selected.has(expense.id); return <div key={expense.id} className={`history-expense${checked ? ' selected' : ''}`}><label className="expense-check" aria-label={`Выбрать расход ${category?.name || ''}`}><input type="checkbox" checked={checked} onChange={()=>toggle(expense.id)}/><span/></label><button type="button" className="history-row" onClick={() => edit(expense.id)}><i style={{backgroundColor:category?.color ?? '#a9afa5'}}/><span><b>{category?.name || 'Архивная категория'}</b><small>{new Date(expense.occurredAt).toLocaleTimeString('ru-RU',{timeZone:'Europe/Belgrade',hour:'2-digit',minute:'2-digit'})}{expense.note ? ` · ${expense.note}`:''}</small>{expense.tagIds?.length ? <span className="tag-chips">{expenseTagNames(expense, tags).map((name) => <TagChip key={name} name={name}/>)}</span> : null}</span><strong>{money(expense.amountMinor,expense.currency,bootstrap.currencies)}</strong>{expense.pending && <em aria-label="Ожидает синхронизации">●</em>}</button></div>})}</div>)}</div>
     {!groups.length && <div className="list-empty" role="status"><span>{filtersActive ? 'Ничего не найдено' : 'История пока пуста'}</span><p>{filtersActive ? 'Измените фильтры или сбросьте их.' : 'Добавьте первый расход — он сразу появится здесь.'}</p>{!filtersActive && <button type="button" className="primary history-empty-action" onClick={createNew}>Добавить первый расход</button>}</div>}
     {toast&&<Toast toast={toast} onDismiss={dismiss}/>}
   </section>
@@ -1323,13 +1422,14 @@ function BybitConnectionPanel({ workspace, workspaceId, status, online, onStatus
   </div>{confirmation}</div>
 }
 
-type ReviewAction={transaction:BybitCardTransaction;expense?:Expense;categoryId?:string;comment:string}
+type ReviewAction={transaction:BybitCardTransaction;expense?:Expense;categoryId?:string;comment:string;tagIds:string[]}
 
-export function BybitReviewView({ workspaceId, categories, currencies, online, onExpense, onExpenseUndo, onStatus }: {workspaceId:string;categories:Category[];currencies:Currency[];online:boolean;onExpense:(expense:Expense)=>void;onExpenseUndo:(expenseId:string)=>void;onStatus:(status:Partial<BybitCardStatus>&Pick<BybitCardStatus,'pendingCount'>)=>void}) {
+export function BybitReviewView({ workspaceId, categories, currencies, tags=[], onTag=()=>{}, online, onExpense, onExpenseUndo, onStatus }: {workspaceId:string;categories:Category[];currencies:Currency[];tags?:Tag[];onTag?:(tag:Tag)=>void;online:boolean;onExpense:(expense:Expense)=>void;onExpenseUndo:(expenseId:string)=>void;onStatus:(status:Partial<BybitCardStatus>&Pick<BybitCardStatus,'pendingCount'>)=>void}) {
   const [items,setItems]=useState<BybitCardTransaction[]>([])
   const [deferred,setDeferred]=useState<BybitCardTransaction[]>([])
   const [comment,setComment]=useState('')
   const [selectedCategoryId,setSelectedCategoryId]=useState<string|null>(null)
+  const [selectedTagIds,setSelectedTagIds]=useState<string[]>([])
   const [loading,setLoading]=useState(true)
   const [busy,setBusy]=useState(false)
   const [error,setError]=useState('')
@@ -1338,25 +1438,25 @@ export function BybitReviewView({ workspaceId, categories, currencies, online, o
   const current=items[0]
   const activeCategories=categories.filter((item)=>!item.archivedAt).sort((a,b)=>(a.placement==='main'?0:1)-(b.placement==='main'?0:1)||a.sortOrder-b.sortOrder)
   useEffect(()=>{const controller=new AbortController();setLoading(true);setDeferred([]);listBybitCardTransactions(workspaceId,controller.signal).then((result)=>{setItems(result.transactions);onStatus({pendingCount:result.pendingCount})}).catch((reason)=>{if(!controller.signal.aborted)setError(reason instanceof ApiError?reason.message:'Не удалось загрузить операции')}).finally(()=>{if(!controller.signal.aborted)setLoading(false)});return()=>controller.abort()},[workspaceId]) // eslint-disable-line react-hooks/exhaustive-deps
-  const removeCurrent=(transaction:BybitCardTransaction,pendingCount:number)=>{setItems((value)=>value.filter((item)=>item.id!==transaction.id));setComment('');setSelectedCategoryId(null);onStatus({pendingCount})}
+  const removeCurrent=(transaction:BybitCardTransaction,pendingCount:number)=>{setItems((value)=>value.filter((item)=>item.id!==transaction.id));setComment('');setSelectedCategoryId(null);setSelectedTagIds([]);onStatus({pendingCount})}
   const undo=async(action:ReviewAction)=>{
     if(busy||!online)return;setBusy(true);setError('')
-    try{const result=await undoBybitCardTransaction(workspaceId,action.transaction.id,action.expense);if(result.undoneExpenseId)onExpenseUndo(result.undoneExpenseId);setItems((value)=>[result.transaction,...value.filter((item)=>item.id!==result.transaction.id)]);setDeferred((value)=>value.filter((item)=>item.id!==result.transaction.id));setComment(action.comment);setSelectedCategoryId(action.categoryId??null);onStatus({pendingCount:result.pendingCount});tap(6)}
+    try{const result=await undoBybitCardTransaction(workspaceId,action.transaction.id,action.expense);if(result.undoneExpenseId)onExpenseUndo(result.undoneExpenseId);setItems((value)=>[result.transaction,...value.filter((item)=>item.id!==result.transaction.id)]);setDeferred((value)=>value.filter((item)=>item.id!==result.transaction.id));setComment(action.comment);setSelectedCategoryId(action.categoryId??null);setSelectedTagIds(action.tagIds);onStatus({pendingCount:result.pendingCount});tap(6)}
     catch(reason){setError(reason instanceof ApiError?reason.message:'Не удалось отменить последнее действие')}
     finally{setBusy(false)}
   }
   const classify=async(categoryId:string)=>{
-    if(!current||busy||!online)return;const transaction=current;const action:ReviewAction={transaction,categoryId,comment};setSelectedCategoryId(categoryId);setBusy(true);setError('')
-    try{const result=await classifyBybitCardTransaction(workspaceId,transaction.id,categoryId,comment);action.expense=result.expense;onExpense(result.expense);removeCurrent(transaction,result.pendingCount);notify('Расход добавлен',{label:'Отменить',run:()=>void undo(action)});tap(8)}
+    if(!current||busy||!online)return;const transaction=current;const action:ReviewAction={transaction,categoryId,comment,tagIds:selectedTagIds};setSelectedCategoryId(categoryId);setBusy(true);setError('')
+    try{const result=await classifyBybitCardTransaction(workspaceId,transaction.id,categoryId,comment,selectedTagIds);action.expense=result.expense;onExpense(result.expense);removeCurrent(transaction,result.pendingCount);notify('Расход добавлен',{label:'Отменить',run:()=>void undo(action)});tap(8)}
     catch(reason){setError(reason instanceof ApiError?reason.message:'Не удалось классифицировать операцию')}
     finally{setBusy(false)}
   }
   const ignore=async()=>{
     if(!current||busy||!online||!await confirm({title:'Не учитывать операцию?',message:'Она исчезнет из очереди и не станет расходом. Это действие можно отменить до выхода из разбора.',confirmLabel:'Не учитывать',danger:true}))return
-    const transaction=current;const action:ReviewAction={transaction,comment,categoryId:selectedCategoryId??undefined};setBusy(true);setError('');try{const result=await ignoreBybitCardTransaction(workspaceId,transaction.id);removeCurrent(transaction,result.pendingCount);notify('Операция не учтена',{label:'Отменить',run:()=>void undo(action)})}catch(reason){setError(reason instanceof ApiError?reason.message:'Не удалось пропустить операцию')}finally{setBusy(false)}
+    const transaction=current;const action:ReviewAction={transaction,comment,categoryId:selectedCategoryId??undefined,tagIds:selectedTagIds};setBusy(true);setError('');try{const result=await ignoreBybitCardTransaction(workspaceId,transaction.id);removeCurrent(transaction,result.pendingCount);notify('Операция не учтена',{label:'Отменить',run:()=>void undo(action)})}catch(reason){setError(reason instanceof ApiError?reason.message:'Не удалось пропустить операцию')}finally{setBusy(false)}
   }
-  const skip=()=>{if(!current||busy)return;setItems((value)=>value.slice(1));setDeferred((value)=>[...value,current]);setComment('');setSelectedCategoryId(null);tap(5)}
-  const restoreDeferred=()=>{setItems(deferred);setDeferred([]);setComment('');setSelectedCategoryId(null)}
+  const skip=()=>{if(!current||busy)return;setItems((value)=>value.slice(1));setDeferred((value)=>[...value,current]);setComment('');setSelectedCategoryId(null);setSelectedTagIds([]);tap(5)}
+  const restoreDeferred=()=>{setItems(deferred);setDeferred([]);setComment('');setSelectedCategoryId(null);setSelectedTagIds([])}
   return <><section className="page bybit-review-page" aria-labelledby="bybit-review-title">
     <h1 className="sr-only" id="bybit-review-title">Разбор операций Bybit Card</h1>
     {loading?<p className="management-state" role="status">Загружаем операции…</p>:current?<>
@@ -1367,6 +1467,7 @@ export function BybitReviewView({ workspaceId, categories, currencies, online, o
       </article>
       <p className="review-hint">Выберите категорию — расход сохранится сразу</p>
       <div className="review-categories">{activeCategories.map((category)=><button type="button" key={category.id} className={selectedCategoryId===category.id?'selected':''} aria-pressed={selectedCategoryId===category.id} disabled={busy||!online} onClick={()=>void classify(category.id)}><i style={{background:category.color??'#a9afa5'}}/><span>{category.name}</span></button>)}</div>
+      <div className="review-tags"><span>Теги</span><TagPicker tags={tags} selected={selectedTagIds} disabled={busy} online={online} onChange={setSelectedTagIds} onCreate={(name)=>createTagOrReuse(workspaceId,name,onTag)}/></div>
       <label className="review-comment">Комментарий <span>необязательно</span><input maxLength={300} disabled={busy} placeholder="Добавить заметку к расходу" value={comment} onChange={(event)=>setComment(event.target.value)}/></label>
       <div className="review-secondary"><button type="button" disabled={busy} onClick={skip}>Пропустить пока</button><button type="button" disabled={busy||!online} onClick={()=>void ignore()}>Не учитывать</button></div>
     </>:<div className="review-done"><span>{deferred.length?'↪':'✓'}</span><h3>{deferred.length?'На сейчас всё':'Всё разобрано'}</h3><p>{deferred.length?`${deferred.length} ${deferred.length===1?'операция отложена':'операции отложены'} только в этой сессии разбора.`:'Новые операции появятся после следующей синхронизации.'}</p>{deferred.length>0&&<button type="button" className="primary" onClick={restoreDeferred}>Вернуться к отложенным · {deferred.length}</button>}</div>}
@@ -1380,6 +1481,8 @@ export function SettingsView({ user, workspace, workspaceId, bootstrap, setBoots
   const [editing,setEditing]=useState<Category|null>(null)
   const [adding,setAdding]=useState(false)
   const [moving,setMoving]=useState<string|null>(null)
+  const [editingTag,setEditingTag]=useState<Tag|null>(null)
+  const [addingTag,setAddingTag]=useState(false)
   const [accessBusy,setAccessBusy]=useState(false)
   const {toast:notice,notify:setNotice,dismiss:hideNotice}=useToast()
   const accessNotice=useCallback((message:string,urgent=false)=>setNotice(message,undefined,urgent),[setNotice])
@@ -1423,11 +1526,29 @@ export function SettingsView({ user, workspace, workspaceId, bootstrap, setBoots
     refreshPending()
     setMoving(null)
   }
+  const tags=[...(bootstrap.tags??[])].sort((a,b)=>a.name.localeCompare(b.name,'ru-RU'))
+  const saveTag=async(name:string)=>{
+    try{
+      const saved=editingTag?await updateTag(workspaceId,editingTag.id,name,editingTag.version):await createTag(workspaceId,name)
+      setBootstrap((b)=>({...b,tags:[saved,...(b.tags??[]).filter((x)=>x.id!==saved.id)]}))
+      setEditingTag(null);setAddingTag(false);setNotice(editingTag?'Тег переименован':'Тег создан')
+    }catch(error){
+      setNotice(error instanceof ApiError?error.code==='DUPLICATE'?'Тег с таким названием уже есть':error.message:'Не удалось сохранить тег',undefined,true)
+    }
+    refreshPending()
+  }
+  const removeTag=async(tag:Tag)=>{
+    try{
+      await deleteTag(workspaceId,tag.id,tag.version)
+      setBootstrap((b)=>({...b,tags:(b.tags??[]).filter((x)=>x.id!==tag.id),expenses:b.expenses.map((x)=>x.tagIds?.includes(tag.id)?{...x,tagIds:x.tagIds.filter((id)=>id!==tag.id)}:x)}))
+      setEditingTag(null);setNotice('Тег удалён')
+    }catch(error){setNotice(error instanceof ApiError?error.message:'Не удалось удалить тег',undefined,true)}
+  }
   const groups:[Category['placement'],string][]=[['main','Основные'],['additional','Дополнительные']]
   const sections=[
     {id:'space' as const,label:'Пространство',caption:'Участники и доступ'},
     {id:'integrations' as const,label:'Интеграции',caption:bybitStatus?.connected?'Bybit подключён':'Подключения'},
-    {id:'general' as const,label:'Общее',caption:'Тема и категории'},
+    {id:'general' as const,label:'Общее',caption:'Тема, категории и теги'},
   ]
   return <section className="page settings-page"><header className="page-header settings-title"><div><p className="eyebrow">{workspace.name}</p><h1>Настройки</h1></div></header>
     <nav className="settings-sections" aria-label="Разделы настроек">{sections.map((item)=><button type="button" key={item.id} aria-current={section===item.id?'page':undefined} className={section===item.id?'selected':''} onClick={()=>setSection(item.id)}><b>{item.label}</b><small>{item.caption}</small></button>)}</nav>
@@ -1436,7 +1557,9 @@ export function SettingsView({ user, workspace, workspaceId, bootstrap, setBoots
     {section==='general'&&<div className="settings-section-panel"><div className="settings-section-copy"><p className="eyebrow">Общее</p><h2>Вид и категории</h2><p>Оформление этого устройства и структура быстрых кнопок расходов.</p></div><div className="settings-group"><h2>Оформление</h2><div className="theme-setting"><div><b>Тема</b><small>Сохраняется только на этом устройстве</small></div><div className="theme-toggle" role="group" aria-label="Тема оформления"><button type="button" className={theme==='light'?'selected':''} aria-pressed={theme==='light'} onClick={()=>onThemeChange('light')}>Светлая</button><button type="button" className={theme==='dark'?'selected':''} aria-pressed={theme==='dark'} onClick={()=>onThemeChange('dark')}>Тёмная</button></div></div></div><p className="page-intro">Настройте быстрые кнопки и их порядок. Категории меняются только онлайн; архивные останутся в истории.</p>
       <div className="settings-group"><button type="button" className="primary" disabled={!online} onClick={()=>setAdding(true)}>Новая категория</button></div>
       {groups.map(([placement,title])=>{const items=bootstrap.categories.filter((x)=>x.placement===placement&&!x.archivedAt).sort((a,b)=>a.sortOrder-b.sortOrder);return <div className="settings-group" key={placement}><h2>{title}</h2>{items.map((category,index)=><div className="category-row" key={category.id}><i style={{background:category.color ?? '#a9afa5'}}/><button type="button" className="category-name" disabled={!online||Boolean(moving)} onClick={()=>setEditing(category)}>{category.name}</button><button type="button" disabled={!online||Boolean(moving)||index===0} onClick={()=>void move(category,-1)} aria-label={`Поднять категорию ${category.name}`}>↑</button><button type="button" disabled={!online||Boolean(moving)||index===items.length-1} onClick={()=>void move(category,1)} aria-label={`Опустить категорию ${category.name}`}>↓</button></div>)}{!items.length&&<p className="management-state" role="status">Категорий в этом разделе пока нет.</p>}</div>})}
-      {(editing||adding)&&<CategoryEditor category={editing} colors={colors} onClose={()=>{setEditing(null);setAdding(false)}} onSave={save}/>}</div>}
+      <div className="settings-group"><h2>Теги</h2><p className="page-intro">Короткие метки поверх категорий: любой тег можно повесить на любой расход.</p>{tags.length?<div className="tag-list">{tags.map((tag)=><button type="button" key={tag.id} className="tag-chip tag-chip-button" disabled={!online} onClick={()=>setEditingTag(tag)}>{tag.name}</button>)}</div>:<p className="management-state">Тегов пока нет.</p>}<button type="button" className="sheet-cancel" disabled={!online} onClick={()=>setAddingTag(true)}>Новый тег</button></div>
+      {(editing||adding)&&<CategoryEditor category={editing} colors={colors} onClose={()=>{setEditing(null);setAdding(false)}} onSave={save}/>}
+      {(editingTag||addingTag)&&<TagEditor tag={editingTag} onClose={()=>{setEditingTag(null);setAddingTag(false)}} onSave={saveTag} onDelete={editingTag?()=>removeTag(editingTag):undefined}/>}</div>}
     {notice&&<Toast toast={notice} onDismiss={hideNotice}/>}
   </section>
 }
@@ -2045,7 +2168,7 @@ export default function App({ capability = null }: { capability?: CapabilityInte
       <div className="page-slot" inert={tab!=='entry'} aria-hidden={tab!=='entry'}>{mountedTabs.includes('entry')&&<EntryView userId={auth.user.id} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} currentId={currentId} setCurrentId={setCurrentId} refreshPending={refreshPending} onDraftDirtyChange={setDraftDirty} active={tab==='entry'}/>}</div>
       <div className="page-slot" inert={tab!=='history'} aria-hidden={tab!=='history'}>{mountedTabs.includes('history')&&<HistoryView userId={auth.user.id} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} edit={(id)=>void openExpense(id)} createNew={()=>void openExpense(null)} refreshPending={refreshPending}/>}</div>
       <div className="page-slot" inert={tab!=='analytics'} aria-hidden={tab!=='analytics'}>{mountedTabs.includes('analytics')&&<AnalyticsView userId={auth.user.id} workspaceId={workspaceId} bootstrap={bootstrap} theme={theme} online={serverAvailable}/>}</div>
-      {reviewConnected&&<div className="page-slot review-page-slot" inert={tab!=='review'} aria-hidden={tab!=='review'}>{mountedTabs.includes('review')&&<BybitReviewView workspaceId={workspaceId} categories={bootstrap.categories} currencies={bootstrap.currencies} online={serverAvailable} onStatus={updateBybitStatus} onExpense={(expense)=>setWorkspaceData((data)=>({...data,expenses:[expense,...data.expenses.filter((item)=>item.id!==expense.id)]}))} onExpenseUndo={(expenseId)=>setWorkspaceData((data)=>({...data,expenses:data.expenses.filter((item)=>item.id!==expenseId)}))}/>}</div>}
+      {reviewConnected&&<div className="page-slot review-page-slot" inert={tab!=='review'} aria-hidden={tab!=='review'}>{mountedTabs.includes('review')&&<BybitReviewView workspaceId={workspaceId} categories={bootstrap.categories} currencies={bootstrap.currencies} tags={bootstrap.tags??[]} onTag={(tag)=>setWorkspaceData((data)=>({...data,tags:[tag,...(data.tags??[]).filter((item)=>item.id!==tag.id)]}))} online={serverAvailable} onStatus={updateBybitStatus} onExpense={(expense)=>setWorkspaceData((data)=>({...data,expenses:[expense,...data.expenses.filter((item)=>item.id!==expense.id)]}))} onExpenseUndo={(expenseId)=>setWorkspaceData((data)=>({...data,expenses:data.expenses.filter((item)=>item.id!==expenseId)}))}/>}</div>}
       <div className="page-slot" inert={tab!=='settings'} aria-hidden={tab!=='settings'}>{mountedTabs.includes('settings')&&<SettingsView user={auth} workspace={workspace} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} pendingCount={stats.total} refreshPending={refreshPending} onLogout={()=>void logoutCurrent()} theme={theme} onThemeChange={setTheme} onSession={(next)=>hydrate(next,false,settingsIdentityEpoch)} onCreateWorkspace={()=>void openCreate()} online={serverAvailable} bybitStatus={bybitStatus} onBybitStatus={(status)=>updateBybitStatus(status)}/>}</div>
     </main>
     <nav className="bottom-nav" aria-label="Основная навигация">{navigationTabs.map((item)=><button type="button" key={item.id} aria-current={tab===item.id?'page':undefined} aria-label={item.id==='review'&&bybitStatus?.pendingCount?`Разбор: ${bybitStatus.pendingCount}`:item.label} className={tab===item.id?'active':''} onClick={()=>setTab(item.id)}><span><NavIcon tab={item.id}/>{item.id==='review'&&Boolean(bybitStatus?.pendingCount)&&<b className="nav-badge">{bybitStatus!.pendingCount>99?'99+':bybitStatus!.pendingCount}</b>}</span><small>{item.label}</small></button>)}</nav>

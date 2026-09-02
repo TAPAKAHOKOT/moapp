@@ -1,6 +1,6 @@
 import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import { createExpense, deleteExpense } from "./expenses.js";
+import { createExpense, deleteExpense, EXPENSE_SELECT, expenseJson, type ExpenseRow } from "./expenses.js";
 import { hasWorkspaceMembership, noStore, requireMutationOrigin, workspaceContext } from "./tenant-domain-guard.js";
 import { isCurrency, jsonError, minorDigits } from "./validation.js";
 
@@ -464,24 +464,26 @@ export async function registerBybitCardRoutes(app: FastifyInstance, options: { f
   app.post(`${prefix}/transactions/:transactionId/classify`, { preHandler: [app.requireWorkspaceMember, mutation], onSend: noStore }, async (request, reply) => {
     const { workspaceId, userId } = workspaceContext(request);
     const transactionId = (request.params as { transactionId: string }).transactionId;
-    const body = request.body as { categoryId?: unknown; comment?: unknown };
+    const body = request.body as { categoryId?: unknown; comment?: unknown; tagIds?: unknown };
     const categoryId = typeof body.categoryId === "string" ? body.categoryId : "";
     const comment = typeof body.comment === "string" ? body.comment.trim().slice(0, 300) : "";
     if (!categoryId) return fail(reply, 400, "VALIDATION", "categoryId is required");
+    if (body.tagIds !== undefined && (!Array.isArray(body.tagIds) || body.tagIds.some((item) => typeof item !== "string"))) return fail(reply, 400, "VALIDATION", "tagIds must be an array of tag ids");
+    const tagIds = (body.tagIds as string[] | undefined) ?? [];
     const outcome = app.db.transaction(() => {
       if (!hasWorkspaceMembership(app, workspaceId, userId)) return { kind: "missing" as const };
       const row = app.db.prepare("SELECT * FROM bybit_card_transactions WHERE workspace_id=? AND id=?")
         .get(workspaceId, transactionId) as TransactionRow | undefined;
       if (!row) return { kind: "missing" as const };
       if (row.review_status === "classified" && row.expense_id) {
-        const expense = app.db.prepare("SELECT * FROM expenses WHERE workspace_id=? AND id=?").get(workspaceId, row.expense_id);
-        return expense ? { kind: "classified" as const, row, expense } : { kind: "reviewed" as const };
+        const expense = app.db.prepare(`${EXPENSE_SELECT} WHERE e.workspace_id=? AND e.id=?`).get(workspaceId, row.expense_id) as ExpenseRow | undefined;
+        return expense ? { kind: "classified" as const, row, expense: expenseJson(expense) } : { kind: "reviewed" as const };
       }
       if (row.review_status !== "pending") return { kind: "reviewed" as const };
       const note = [row.merchant_name, comment].filter((part, index, parts) => part && parts.indexOf(part) === index).join(" · ").slice(0, 500) || null;
       const created = createExpense(app, workspaceId, {
         id: randomUUID(), amountMinor: row.amount_minor, currency: row.currency, categoryId,
-        occurredAt: row.occurred_at, note
+        occurredAt: row.occurred_at, note, tagIds
       });
       if ("error" in created) return { kind: "expense-error" as const, error: created.error, code: created.code };
       app.db.prepare(`UPDATE bybit_card_transactions SET review_status='classified',expense_id=?,updated_at=? WHERE workspace_id=? AND id=?`)

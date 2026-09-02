@@ -46,6 +46,7 @@ function expenseBootstrap(overrides: Partial<WorkspaceBootstrap> = {}): Workspac
     categories: [{ id: 'products', name: 'Продукты', color: '#758d69', placement: 'main', sortOrder: 0, createdAt: '2026-08-01T00:00:00.000Z', updatedAt: '2026-08-01T00:00:00.000Z', archivedAt: null, version: 1 }],
     currencies: [{ code: 'RSD', name: 'Сербский динар', symbol: 'дин.', decimals: 2 }],
     rates: { base: 'RSD', date: '2026-08-10', ratesToRsd: { RSD: 1 } },
+    tags: [],
     expenses: [],
     defaultAnalyticsCurrency: 'RSD',
     serverTime: '2026-08-10T14:00:00.000Z',
@@ -380,6 +381,7 @@ describe('Bybit transaction review', () => {
     fireEvent.change(screen.getByLabelText(/Комментарий/), { target: { value: 'Встреча с Димой' } })
     fireEvent.click(screen.getByRole('button', { name: 'Продукты' }))
     await screen.findByText('Расход добавлен')
+    expect(workspaceApi.classifyBybitCardTransaction).toHaveBeenCalledWith('workspace-a', transaction.id, 'products', 'Встреча с Димой', [])
 
     fireEvent.click(screen.getByRole('button', { name: 'Отменить' }))
     await screen.findByText('Coffee Corner')
