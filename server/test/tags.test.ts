@@ -38,7 +38,7 @@ app.db.transaction(() => {
 })();
 after(async () => app.close());
 
-const api = (method: "GET" | "POST" | "PATCH" | "DELETE", path: string, payload?: unknown, headers = owner.headers) =>
+const api = (method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE", path: string, payload?: unknown, headers = owner.headers) =>
   app.inject({ method, url: `/api/workspaces/${workspaceId}${path}`, headers, ...(payload === undefined ? {} : { payload }) });
 
 test("tags are created, renamed, deduplicated by name and listed in the bootstrap", async () => {
@@ -52,12 +52,31 @@ test("tags are created, renamed, deduplicated by name and listed in the bootstra
   const tooLong = await api("POST", "/tags", { name: "x".repeat(31) });
   assert.equal(tooLong.statusCode, 400, tooLong.body);
 
-  const renamed = await api("PATCH", `/tags/${created.json().id}`, { name: "Ниш", version: 1 });
+  assert.equal(created.json().color, null);
+  assert.equal(created.json().sortOrder, 0);
+  const badColor = await api("POST", "/tags", { name: "Цвет", color: "red" });
+  assert.equal(badColor.statusCode, 400, badColor.body);
+  const renamed = await api("PATCH", `/tags/${created.json().id}`, { name: "Ниш", color: "#D98F70", version: 1 });
   assert.equal(renamed.statusCode, 200, renamed.body);
   assert.equal(renamed.json().version, 2);
+  assert.equal(renamed.json().color, "#d98f70");
+  const recolored = await api("PATCH", `/tags/${created.json().id}`, { color: null, version: 2 });
+  assert.equal(recolored.statusCode, 200, recolored.body);
+  assert.equal(recolored.json().name, "Ниш", "a patch without name keeps it");
+  assert.equal(recolored.json().color, null);
+  const second = await api("POST", "/tags", { name: "Аренда", color: "#819978" });
+  assert.equal(second.json().sortOrder, 1);
+  const badOrder = await api("PUT", "/tags/order", { ids: [second.json().id] });
+  assert.equal(badOrder.statusCode, 400, badOrder.body);
+  const reordered = await api("PUT", "/tags/order", { ids: [second.json().id, created.json().id] });
+  assert.equal(reordered.statusCode, 200, reordered.body);
+  assert.deepEqual(reordered.json().tags.map((tag: { name: string; sortOrder: number }) => [tag.name, tag.sortOrder]), [["Аренда", 0], ["Ниш", 1]]);
   const stale = await api("PATCH", `/tags/${created.json().id}`, { name: "Опять", version: 1 });
   assert.equal(stale.statusCode, 409, stale.body);
-
+  const afterReorder = await api("GET", "/tags");
+  assert.deepEqual(afterReorder.json().tags.map((tag: { name: string }) => tag.name), ["Аренда", "Ниш"]);
+  const removedSecond = await api("DELETE", `/tags/${second.json().id}`, { version: second.json().version + 1 });
+  assert.equal(removedSecond.statusCode, 204, removedSecond.body);
   const bootstrap = await api("GET", "/bootstrap");
   assert.equal(bootstrap.statusCode, 200, bootstrap.body);
   assert.deepEqual(bootstrap.json().tags.map((tag: { name: string }) => tag.name), ["Ниш"]);

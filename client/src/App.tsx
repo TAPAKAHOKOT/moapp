@@ -3,7 +3,7 @@ import { QRCodeSVG } from 'qrcode.react'
 import {
   WorkspaceApiError as ApiError, allowWorkspaceMutations, blockWorkspaceMutations, createCategory, discardOutboxIssues, getAnalytics, getBootstrap,
   classifyBybitCardTransaction, connectBybitCard, disconnectBybitCard, getBybitCardStatus, ignoreBybitCardTransaction, listBybitCardTransactions, syncBybitCard, undoBybitCardTransaction,
-  createDeviceLink, createInvitation, createTag, deleteTag, updateTag, getSession, isLinkInvalid, legacyClaim, leaveWorkspace, listInvitations, listMembers, listSessions, logoutExpected, prepareInitialOrManualRecovery,
+  createDeviceLink, createInvitation, createTag, deleteTag, reorderTags, updateTag, getSession, isLinkInvalid, legacyClaim, leaveWorkspace, listInvitations, listMembers, listSessions, logoutExpected, prepareInitialOrManualRecovery,
   prepareRecovery, previewDeviceLink, previewInvitation, previewRecovery, removeMember, renameWorkspace, reorderCategories, revokeInvitation, revokeSession, submitExpenseOperation,
   setSessionContext, submitExpenseOperations, syncAllWorkspaces, transferOwnership, updateCategory, updateProfile,
 } from './workspace-api'
@@ -252,17 +252,34 @@ function SelectSheet({ title, value, options, searchable, onClose, onSelect }: {
 const MAX_EXPENSE_TAGS = 20
 
 // Тег — короткая плашка поверх категории. Один расход может нести несколько тегов, любой тег подходит любой категории.
-function TagChip({ name, onRemove, disabled = false }: { name: string; onRemove?: () => void; disabled?: boolean }) {
-  return <span className="tag-chip">{name}{onRemove && <button type="button" aria-label={`Убрать тег ${name}`} disabled={disabled} onClick={onRemove}>×</button>}</span>
+function TagChip({ name, color = null, selected = false, onToggle, disabled = false }: { name: string; color?: string | null; selected?: boolean; onToggle?: () => void; disabled?: boolean }) {
+  if (!onToggle) return <span className="tag-chip" style={tagStyle({ color })}>{name}</span>
+  return <button type="button" className="tag-chip" style={tagStyle({ color })} aria-pressed={selected} disabled={disabled} onClick={onToggle}>{name}</button>
 }
 
-function TagPicker({ tags, selected, onChange, onCreate, disabled = false, online = true }: { tags: Tag[]; selected: string[]; onChange: (ids: string[]) => void; onCreate?: (name: string) => Promise<Tag | null>; disabled?: boolean; online?: boolean }) {
+const TAG_COLORS = ['#819978', '#d98f70', '#d2ad62', '#7d9db4', '#aa8aaf', '#797d72']
+const TAG_COLOR_NAMES = ['шалфейный', 'терракотовый', 'песочный', 'голубой', 'сиреневый', 'графитовый']
+
+// Порядок тегов задаёт пользователь в настройках: полоса выбора и плашки в истории следуют ему.
+function sortTags(tags: Tag[]) {
+  return [...tags].sort((left, right) => left.sortOrder - right.sortOrder || left.name.localeCompare(right.name, 'ru-RU'))
+}
+
+function tagStyle(tag: Pick<Tag, 'color'>) {
+  return tag.color ? { '--tag': tag.color } as React.CSSProperties : undefined
+}
+
+// Одна горизонтальная полоса со всеми тегами: тег включается одним касанием, «+» открывает поиск и создание.
+function TagStrip({ tags, selected, onChange, onCreate, disabled = false, online = true }: { tags: Tag[]; selected: string[]; onChange: (ids: string[]) => void; onCreate?: (name: string) => Promise<Tag | null>; disabled?: boolean; online?: boolean }) {
   const [open, setOpen] = useState(false)
-  const byId = new Map(tags.map((tag) => [tag.id, tag]))
-  const chosen = selected.map((id) => byId.get(id)).filter((tag): tag is Tag => Boolean(tag))
-  return <div className="tag-picker">
-    {chosen.map((tag) => <TagChip key={tag.id} name={tag.name} disabled={disabled} onRemove={() => onChange(selected.filter((id) => id !== tag.id))}/>)}
-    <button type="button" className="tag-add" disabled={disabled} onClick={() => setOpen(true)} aria-label={chosen.length ? 'Изменить теги' : 'Добавить тег'}>{chosen.length ? '+' : '＋ Тег'}</button>
+  const ordered = sortTags(tags)
+  const toggle = (id: string) => {
+    if (selected.includes(id)) onChange(selected.filter((item) => item !== id))
+    else if (selected.length < MAX_EXPENSE_TAGS) onChange([...selected, id])
+  }
+  return <div className="tag-strip" role="group" aria-label="Теги">
+    <button type="button" className="tag-add" disabled={disabled} onClick={() => setOpen(true)} aria-label={ordered.length ? 'Найти или создать тег' : 'Добавить тег'}>{ordered.length ? '+' : '＋ Тег'}</button>
+    {ordered.map((tag) => <TagChip key={tag.id} name={tag.name} color={tag.color} selected={selected.includes(tag.id)} disabled={disabled} onToggle={() => toggle(tag.id)}/>)}
     {open && <TagSheet tags={tags} selected={selected} online={online} onClose={() => setOpen(false)} onChange={onChange} onCreate={onCreate}/>}
   </div>
 }
@@ -274,7 +291,7 @@ function TagSheet({ tags, selected, online, onClose, onChange, onCreate }: { tag
   const dialogRef = useDialog(onClose, !busy)
   const titleId = useId()
   const normalized = query.trim().toLowerCase()
-  const sorted = [...tags].sort((left, right) => left.name.localeCompare(right.name, 'ru-RU'))
+  const sorted = sortTags(tags)
   const filtered = normalized ? sorted.filter((tag) => tag.name.toLowerCase().includes(normalized)) : sorted
   const exact = tags.find((tag) => tag.name.toLowerCase() === normalized)
   const canCreate = Boolean(onCreate) && normalized.length > 0 && !exact
@@ -298,15 +315,16 @@ function TagSheet({ tags, selected, online, onClose, onChange, onCreate }: { tag
       {canCreate && <button type="button" className="tag-create" disabled={busy || !online} onClick={() => void create()}>{busy ? 'Создаём…' : `Создать тег «${query.trim()}»`}</button>}
       {canCreate && !online && <p className="sheet-empty" role="status">Новые теги создаются только онлайн.</p>}
       {error && <p className="form-error" role="alert">{error}</p>}
-      <div className="select-options" role="listbox" aria-label="Теги" aria-multiselectable="true">{filtered.map((tag) => { const active = selected.includes(tag.id); return <button type="button" role="option" key={tag.id} aria-selected={active} className="select-option" onClick={() => toggle(tag.id)}><span><b>{tag.name}</b></span>{active && <CheckIcon/>}</button> })}</div>
+      <div className="select-options" role="listbox" aria-label="Теги" aria-multiselectable="true">{filtered.map((tag) => { const active = selected.includes(tag.id); return <button type="button" role="option" key={tag.id} aria-selected={active} className="select-option" onClick={() => toggle(tag.id)}><span><i className="tag-dot" style={{ background: tag.color ?? 'var(--sage)' }}/><b>{tag.name}</b></span>{active && <CheckIcon/>}</button> })}</div>
       {!tags.length && !normalized && <p className="sheet-empty" role="status">Тегов пока нет. Введите название, чтобы создать первый.</p>}
       <button type="button" className="primary sheet-done" onClick={onClose}>Готово</button>
     </section>
   </div>
 }
 
-function TagEditor({ tag, onClose, onSave, onDelete }: { tag: Tag | null; onClose: () => void; onSave: (name: string) => Promise<void>; onDelete?: () => Promise<void> }) {
+function TagEditor({ tag, onClose, onSave, onDelete }: { tag: Tag | null; onClose: () => void; onSave: (name: string, color: string | null) => Promise<void>; onDelete?: () => Promise<void> }) {
   const [name, setName] = useState(tag?.name ?? '')
+  const [color, setColor] = useState<string | null>(tag ? tag.color : TAG_COLORS[0]!)
   const [busy, setBusy] = useState(false)
   const [validation, setValidation] = useState('')
   const { confirm, confirmation } = useConfirm()
@@ -315,20 +333,20 @@ function TagEditor({ tag, onClose, onSave, onDelete }: { tag: Tag | null; onClos
     const trimmed = name.trim()
     if (!trimmed) { setValidation('Введите название тега.'); return }
     setValidation(''); setBusy(true)
-    try { await onSave(trimmed) } finally { setBusy(false) }
+    try { await onSave(trimmed, color) } finally { setBusy(false) }
   }
   const remove = async () => {
     if (!onDelete || !await confirm({ title: 'Удалить тег?', message: 'Он исчезнет со всех расходов, сами расходы останутся.', confirmLabel: 'Удалить', danger: true })) return
     setBusy(true)
     try { await onDelete() } finally { setBusy(false) }
   }
-  return <><div className="sheet-backdrop" onMouseDown={() => { if (!busy) onClose() }}><form ref={dialogRef as React.Ref<HTMLFormElement>} className="bottom-sheet editor" role="dialog" aria-modal="true" aria-labelledby="tag-editor-title" noValidate onSubmit={(event) => { event.preventDefault(); void submit() }} onMouseDown={(event) => event.stopPropagation()}><div className="sheet-handle"/><div className="sheet-title"><h2 id="tag-editor-title">{tag ? 'Изменить тег' : 'Новый тег'}</h2><button type="button" className="icon-button" data-dialog-initial-focus disabled={busy} aria-label="Закрыть" onClick={onClose}>×</button></div><label>Название<input maxLength={30} aria-invalid={Boolean(validation)} value={name} onChange={(event) => { setValidation(''); setName(event.target.value) }}/></label>{validation && <p className="form-error" role="alert">{validation}</p>}<button className="primary" disabled={busy}>{busy ? 'Сохраняем…' : 'Сохранить'}</button>{tag && onDelete && <button type="button" className="danger-link" disabled={busy} onClick={() => void remove()}>Удалить</button>}</form></div>{confirmation}</>
+  return <><div className="sheet-backdrop" onMouseDown={() => { if (!busy) onClose() }}><form ref={dialogRef as React.Ref<HTMLFormElement>} className="bottom-sheet editor tag-editor" role="dialog" aria-modal="true" aria-labelledby="tag-editor-title" noValidate onSubmit={(event) => { event.preventDefault(); void submit() }} onMouseDown={(event) => event.stopPropagation()}><div className="sheet-handle"/><div className="sheet-title"><h2 id="tag-editor-title">{tag ? 'Изменить тег' : 'Новый тег'}</h2><button type="button" className="icon-button" data-dialog-initial-focus disabled={busy} aria-label="Закрыть" onClick={onClose}>×</button></div><label>Название<input maxLength={30} aria-invalid={Boolean(validation)} value={name} onChange={(event) => { setValidation(''); setName(event.target.value) }}/></label>{validation && <p className="form-error" role="alert">{validation}</p>}<fieldset><legend>Цвет</legend><div className="colors">{TAG_COLORS.map((option, index) => <button type="button" key={option} aria-label={`Цвет: ${TAG_COLOR_NAMES[index] ?? option}`} aria-pressed={color === option} className={color === option ? 'selected' : ''} style={{ background: option }} onClick={() => setColor(option)}/>)}<button type="button" aria-label="Без цвета" aria-pressed={color === null} className={`colors-none${color === null ? ' selected' : ''}`} onClick={() => setColor(null)}>—</button></div></fieldset><button className="primary" disabled={busy}>{busy ? 'Сохраняем…' : 'Сохранить'}</button>{tag && onDelete && <button type="button" className="danger-link" disabled={busy} onClick={() => void remove()}>Удалить</button>}</form></div>{confirmation}</>
 }
 
 // Создание тега из любого экрана: дубликат имени не ошибка, а уже существующий тег.
-async function createTagOrReuse(workspaceId: string, name: string, publish: (tag: Tag) => void): Promise<Tag> {
+async function createTagOrReuse(workspaceId: string, name: string, color: string | null, publish: (tag: Tag) => void): Promise<Tag> {
   try {
-    const tag = await createTag(workspaceId, name)
+    const tag = await createTag(workspaceId, { name, color })
     publish(tag)
     return tag
   } catch (error) {
@@ -863,7 +881,8 @@ export function EntryView({ userId, workspaceId, bootstrap, setBootstrap, curren
     <Keypad onKey={key} disabled={saving}/>
     <div className={`categories${ready ? '' : ' locked'}${dirty ? ' unsaved' : ''}`}><p>{categoryHint}</p><div className="main-categories">{main.map((category) => <button type="button" disabled={!ready || saving} aria-pressed={category.id === selectedCategoryId} key={category.id} className={category.id === selectedCategoryId ? 'selected' : undefined} onClick={() => chooseCategory(category)}><i style={{backgroundColor:category.color ?? '#a9afa5'}}/><span>{category.name}</span></button>)}<button type="button" disabled={!ready || saving} aria-pressed={Boolean(otherFace)} className={otherFace ? 'selected' : undefined} onClick={() => setCategorySheet(true)}>{otherFace ? <i style={{backgroundColor:otherFace.color ?? '#a9afa5'}}/> : <i className="dots">•••</i>}<span>{otherFace ? otherFace.name : 'Другое'}</span></button></div></div>
     <div className={`edit-actions${current ? '' : ' empty'}`} aria-hidden={!current}>{current && <><button type="button" className="primary" disabled={!ready || !dirty || saving || !selectedCategoryId} onClick={() => selectedCategoryId && void submitExpense(selectedCategoryId)}>{saving ? 'Сохраняем…' : 'Сохранить'}</button><button type="button" className="sheet-cancel" disabled={!dirty || saving} onClick={cancelEdit}>Отменить</button></>}</div>
-    <div className="note-block">{!showNote ? <div className="entry-extras"><button type="button" className="text-button" disabled={saving} onClick={() => setShowNote(true)}>{form.note ? `✎ ${form.note}` : '＋ Добавить заметку'}</button><TagPicker tags={bootstrap.tags ?? []} selected={form.tagIds} disabled={saving} online={navigator.onLine} onChange={(tagIds) => setForm((value) => ({ ...value, tagIds }))} onCreate={(name) => createTagOrReuse(workspaceId, name, (tag) => setBootstrap((data) => ({ ...data, tags: [tag, ...(data.tags ?? []).filter((item) => item.id !== tag.id)] })))}/></div> : <label>Заметка <span>необязательно</span><input autoFocus maxLength={200} disabled={saving} placeholder="Например, IKEA" value={form.note} onFocus={(event) => { const node = event.currentTarget; requestAnimationFrame(() => node.scrollIntoView({ block: 'center' })) }} onChange={(e) => setForm({...form,note:e.target.value})}/></label>}</div>
+    <TagStrip tags={bootstrap.tags ?? []} selected={form.tagIds} disabled={saving} online={navigator.onLine} onChange={(tagIds) => setForm((value) => ({ ...value, tagIds }))} onCreate={(name) => createTagOrReuse(workspaceId, name, TAG_COLORS[(bootstrap.tags ?? []).length % TAG_COLORS.length] ?? null, (tag) => setBootstrap((data) => ({ ...data, tags: [tag, ...(data.tags ?? []).filter((item) => item.id !== tag.id)] })))}/>
+    <div className="note-block">{!showNote ? <button type="button" className="text-button" disabled={saving} onClick={() => setShowNote(true)}>{form.note ? `✎ ${form.note}` : '＋ Добавить заметку'}</button> : <label>Заметка <span>необязательно</span><input autoFocus maxLength={200} disabled={saving} placeholder="Например, IKEA" value={form.note} onFocus={(event) => { const node = event.currentTarget; requestAnimationFrame(() => node.scrollIntoView({ block: 'center' })) }} onChange={(e) => setForm({...form,note:e.target.value})}/></label>}</div>
     {dateSheet && <DateSheet value={form.occurredAt} onClose={() => setDateSheet(false)} onPick={(value) => { setForm({ ...form, occurredAt: value }); setDateSheet(false) }}/>}
     {categorySheet && <CategorySheet categories={additional} selectedId={selectedCategoryId ?? undefined} onClose={() => setCategorySheet(false)} onPick={chooseCategory}/>}
     {currencySheet && <CurrencySheet
@@ -1005,14 +1024,14 @@ export function HistoryView({ userId, workspaceId, bootstrap, setBootstrap, edit
       </div>
       <div className="history-filter-grid">
         <label>Тег<Select label="Тег истории" title="Тег" value={filters.tagId} onChange={(value) => updateFilters({ tagId: value })} options={[{ value: '', label: 'Все теги' }, ...tagOptions.map((tag) => ({ value: tag.id, label: tag.name }))]}/></label>
-        <label className="history-date-filter">Период<Select label="Период истории" title="Период" value={filters.period} onChange={(value) => updateFilters({ period: value as HistoryPeriod })} options={[{ value: 'all', label: 'Все даты' }, { value: 'day', label: 'День' }, { value: 'week', label: 'Неделя' }, { value: 'range', label: 'Интервал' }]}/></label>
+        <label>Период<Select label="Период истории" title="Период" value={filters.period} onChange={(value) => updateFilters({ period: value as HistoryPeriod })} options={[{ value: 'all', label: 'Все даты' }, { value: 'day', label: 'День' }, { value: 'week', label: 'Неделя' }, { value: 'range', label: 'Интервал' }]}/></label>
       </div>
       {filters.period === 'day' && <label className="history-date-filter">День<input type="date" value={filters.date} onChange={(event) => updateFilters({ date: event.target.value })}/></label>}
       {filters.period === 'week' && <label className="history-date-filter">Любой день нужной недели<input type="date" value={filters.date} onChange={(event) => updateFilters({ date: event.target.value })}/></label>}
       {filters.period === 'range' && <div className="history-filter-grid history-range"><label>С<input type="date" value={filters.from} onChange={(event) => updateFilters({ from: event.target.value })}/></label><label>По<input type="date" value={filters.to} onChange={(event) => updateFilters({ to: event.target.value })}/></label></div>}
       <div className="history-filter-summary"><span>Показано {expenses.length} из {activeExpenses.length}</span><div>{filtersActive && <button type="button" onClick={resetFilters}>Сбросить</button>}<button type="button" className="history-export" disabled={!expenses.length} onClick={exportExpenses}>Экспорт CSV</button></div></div>
     </div>}
-    <div className="history-list">{groups.map(([date, items]) => <div key={date} className="history-day"><div className="history-date"><span>{formatHistoryDate(date)}</span><b>{items?.length}</b></div>{items?.map((expense) => { const category=categoryMap.get(expense.categoryId); const checked=selected.has(expense.id); return <div key={expense.id} className={`history-expense${checked ? ' selected' : ''}`}><label className="expense-check" aria-label={`Выбрать расход ${category?.name || ''}`}><input type="checkbox" checked={checked} onChange={()=>toggle(expense.id)}/><span/></label><button type="button" className="history-row" onClick={() => edit(expense.id)}><i style={{backgroundColor:category?.color ?? '#a9afa5'}}/><span><b>{category?.name || 'Архивная категория'}</b><small>{new Date(expense.occurredAt).toLocaleTimeString('ru-RU',{timeZone:'Europe/Belgrade',hour:'2-digit',minute:'2-digit'})}{expense.note ? ` · ${expense.note}`:''}</small>{expense.tagIds?.length ? <span className="tag-chips">{expenseTagNames(expense, tags).map((name) => <TagChip key={name} name={name}/>)}</span> : null}</span><strong>{money(expense.amountMinor,expense.currency,bootstrap.currencies)}</strong>{expense.pending && <em aria-label="Ожидает синхронизации">●</em>}</button></div>})}</div>)}</div>
+    <div className="history-list">{groups.map(([date, items]) => <div key={date} className="history-day"><div className="history-date"><span>{formatHistoryDate(date)}</span><b>{items?.length}</b></div>{items?.map((expense) => { const category=categoryMap.get(expense.categoryId); const checked=selected.has(expense.id); return <div key={expense.id} className={`history-expense${checked ? ' selected' : ''}`}><label className="expense-check" aria-label={`Выбрать расход ${category?.name || ''}`}><input type="checkbox" checked={checked} onChange={()=>toggle(expense.id)}/><span/></label><button type="button" className="history-row" onClick={() => edit(expense.id)}><i style={{backgroundColor:category?.color ?? '#a9afa5'}}/><span><b>{category?.name || 'Архивная категория'}</b><small>{new Date(expense.occurredAt).toLocaleTimeString('ru-RU',{timeZone:'Europe/Belgrade',hour:'2-digit',minute:'2-digit'})}{expense.note ? ` · ${expense.note}`:''}</small>{expense.tagIds?.length ? <span className="tag-chips">{sortTags(tags.filter((tag) => expense.tagIds?.includes(tag.id))).map((tag) => <TagChip key={tag.id} name={tag.name} color={tag.color}/>)}</span> : null}</span><strong>{money(expense.amountMinor,expense.currency,bootstrap.currencies)}</strong>{expense.pending && <em aria-label="Ожидает синхронизации">●</em>}</button></div>})}</div>)}</div>
     {!groups.length && <div className="list-empty" role="status"><span>{filtersActive ? 'Ничего не найдено' : 'История пока пуста'}</span><p>{filtersActive ? 'Измените фильтры или сбросьте их.' : 'Добавьте первый расход — он сразу появится здесь.'}</p>{!filtersActive && <button type="button" className="primary history-empty-action" onClick={createNew}>Добавить первый расход</button>}</div>}
     {toast&&<Toast toast={toast} onDismiss={dismiss}/>}
   </section>
@@ -1467,7 +1486,7 @@ export function BybitReviewView({ workspaceId, categories, currencies, tags=[], 
       </article>
       <p className="review-hint">Выберите категорию — расход сохранится сразу</p>
       <div className="review-categories">{activeCategories.map((category)=><button type="button" key={category.id} className={selectedCategoryId===category.id?'selected':''} aria-pressed={selectedCategoryId===category.id} disabled={busy||!online} onClick={()=>void classify(category.id)}><i style={{background:category.color??'#a9afa5'}}/><span>{category.name}</span></button>)}</div>
-      <div className="review-tags"><span>Теги</span><TagPicker tags={tags} selected={selectedTagIds} disabled={busy} online={online} onChange={setSelectedTagIds} onCreate={(name)=>createTagOrReuse(workspaceId,name,onTag)}/></div>
+      <div className="review-tags"><span>Теги</span><TagStrip tags={tags} selected={selectedTagIds} disabled={busy} online={online} onChange={setSelectedTagIds} onCreate={(name)=>createTagOrReuse(workspaceId,name,TAG_COLORS[tags.length%TAG_COLORS.length]??null,onTag)}/></div>
       <label className="review-comment">Комментарий <span>необязательно</span><input maxLength={300} disabled={busy} placeholder="Добавить заметку к расходу" value={comment} onChange={(event)=>setComment(event.target.value)}/></label>
       <div className="review-secondary"><button type="button" disabled={busy} onClick={skip}>Пропустить пока</button><button type="button" disabled={busy||!online} onClick={()=>void ignore()}>Не учитывать</button></div>
     </>:<div className="review-done"><span>{deferred.length?'↪':'✓'}</span><h3>{deferred.length?'На сейчас всё':'Всё разобрано'}</h3><p>{deferred.length?`${deferred.length} ${deferred.length===1?'операция отложена':'операции отложены'} только в этой сессии разбора.`:'Новые операции появятся после следующей синхронизации.'}</p>{deferred.length>0&&<button type="button" className="primary" onClick={restoreDeferred}>Вернуться к отложенным · {deferred.length}</button>}</div>}
@@ -1526,10 +1545,11 @@ export function SettingsView({ user, workspace, workspaceId, bootstrap, setBoots
     refreshPending()
     setMoving(null)
   }
-  const tags=[...(bootstrap.tags??[])].sort((a,b)=>a.name.localeCompare(b.name,'ru-RU'))
-  const saveTag=async(name:string)=>{
+  const tags=sortTags(bootstrap.tags??[])
+  const [movingTag,setMovingTag]=useState<string|null>(null)
+  const saveTag=async(name:string,color:string|null)=>{
     try{
-      const saved=editingTag?await updateTag(workspaceId,editingTag.id,name,editingTag.version):await createTag(workspaceId,name)
+      const saved=editingTag?await updateTag(workspaceId,editingTag.id,{name,color,version:editingTag.version}):await createTag(workspaceId,{name,color})
       setBootstrap((b)=>({...b,tags:[saved,...(b.tags??[]).filter((x)=>x.id!==saved.id)]}))
       setEditingTag(null);setAddingTag(false);setNotice(editingTag?'Тег переименован':'Тег создан')
     }catch(error){
@@ -1544,6 +1564,17 @@ export function SettingsView({ user, workspace, workspaceId, bootstrap, setBoots
       setEditingTag(null);setNotice('Тег удалён')
     }catch(error){setNotice(error instanceof ApiError?error.message:'Не удалось удалить тег',undefined,true)}
   }
+  const moveTag=async(tag:Tag,direction:-1|1)=>{
+    if(!online||movingTag)return
+    const index=tags.findIndex((x)=>x.id===tag.id),next=index+direction;if(next<0||next>=tags.length)return
+    setMovingTag(tag.id)
+    const ordered=[...tags];[ordered[index],ordered[next]]=[ordered[next]!,ordered[index]!]
+    const previous=new Map(tags.map((x)=>[x.id,x.sortOrder]))
+    setBootstrap((b)=>({...b,tags:(b.tags??[]).map((x)=>{const at=ordered.findIndex((o)=>o.id===x.id);return at>=0?{...x,sortOrder:at}:x})}))
+    try{const result=await reorderTags(workspaceId,ordered.map((x)=>x.id));setBootstrap((b)=>({...b,tags:result.tags}))}
+    catch(error){setBootstrap((b)=>({...b,tags:(b.tags??[]).map((x)=>previous.has(x.id)?{...x,sortOrder:previous.get(x.id)!}:x)}));setNotice(error instanceof ApiError?error.message:'Не удалось изменить порядок тегов',undefined,true)}
+    setMovingTag(null)
+  }
   const groups:[Category['placement'],string][]=[['main','Основные'],['additional','Дополнительные']]
   const sections=[
     {id:'space' as const,label:'Пространство',caption:'Участники и доступ'},
@@ -1557,7 +1588,7 @@ export function SettingsView({ user, workspace, workspaceId, bootstrap, setBoots
     {section==='general'&&<div className="settings-section-panel"><div className="settings-section-copy"><p className="eyebrow">Общее</p><h2>Вид и категории</h2><p>Оформление этого устройства и структура быстрых кнопок расходов.</p></div><div className="settings-group"><h2>Оформление</h2><div className="theme-setting"><div><b>Тема</b><small>Сохраняется только на этом устройстве</small></div><div className="theme-toggle" role="group" aria-label="Тема оформления"><button type="button" className={theme==='light'?'selected':''} aria-pressed={theme==='light'} onClick={()=>onThemeChange('light')}>Светлая</button><button type="button" className={theme==='dark'?'selected':''} aria-pressed={theme==='dark'} onClick={()=>onThemeChange('dark')}>Тёмная</button></div></div></div><p className="page-intro">Настройте быстрые кнопки и их порядок. Категории меняются только онлайн; архивные останутся в истории.</p>
       <div className="settings-group"><button type="button" className="primary" disabled={!online} onClick={()=>setAdding(true)}>Новая категория</button></div>
       {groups.map(([placement,title])=>{const items=bootstrap.categories.filter((x)=>x.placement===placement&&!x.archivedAt).sort((a,b)=>a.sortOrder-b.sortOrder);return <div className="settings-group" key={placement}><h2>{title}</h2>{items.map((category,index)=><div className="category-row" key={category.id}><i style={{background:category.color ?? '#a9afa5'}}/><button type="button" className="category-name" disabled={!online||Boolean(moving)} onClick={()=>setEditing(category)}>{category.name}</button><button type="button" disabled={!online||Boolean(moving)||index===0} onClick={()=>void move(category,-1)} aria-label={`Поднять категорию ${category.name}`}>↑</button><button type="button" disabled={!online||Boolean(moving)||index===items.length-1} onClick={()=>void move(category,1)} aria-label={`Опустить категорию ${category.name}`}>↓</button></div>)}{!items.length&&<p className="management-state" role="status">Категорий в этом разделе пока нет.</p>}</div>})}
-      <div className="settings-group"><h2>Теги</h2><p className="page-intro">Короткие метки поверх категорий: любой тег можно повесить на любой расход.</p>{tags.length?<div className="tag-list">{tags.map((tag)=><button type="button" key={tag.id} className="tag-chip tag-chip-button" disabled={!online} onClick={()=>setEditingTag(tag)}>{tag.name}</button>)}</div>:<p className="management-state">Тегов пока нет.</p>}<button type="button" className="sheet-cancel" disabled={!online} onClick={()=>setAddingTag(true)}>Новый тег</button></div>
+      <div className="settings-group"><h2>Теги</h2><p className="page-intro">Короткие метки поверх категорий: любой тег можно повесить на любой расход.</p>{tags.length?tags.map((tag,index)=><div className="category-row" key={tag.id}><i style={{background:tag.color??'#a9afa5'}}/><button type="button" className="category-name" disabled={!online||Boolean(movingTag)} onClick={()=>setEditingTag(tag)}>{tag.name}</button><button type="button" disabled={!online||Boolean(movingTag)||index===0} onClick={()=>void moveTag(tag,-1)} aria-label={`Поднять тег ${tag.name}`}>↑</button><button type="button" disabled={!online||Boolean(movingTag)||index===tags.length-1} onClick={()=>void moveTag(tag,1)} aria-label={`Опустить тег ${tag.name}`}>↓</button></div>):<p className="management-state">Тегов пока нет.</p>}<button type="button" className="sheet-cancel" disabled={!online} onClick={()=>setAddingTag(true)}>Новый тег</button></div>
       {(editing||adding)&&<CategoryEditor category={editing} colors={colors} onClose={()=>{setEditing(null);setAdding(false)}} onSave={save}/>}
       {(editingTag||addingTag)&&<TagEditor tag={editingTag} onClose={()=>{setEditingTag(null);setAddingTag(false)}} onSave={saveTag} onDelete={editingTag?()=>removeTag(editingTag):undefined}/>}</div>}
     {notice&&<Toast toast={notice} onDismiss={hideNotice}/>}

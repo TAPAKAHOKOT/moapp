@@ -11,8 +11,8 @@ const currencies: Currency[] = [
   { code: 'EUR', name: 'Евро', symbol: '€', decimals: 2 },
 ]
 const tags: Tag[] = [
-  { id: 'trip', name: 'Поездка', version: 1, createdAt: '2026-08-01T00:00:00.000Z', updatedAt: '2026-08-01T00:00:00.000Z' },
-  { id: 'work', name: 'Работа', version: 1, createdAt: '2026-08-01T00:00:00.000Z', updatedAt: '2026-08-01T00:00:00.000Z' },
+  { id: 'trip', name: 'Поездка', color: '#819978', sortOrder: 0, version: 1, createdAt: '2026-08-01T00:00:00.000Z', updatedAt: '2026-08-01T00:00:00.000Z' },
+  { id: 'work', name: 'Работа', color: null, sortOrder: 1, version: 1, createdAt: '2026-08-01T00:00:00.000Z', updatedAt: '2026-08-01T00:00:00.000Z' },
 ]
 const expenses: Expense[] = [
   { id: 'monday-food', amountMinor: 1_234, currency: 'RSD', categoryId: 'food', note: 'Обед, кофе', tagIds: ['work', 'trip'], occurredAt: '2026-08-24T10:00:00.000Z', createdAt: '2026-08-24T10:00:00.000Z', updatedAt: '2026-08-24T10:00:00.000Z', version: 1, deletedAt: null },

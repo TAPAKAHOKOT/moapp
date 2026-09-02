@@ -20,6 +20,8 @@ export type Category = {
 export type Tag = {
   id: string
   name: string
+  color: string | null
+  sortOrder: number
   version: number
   createdAt: string
   updatedAt: string
