@@ -7,6 +7,9 @@ import { isCurrency, jsonError, minorDigits } from "./validation.js";
 const RECV_WINDOW = "5000";
 const SYNC_OVERLAP_MS = 7 * 24 * 60 * 60 * 1000;
 const SYNC_INTERVAL_MS = 15 * 60 * 1000;
+const MIN_SYNC_INTERVAL_MS = 60 * 1000;
+const SCHEDULER_INITIAL_DELAY_MS = 60 * 1000;
+const MAX_RATE_LIMIT_RETRY_DELAY_MS = 5 * 1000;
 const MAX_PAGES = 100;
 
 export const BYBIT_REGIONS = {
@@ -128,45 +131,60 @@ async function signedRequest<T>(
   path: string,
   options: { query?: RequestParameters; body?: Record<string, unknown>; baseUrl?: string | undefined } = {}
 ): Promise<T> {
-  const timestamp = String(Date.now());
   const queryString = options.query ? new URLSearchParams(
     Object.entries(options.query).map(([key, value]) => [key, String(value)])
   ).toString() : "";
   const jsonBody = options.body ? JSON.stringify(options.body) : "";
-  const signatureParameters = method === "GET" ? queryString : jsonBody;
-  const signaturePayload = `${timestamp}${credentials.apiKey}${RECV_WINDOW}${signatureParameters}`;
-  const signature = createHmac("sha256", credentials.apiSecret).update(signaturePayload).digest("hex");
   const url = `${options.baseUrl ?? BYBIT_REGIONS[credentials.region]}${path}${queryString ? `?${queryString}` : ""}`;
-  const requestId = randomUUID();
-  let response: Response;
-  try {
-    response = await fetchImpl(url, {
-      method,
-      headers: {
-        "X-BAPI-API-KEY": credentials.apiKey,
-        "X-BAPI-TIMESTAMP": timestamp,
-        "X-BAPI-RECV-WINDOW": RECV_WINDOW,
-        "X-BAPI-SIGN": signature,
-        "cdn-request-id": requestId,
-        ...(jsonBody ? { "Content-Type": "application/json" } : {})
-      },
-      ...(jsonBody ? { body: jsonBody } : {}),
-      signal: AbortSignal.timeout(15_000)
-    });
-  } catch (error) {
-    throw new BybitError(error instanceof Error ? `Bybit connection failed: ${error.message}` : "Bybit connection failed", "BYBIT_UNAVAILABLE", undefined, requestId);
-  }
-  let payload: unknown;
-  try { payload = await response.json(); }
-  catch { throw new BybitError(`Bybit returned an unreadable response (${response.status})`, "BYBIT_UNAVAILABLE", undefined, requestId); }
-  const envelope = payload as { retCode?: unknown; retMsg?: unknown; result?: T };
-  if (!response.ok || envelope.retCode !== 0 || envelope.result === undefined) {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const timestamp = String(Date.now());
+    const signatureParameters = method === "GET" ? queryString : jsonBody;
+    const signaturePayload = `${timestamp}${credentials.apiKey}${RECV_WINDOW}${signatureParameters}`;
+    const signature = createHmac("sha256", credentials.apiSecret).update(signaturePayload).digest("hex");
+    const requestId = randomUUID();
+    let response: Response;
+    try {
+      response = await fetchImpl(url, {
+        method,
+        headers: {
+          "X-BAPI-API-KEY": credentials.apiKey,
+          "X-BAPI-TIMESTAMP": timestamp,
+          "X-BAPI-RECV-WINDOW": RECV_WINDOW,
+          "X-BAPI-SIGN": signature,
+          "cdn-request-id": requestId,
+          ...(jsonBody ? { "Content-Type": "application/json" } : {})
+        },
+        ...(jsonBody ? { body: jsonBody } : {}),
+        signal: AbortSignal.timeout(15_000)
+      });
+    } catch (error) {
+      throw new BybitError(error instanceof Error ? `Bybit connection failed: ${error.message}` : "Bybit connection failed", "BYBIT_UNAVAILABLE", undefined, requestId);
+    }
+    let payload: unknown;
+    try { payload = await response.json(); }
+    catch { throw new BybitError(`Bybit returned an unreadable response (${response.status})`, "BYBIT_UNAVAILABLE", undefined, requestId); }
+    const envelope = payload as { retCode?: unknown; retMsg?: unknown; result?: T };
+    if (response.ok && envelope.retCode === 0 && envelope.result !== undefined) return envelope.result;
     const message = typeof envelope.retMsg === "string" && envelope.retMsg ? envelope.retMsg : `HTTP ${response.status}`;
     const rawRetCode = typeof envelope.retCode === "number" || typeof envelope.retCode === "string" ? envelope.retCode : undefined;
+    if (String(rawRetCode) === "10006") {
+      const retryAfterHeader = response.headers.get("retry-after");
+      const resetHeader = response.headers.get("x-bapi-limit-reset-timestamp");
+      const retryAfterSeconds = retryAfterHeader === null ? Number.NaN : Number(retryAfterHeader);
+      const resetAt = resetHeader === null ? Number.NaN : Number(resetHeader);
+      const retryDelay = Number.isFinite(retryAfterSeconds) && retryAfterSeconds >= 0
+        ? retryAfterSeconds * 1000
+        : Number.isFinite(resetAt) && resetAt > 0 ? Math.max(0, resetAt - Date.now()) : 1000;
+      if (attempt === 0 && retryDelay <= MAX_RATE_LIMIT_RETRY_DELAY_MS) {
+        await new Promise((resolve) => setTimeout(resolve, Math.max(100, retryDelay + 100)));
+        continue;
+      }
+      throw new BybitError(`Bybit API rate limit exceeded (10006): ${message}`, "BYBIT_RATE_LIMITED", rawRetCode, requestId);
+    }
     const retCode = rawRetCode === undefined ? "" : ` (${rawRetCode})`;
     throw new BybitError(`Bybit rejected the request${retCode}: ${message}`, "BYBIT_REJECTED", rawRetCode, requestId);
   }
-  return envelope.result;
+  throw new BybitError("Bybit API rate limit exceeded", "BYBIT_RATE_LIMITED", 10006);
 }
 
 async function validateCredentials(fetchImpl: FetchLike, credentials: Credentials, baseUrl?: string): Promise<void> {
@@ -311,6 +329,9 @@ export async function syncBybitCard(app: FastifyInstance, workspaceId: string, f
     connectionId = connection.id;
     const enabledAtMs = Date.parse(connection.enabled_at);
     const lastSyncedMs = connection.last_synced_at ? Date.parse(connection.last_synced_at) : enabledAtMs;
+    if (connection.last_synced_at && Date.now() - lastSyncedMs < MIN_SYNC_INTERVAL_MS) {
+      return { imported: 0, pendingCount: connectionStatus(app, workspaceId).pendingCount };
+    }
     const from = Math.max(enabledAtMs, lastSyncedMs - SYNC_OVERLAP_MS);
     const to = Date.now();
     const records = await fetchRecords(fetchImpl, decryptBybitCredentials(app, connection.credentials_encrypted), from, to, app.config.bybitApiBaseUrl);
@@ -387,7 +408,7 @@ export async function registerBybitCardRoutes(app: FastifyInstance, options: { f
     try { await validateCredentials(fetchImpl, credentials, app.config.bybitApiBaseUrl); }
     catch (error) {
       const bybit = error instanceof BybitError ? error : new BybitError("Could not validate the Bybit key");
-      return fail(reply, 422, bybit.code, bybit.message);
+      return fail(reply, bybit.code === "BYBIT_RATE_LIMITED" ? 429 : 422, bybit.code, bybit.message);
     }
     const id = randomUUID();
     const saved = app.db.transaction(() => {
@@ -425,7 +446,8 @@ export async function registerBybitCardRoutes(app: FastifyInstance, options: { f
     catch (error) {
       request.log.warn({ err: error, workspaceId }, "Manual Bybit Card sync failed");
       const bybit = error instanceof BybitError ? error : new BybitError("Could not synchronize Bybit Card");
-      return fail(reply, bybit.code === "BYBIT_NOT_CONNECTED" ? 404 : 502, bybit.code, bybit.message);
+      const status = bybit.code === "BYBIT_NOT_CONNECTED" ? 404 : bybit.code === "BYBIT_RATE_LIMITED" ? 429 : 502;
+      return fail(reply, status, bybit.code, bybit.message);
     }
   });
 
@@ -531,6 +553,7 @@ export function startBybitCardScheduler(app: FastifyInstance): () => void {
       timer.unref();
     }
   };
-  void run();
+  timer = setTimeout(run, SCHEDULER_INITIAL_DELAY_MS);
+  timer.unref();
   return () => { stopped = true; if (timer) clearTimeout(timer); };
 }

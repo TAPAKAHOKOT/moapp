@@ -6,7 +6,9 @@ import { buildTestApp, testConfig } from "./test-app.js";
 
 const config = testConfig();
 const assetRequests: Array<Record<string, string>> = [];
+const assetRequestIds: string[] = [];
 let validationTime = 0;
+let rateLimited = false;
 
 const mockFetch: typeof fetch = async (input, init) => {
   const url = String(input);
@@ -34,9 +36,17 @@ const mockFetch: typeof fetch = async (input, init) => {
   assert.equal(headers["Content-Type"], "application/json");
   const assetRequest = Object.fromEntries(requestUrl.searchParams);
   assetRequests.push(assetRequest);
+  assetRequestIds.push(headers["cdn-request-id"]!);
   if (requestUrl.searchParams.has("statusCode")) {
     return new Response(JSON.stringify({ retCode: 120110001, retMsg: "param_illegal", result: {} }), {
       status: 200, headers: { "content-type": "application/json" }
+    });
+  }
+  if (!rateLimited) {
+    rateLimited = true;
+    return new Response(JSON.stringify({ retCode: 10006, retMsg: "Too many visits. Exceeded the API Rate Limit.", result: {} }), {
+      status: 200,
+      headers: { "content-type": "application/json", "X-Bapi-Limit-Reset-Timestamp": String(Date.now()) }
     });
   }
   const boundary = validationTime;
@@ -100,14 +110,25 @@ test("Bybit Card imports only records at or after the exact connection boundary"
   assert.equal(connected.json().pendingCount, 1);
   assert.deepEqual(assetRequests.map(({ type, statusCode, limit, page }) => ({ type, statusCode, limit, page })), [
     { type: "SIDE_QUERY_FINANCIAL", statusCode: "1", limit: "500", page: "1" },
+    { type: "SIDE_QUERY_FINANCIAL", statusCode: undefined, limit: "500", page: "1" },
     { type: "SIDE_QUERY_FINANCIAL", statusCode: undefined, limit: "500", page: "1" }
   ]);
+  assert.equal(new Set(assetRequestIds).size, 3);
   assert.equal(Number(assetRequests[0]?.createBeginTime), Date.parse(connected.json().enabledAt));
   assert.ok(Number(assetRequests[0]?.createEndTime) >= Number(assetRequests[0]?.createBeginTime));
 
   const storedConnection = app.db.prepare("SELECT * FROM bybit_card_connections WHERE workspace_id=?").get(workspaceId) as { credentials_encrypted: string };
   assert.doesNotMatch(storedConnection.credentials_encrypted, /read-only-card-key|super-secret/);
   assert.equal((app.db.prepare("SELECT count(*) count FROM bybit_card_transactions WHERE workspace_id=?").get(workspaceId) as { count: number }).count, 1);
+
+  const repeatedSync = await app.inject({
+    method: "POST",
+    url: `/api/workspaces/${workspaceId}/integrations/bybit-card/sync`,
+    headers: { ...origin, ...contextHeaders() },
+    payload: {}
+  });
+  assert.equal(repeatedSync.statusCode, 200, repeatedSync.body);
+  assert.equal(assetRequests.length, 3, "a repeated sync inside the cooldown must not call Bybit");
 
   const queue = await app.inject({ method: "GET", url: `/api/workspaces/${workspaceId}/integrations/bybit-card/transactions`, headers: contextHeaders() });
   assert.equal(queue.statusCode, 200, queue.body);
