@@ -114,23 +114,36 @@ export function decryptBybitCredentials(app: FastifyInstance, value: string): Cr
   return decoded;
 }
 
-async function signedRequest<T>(fetchImpl: FetchLike, credentials: Credentials, method: "GET" | "POST", path: string, body?: Record<string, unknown>, baseUrl?: string): Promise<T> {
+type RequestParameters = Record<string, string | number>;
+
+async function signedRequest<T>(
+  fetchImpl: FetchLike,
+  credentials: Credentials,
+  method: "GET" | "POST",
+  path: string,
+  options: { query?: RequestParameters; body?: Record<string, unknown>; baseUrl?: string | undefined } = {}
+): Promise<T> {
   const timestamp = String(Date.now());
-  const jsonBody = body ? JSON.stringify(body) : "";
-  const signaturePayload = `${timestamp}${credentials.apiKey}${RECV_WINDOW}${method === "POST" ? jsonBody : ""}`;
+  const queryString = options.query ? new URLSearchParams(
+    Object.entries(options.query).map(([key, value]) => [key, String(value)])
+  ).toString() : "";
+  const jsonBody = options.body ? JSON.stringify(options.body) : "";
+  const signatureParameters = method === "GET" ? queryString : jsonBody;
+  const signaturePayload = `${timestamp}${credentials.apiKey}${RECV_WINDOW}${signatureParameters}`;
   const signature = createHmac("sha256", credentials.apiSecret).update(signaturePayload).digest("hex");
+  const url = `${options.baseUrl ?? BYBIT_REGIONS[credentials.region]}${path}${queryString ? `?${queryString}` : ""}`;
   let response: Response;
   try {
-    response = await fetchImpl(`${baseUrl ?? BYBIT_REGIONS[credentials.region]}${path}`, {
+    response = await fetchImpl(url, {
       method,
       headers: {
         "X-BAPI-API-KEY": credentials.apiKey,
         "X-BAPI-TIMESTAMP": timestamp,
         "X-BAPI-RECV-WINDOW": RECV_WINDOW,
         "X-BAPI-SIGN": signature,
-        ...(method === "POST" ? { "Content-Type": "application/json" } : {})
+        ...(jsonBody ? { "Content-Type": "application/json" } : {})
       },
-      ...(method === "POST" ? { body: jsonBody } : {}),
+      ...(jsonBody ? { body: jsonBody } : {}),
       signal: AbortSignal.timeout(15_000)
     });
   } catch (error) {
@@ -142,13 +155,14 @@ async function signedRequest<T>(fetchImpl: FetchLike, credentials: Credentials, 
   const envelope = payload as { retCode?: unknown; retMsg?: unknown; result?: T };
   if (!response.ok || envelope.retCode !== 0 || envelope.result === undefined) {
     const message = typeof envelope.retMsg === "string" && envelope.retMsg ? envelope.retMsg : `HTTP ${response.status}`;
-    throw new BybitError(`Bybit rejected the request: ${message}`, "BYBIT_REJECTED");
+    const retCode = typeof envelope.retCode === "number" || typeof envelope.retCode === "string" ? ` (${envelope.retCode})` : "";
+    throw new BybitError(`Bybit rejected the request${retCode}: ${message}`, "BYBIT_REJECTED");
   }
   return envelope.result;
 }
 
 async function validateCredentials(fetchImpl: FetchLike, credentials: Credentials, baseUrl?: string): Promise<void> {
-  const result = await signedRequest<{ readOnly?: unknown; permissions?: { BitCard?: unknown } }>(fetchImpl, credentials, "GET", "/v5/user/query-api", undefined, baseUrl);
+  const result = await signedRequest<{ readOnly?: unknown; permissions?: { BitCard?: unknown } }>(fetchImpl, credentials, "GET", "/v5/user/query-api", { baseUrl });
   if (result.readOnly !== 1) throw new BybitError("Use a read-only Bybit API key", "BYBIT_KEY_NOT_READ_ONLY");
   if (!Array.isArray(result.permissions?.BitCard) || !result.permissions.BitCard.includes("BitCard")) {
     throw new BybitError("The API key does not have the Bybit Card permission", "BYBIT_CARD_PERMISSION_MISSING");
@@ -242,13 +256,17 @@ async function fetchRecords(fetchImpl: FetchLike, credentials: Credentials, from
   const records: AssetRecord[] = [];
   for (let page = 1; page <= MAX_PAGES; page += 1) {
     const result = await signedRequest<{ pageSize?: unknown; totalCount?: unknown; data?: unknown }>(fetchImpl, credentials, "POST", "/v5/card/transaction/query-asset-records", {
-      type: "SIDE_QUERY_FINANCIAL",
-      statusCode: "1",
-      createBeginTime: from,
-      createEndTime: to,
-      limit: 500,
-      page
-    }, baseUrl);
+      query: {
+        type: "SIDE_QUERY_FINANCIAL",
+        statusCode: "1",
+        createBeginTime: from,
+        createEndTime: to,
+        limit: 500,
+        page
+      },
+      body: {},
+      baseUrl
+    });
     const data = Array.isArray(result.data) ? result.data as AssetRecord[] : [];
     records.push(...data);
     const total = typeof result.totalCount === "number" ? result.totalCount : records.length;
