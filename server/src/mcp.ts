@@ -20,7 +20,16 @@ type HistoryRow = {
   category_name: string;
   occurred_at: string;
   note: string | null;
+  tag_pairs: string | null;
 };
+
+// Теги приходят одной строкой: пары «id\x1Fимя», разделённые \x1E, чтобы не делать второй запрос на каждую строку.
+function tagFields(pairs: string | null): { tagIds: string[]; tags: string[] } {
+  if (!pairs) return { tagIds: [], tags: [] };
+  const parsed = pairs.split(String.fromCharCode(30)).map((pair) => pair.split(String.fromCharCode(31)) as [string, string])
+    .sort((left, right) => left[1].localeCompare(right[1], "ru"));
+  return { tagIds: parsed.map((pair) => pair[0]), tags: parsed.map((pair) => pair[1]) };
+}
 
 type HistoryCursor = { occurredAt: string; id: string };
 
@@ -96,6 +105,7 @@ function createMcpServer(app: FastifyInstance, userId: string): McpServer {
       from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe("Inclusive Europe/Belgrade calendar date, YYYY-MM-DD"),
       to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe("Inclusive Europe/Belgrade calendar date, YYYY-MM-DD"),
       categoryId: z.string().min(1).max(100).optional().describe("Optional category ID"),
+      tagId: z.string().min(1).max(100).optional().describe("Optional tag ID; returns only expenses carrying this tag"),
       currency: z.string().regex(/^[A-Z]{3}$/).optional().describe("Optional ISO 4217 currency code"),
       limit: z.number().int().min(1).max(200).default(100).describe("Maximum expenses to return"),
       cursor: z.string().max(512).optional().describe("Opaque nextCursor from the previous result")
@@ -113,13 +123,15 @@ function createMcpServer(app: FastifyInstance, userId: string): McpServer {
         currency: z.string(),
         categoryId: z.string(),
         category: z.string(),
+        tagIds: z.array(z.string()),
+        tags: z.array(z.string()),
         note: z.string().nullable()
       })),
       nextCursor: z.string().nullable()
     },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     _meta: authMeta
-  }, async ({ workspaceId, from, to, categoryId, currency, limit, cursor }) => {
+  }, async ({ workspaceId, from, to, categoryId, tagId, currency, limit, cursor }) => {
     if ((from && !isCalendarDate(from)) || (to && !isCalendarDate(to)) || (from && to && from > to)) {
       return historyToolError("from and to must be valid YYYY-MM-DD dates with from no later than to.");
     }
@@ -135,12 +147,16 @@ function createMcpServer(app: FastifyInstance, userId: string): McpServer {
     const where = ["e.workspace_id=?", "e.deleted_at IS NULL"];
     const values: unknown[] = [workspaceId];
     if (categoryId) { where.push("e.category_id=?"); values.push(categoryId); }
+    if (tagId) { where.push("EXISTS (SELECT 1 FROM expense_tags f WHERE f.workspace_id=e.workspace_id AND f.expense_id=e.id AND f.tag_id=?)"); values.push(tagId); }
     if (currency) { where.push("e.currency=?"); values.push(currency); }
     if (decodedCursor) {
       where.push("(e.occurred_at < ? OR (e.occurred_at = ? AND e.id < ?))");
       values.push(decodedCursor.occurredAt, decodedCursor.occurredAt, decodedCursor.id);
     }
-    const candidates = app.db.prepare(`SELECT e.id,e.amount_minor,e.currency,e.category_id,c.name AS category_name,e.occurred_at,e.note
+    const candidates = app.db.prepare(`SELECT e.id,e.amount_minor,e.currency,e.category_id,c.name AS category_name,e.occurred_at,e.note,
+        (SELECT group_concat(et.tag_id || char(31) || t.name, char(30)) FROM expense_tags et
+          JOIN tags t ON t.workspace_id=et.workspace_id AND t.id=et.tag_id
+          WHERE et.workspace_id=e.workspace_id AND et.expense_id=e.id) AS tag_pairs
       FROM expenses e JOIN categories c ON c.workspace_id=e.workspace_id AND c.id=e.category_id
       WHERE ${where.join(" AND ")} ORDER BY e.occurred_at DESC,e.id DESC`).iterate(...values) as IterableIterator<HistoryRow>;
     const page: HistoryRow[] = [];
@@ -160,6 +176,7 @@ function createMcpServer(app: FastifyInstance, userId: string): McpServer {
       currency: row.currency,
       categoryId: row.category_id,
       category: row.category_name,
+      ...tagFields(row.tag_pairs),
       note: row.note
     }));
     const nextCursor = hasMore && selected.length ? encodeCursor(selected.at(-1)!) : null;

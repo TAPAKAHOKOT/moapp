@@ -17,12 +17,21 @@ export type Category = {
   version: number
 }
 
+export type Tag = {
+  id: string
+  name: string
+  version: number
+  createdAt: string
+  updatedAt: string
+}
+
 export type Expense = {
   id: string
   amountMinor: number
   currency: string
   categoryId: string
   note: string | null
+  tagIds?: string[]
   occurredAt: string
   createdAt: string
   updatedAt: string
@@ -167,6 +176,7 @@ export type WorkspaceBootstrap = {
   workspace: WorkspaceSummary
   expenses: Expense[]
   categories: Category[]
+  tags?: Tag[]
   currencies: Currency[]
   rates: RateSnapshot
   defaultAnalyticsCurrency: string

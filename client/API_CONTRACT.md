@@ -107,6 +107,7 @@ type WorkspaceBootstrap = {
   workspace: WorkspaceSummary
   expenses: Expense[]
   categories: Category[]
+  tags?: Tag[]
   currencies: Currency[]
   rates: { base: 'RSD'; date: string | null; ratesToRsd: Record<string, number> }
   defaultAnalyticsCurrency: string
@@ -114,7 +115,7 @@ type WorkspaceBootstrap = {
 }
 ```
 
-Bootstrap contains active expenses and both active and archived categories. `ratesToRsd` is RSD per major unit of each source currency and always contains `RSD: 1`.
+Bootstrap contains active expenses, both active and archived categories, and every tag. The client treats a missing `tags` array (older cached bootstraps) as empty. `ratesToRsd` is RSD per major unit of each source currency and always contains `RSD: 1`.
 
 The client rejects a bootstrap whose `workspaceId` differs from the requested workspace. IndexedDB bootstrap records use the compound key `(userId, workspaceId)`. Outbox records use `(userId, workspaceId, operationId)`, and their stored `userId`/`workspaceId` must match the requested storage scope. Offline fallback reads only the current authenticated user's cache for the requested workspace.
 
@@ -129,6 +130,7 @@ type Expense = {
   currency: string
   categoryId: string
   note: string | null
+  tagIds?: string[]
   occurredAt: string
   createdAt: string
   updatedAt: string
@@ -137,9 +139,9 @@ type Expense = {
 }
 ```
 
-`amountMinor` is a positive safe integer in the currency's minor units, `currency` is ISO 4217, and `note` is nullable with a server maximum of 500 characters.
+`tagIds` lists workspace tag ids attached to the expense (the server always sends it; the client tolerates its absence in old caches). Create, update and sync payloads include `tagIds`; the server rejects unknown ids with `400 TAG_INVALID`. `amountMinor` is a positive safe integer in the currency's minor units, `currency` is ISO 4217, and `note` is nullable with a server maximum of 500 characters.
 
-- `GET /api/workspaces/:workspaceId/expenses?...` → `{expenses: Expense[], nextCursor: string | null}`. Supported filters are `from`, `to`, `categoryId`, `currency`, `cursor`, `limit`, and `includeDeleted`; the server caps `limit` at 200. The current `listExpenses` wrapper declares only `{expenses}` and does not expose `nextCursor` in its static return type.
+- `GET /api/workspaces/:workspaceId/expenses?...` → `{expenses: Expense[], nextCursor: string | null}`. Supported filters are `from`, `to`, `categoryId`, `tagId`, `currency`, `cursor`, `limit`, and `includeDeleted`; the server caps `limit` at 200. The current `listExpenses` wrapper declares only `{expenses}` and does not expose `nextCursor` in its static return type.
 - `GET /api/workspaces/:workspaceId/expenses/:expenseId` → `Expense`.
 - `POST /api/workspaces/:workspaceId/expenses` with complete expense input → `201 Expense`, or `200 Expense` for a compatible ID retry.
 - `PATCH /api/workspaces/:workspaceId/expenses/:expenseId` with changed fields and `version` → `Expense`.
@@ -194,10 +196,33 @@ The client model matches this response shape. UI-created categories start with a
 
 Category mutations are online requests. A stale category or expense version returns `409 VERSION_CONFLICT`; `error.details.current` contains the canonical current object. Incompatible create retries return `409 IDEMPOTENCY_CONFLICT`.
 
+## Tags
+
+Tags are short workspace-level labels that can be attached to any expense regardless of its category. An expense carries at most 20 tags.
+
+```ts
+type Tag = {
+  id: string
+  name: string
+  version: number
+  createdAt: string
+  updatedAt: string
+}
+```
+
+- `GET /api/workspaces/:workspaceId/tags` returns `{tags}` ordered by name.
+- `POST /api/workspaces/:workspaceId/tags` accepts `{id?,name}` and returns a `Tag` with `201`. Names are NFKC-normalized, trimmed, collapse inner whitespace, and are 1-30 characters. A compatible UUID retry returns `200`; a different name for an existing id returns `409 IDEMPOTENCY_CONFLICT`. A name that already exists (case-insensitive, including Cyrillic) returns `409 DUPLICATE` with the existing tag in `error.details.current`.
+- `PATCH /api/workspaces/:workspaceId/tags/:id` accepts `{name,version}` and returns the renamed `Tag`.
+- `DELETE /api/workspaces/:workspaceId/tags/:id` requires JSON `{version}` and returns `204`. Deletion is hard: the tag is detached from every expense, the expenses themselves stay.
+
+A stale tag version returns `409 VERSION_CONFLICT` with `error.details.current`.
+
+Tag mutations are online requests. Creating a tag whose name already exists returns `409 DUPLICATE` with the existing tag in `error.details.current`; the client reuses that tag instead of failing.
+
 ## Bybit Card integration
 
 The client exposes workspace-scoped status, connection, disconnection, manual
-sync, review-list, classify, ignore, and guarded undo calls. These mutations are online-only.
+sync, review-list, classify, ignore, and guarded undo calls. Classify sends `{categoryId,comment,tagIds}` so the review flow can tag the created expense. These mutations are online-only.
 The connection UI displays `enabledAt`: transactions before that instant are
 never imported. Review items remain outside `Expense[]` and analytics until
 classification returns a normal expense and adds it to the workspace bootstrap.

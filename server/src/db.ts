@@ -71,7 +71,7 @@ const seeds = [
   ["other", "Прочее", "additional", 4, "#A8A8A8"]
 ] as const;
 
-const LATEST_SCHEMA_VERSION = 7;
+const LATEST_SCHEMA_VERSION = 8;
 
 type TableCount = {
   categories: number;
@@ -447,6 +447,28 @@ export function openDatabase(path: string): Database.Database {
           );
           CREATE INDEX bybit_card_transactions_review_idx ON bybit_card_transactions(workspace_id,review_status,occurred_at);
           CREATE INDEX bybit_card_transactions_expense_idx ON bybit_card_transactions(workspace_id,expense_id);
+        `);
+        else if (version === 8) db.exec(`
+          CREATE TABLE tags (
+            workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+            id TEXT NOT NULL,
+            name TEXT NOT NULL CHECK(length(name) BETWEEN 1 AND 30),
+            name_key TEXT NOT NULL,
+            version INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY(workspace_id, id),
+            UNIQUE(workspace_id, name_key)
+          );
+          CREATE TABLE expense_tags (
+            workspace_id TEXT NOT NULL,
+            expense_id TEXT NOT NULL,
+            tag_id TEXT NOT NULL,
+            PRIMARY KEY(workspace_id, expense_id, tag_id),
+            FOREIGN KEY(workspace_id, expense_id) REFERENCES expenses(workspace_id, id) ON DELETE CASCADE,
+            FOREIGN KEY(workspace_id, tag_id) REFERENCES tags(workspace_id, id) ON DELETE CASCADE
+          );
+          CREATE INDEX expense_tags_tag_idx ON expense_tags(workspace_id, tag_id);
         `);
         db.prepare("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)").run(version, appliedAt);
       }

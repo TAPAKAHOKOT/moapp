@@ -1,10 +1,11 @@
-import type { Category, Currency, Expense } from './types'
+import type { Category, Currency, Expense, Tag } from './types'
 import { localDateKey, weekDateRange } from './utils'
 
 export type HistoryPeriod = 'all' | 'day' | 'week' | 'range'
 
 export type HistoryFilters = {
   categoryId: string
+  tagId: string
   currency: string
   period: HistoryPeriod
   date: string
@@ -15,7 +16,7 @@ export type HistoryFilters = {
 export type HistoryPreferences = HistoryFilters & { query: string }
 
 export function defaultHistoryPreferences(today: string): HistoryPreferences {
-  return { query: '', categoryId: '', currency: '', period: 'all', date: today, from: `${today.slice(0, 8)}01`, to: today }
+  return { query: '', categoryId: '', tagId: '', currency: '', period: 'all', date: today, from: `${today.slice(0, 8)}01`, to: today }
 }
 
 export function parseHistoryPreferences(raw: string | null, today: string): HistoryPreferences {
@@ -28,6 +29,7 @@ export function parseHistoryPreferences(raw: string | null, today: string): Hist
     return {
       query: typeof saved.query === 'string' ? saved.query.slice(0, 200) : defaults.query,
       categoryId: typeof saved.categoryId === 'string' ? saved.categoryId.slice(0, 100) : defaults.categoryId,
+      tagId: typeof saved.tagId === 'string' ? saved.tagId.slice(0, 100) : defaults.tagId,
       currency: typeof saved.currency === 'string' && /^[A-Z]{3}$/.test(saved.currency) ? saved.currency : defaults.currency,
       period,
       date: date(saved.date, defaults.date),
@@ -52,10 +54,17 @@ export function filterHistoryExpenses(expenses: Expense[], filters: HistoryFilte
   return expenses.filter((expense) => {
     if (expense.deletedAt) return false
     if (filters.categoryId && expense.categoryId !== filters.categoryId) return false
+    if (filters.tagId && !(expense.tagIds ?? []).includes(filters.tagId)) return false
     if (filters.currency && expense.currency !== filters.currency) return false
     const date = localDateKey(expense.occurredAt)
     return (!from || date >= from) && (!to || date <= to)
   }).sort((left, right) => right.occurredAt.localeCompare(left.occurredAt))
+}
+
+// Имена тегов расхода в стабильном порядке — для строки истории, поиска и экспорта.
+export function expenseTagNames(expense: Pick<Expense, 'tagIds'>, tags: Tag[]) {
+  const byId = new Map(tags.map((tag) => [tag.id, tag.name]))
+  return (expense.tagIds ?? []).map((id) => byId.get(id)).filter((name): name is string => Boolean(name)).sort((left, right) => left.localeCompare(right, 'ru-RU'))
 }
 
 function decimalAmount(amountMinor: number, decimals: number) {
@@ -70,7 +79,7 @@ function csvCell(value: string | number) {
   return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text
 }
 
-export function buildHistoryCsv(expenses: Expense[], categories: Category[], currencies: Currency[]) {
+export function buildHistoryCsv(expenses: Expense[], categories: Category[], currencies: Currency[], tags: Tag[] = []) {
   const categoryMap = new Map(categories.map((category) => [category.id, category.name]))
   const decimals = new Map(currencies.map((currency) => [currency.code, currency.decimals]))
   const rows = expenses.map((expense) => {
@@ -83,11 +92,12 @@ export function buildHistoryCsv(expenses: Expense[], categories: Category[], cur
       date,
       time,
       categoryMap.get(expense.categoryId) ?? 'Архивная категория',
+      expenseTagNames(expense, tags).join('; '),
       decimalAmount(expense.amountMinor, decimals.get(expense.currency) ?? 2),
       expense.currency,
       expense.note ?? '',
       expense.id,
     ].map(csvCell).join(',')
   })
-  return ['occurred_at,date,time,category,amount,currency,note,id', ...rows].join('\n')
+  return ['occurred_at,date,time,category,tags,amount,currency,note,id', ...rows].join('\n')
 }

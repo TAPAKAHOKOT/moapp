@@ -79,9 +79,9 @@ Available read-only tools:
 - `list_workspaces` returns the connected profile's current workspace IDs,
   names, and roles;
 - `get_expense_history` accepts `workspaceId`, optional inclusive `from`/`to`
-  Belgrade calendar dates, `categoryId`, `currency`, `limit` (up to 200), and
+  Belgrade calendar dates, `categoryId`, `tagId`, `currency`, `limit` (up to 200), and
   an opaque pagination `cursor`. It returns exact minor-unit and decimal
-  amounts, category names, notes, local dates, and `nextCursor`.
+  amounts, category names, tag ids and names (`tagIds`, `tags`), notes, local dates, and `nextCursor`.
 
 Tool calls recheck live membership before reading tenant data. Losing
 membership immediately removes access even while the OAuth token remains
@@ -162,13 +162,14 @@ Owner-only actions return `403 FORBIDDEN` to a member. Membership/owner mutation
 
 ## Workspace bootstrap
 
-`GET /api/workspaces/:workspaceId/bootstrap` returns all archived and active categories, active expenses only, currency metadata, the latest RSD rate snapshot, and the current workspace summary:
+`GET /api/workspaces/:workspaceId/bootstrap` returns all archived and active categories, all tags, active expenses only, currency metadata, the latest RSD rate snapshot, and the current workspace summary:
 
 ```ts
 type WorkspaceBootstrap = {
   workspaceId: string
   workspace: WorkspaceSummary
   categories: Category[]
+  tags: Tag[]
   expenses: Expense[]
   currencies: { code: string; name: string; symbol: string; decimals: number }[]
   rates: { base: 'RSD'; date: string | null; ratesToRsd: Record<string, number> }
@@ -189,6 +190,7 @@ type Expense = {
   categoryId: string
   occurredAt: string
   note: string | null
+  tagIds: string[]
   version: number
   createdAt: string
   updatedAt: string
@@ -196,9 +198,11 @@ type Expense = {
 }
 ```
 
-- `GET /api/workspaces/:workspaceId/expenses?from=&to=&categoryId=&currency=&cursor=&limit=50&includeDeleted=false` returns `{expenses,nextCursor}`. `limit` is capped at 200 and `nextCursor` is `string | null`.
+`tagIds` is always present and sorted. Create and update accept an optional `tagIds` array (unique, at most 20, every id must belong to the workspace); an unknown id returns `400 TAG_INVALID`. Omitting `tagIds` on `PATCH` keeps the current tags, sending `[]` clears them. The idempotent `POST` retry compares `tagIds` only when the retry includes them.
+
+- `GET /api/workspaces/:workspaceId/expenses?from=&to=&categoryId=&tagId=&currency=&cursor=&limit=50&includeDeleted=false` returns `{expenses,nextCursor}`. `limit` is capped at 200 and `nextCursor` is `string | null`.
 - `GET /api/workspaces/:workspaceId/expenses/:id` returns one `Expense`.
-- `POST /api/workspaces/:workspaceId/expenses` accepts complete `{id,amountMinor,currency,categoryId,occurredAt,note?}` and returns an `Expense` with `201`. A compatible ID retry returns the existing expense with `200`; incompatible reuse returns `409 IDEMPOTENCY_CONFLICT` with `details.current`.
+- `POST /api/workspaces/:workspaceId/expenses` accepts complete `{id,amountMinor,currency,categoryId,occurredAt,note?,tagIds?}` and returns an `Expense` with `201`. A compatible ID retry returns the existing expense with `200`; incompatible reuse returns `409 IDEMPOTENCY_CONFLICT` with `details.current`.
 - `PATCH /api/workspaces/:workspaceId/expenses/:id` accepts changed fields plus required `version` and returns the updated `Expense`.
 - `DELETE /api/workspaces/:workspaceId/expenses/:id` requires JSON `{version}` and returns `204`; deletion is soft.
 
@@ -227,6 +231,27 @@ type Category = {
 - `PUT /api/workspaces/:workspaceId/categories/order` with `{ids}` returns `{categories}`. The unique array must contain every active category or every active category in one placement group.
 
 A stale category version returns `409 VERSION_CONFLICT` with `error.details.current`.
+
+## Tags
+
+Tags are short workspace-level labels that can be attached to any expense regardless of its category. An expense carries at most 20 tags.
+
+```ts
+type Tag = {
+  id: string
+  name: string
+  version: number
+  createdAt: string
+  updatedAt: string
+}
+```
+
+- `GET /api/workspaces/:workspaceId/tags` returns `{tags}` ordered by name.
+- `POST /api/workspaces/:workspaceId/tags` accepts `{id?,name}` and returns a `Tag` with `201`. Names are NFKC-normalized, trimmed, collapse inner whitespace, and are 1-30 characters. A compatible UUID retry returns `200`; a different name for an existing id returns `409 IDEMPOTENCY_CONFLICT`. A name that already exists (case-insensitive, including Cyrillic) returns `409 DUPLICATE` with the existing tag in `error.details.current`.
+- `PATCH /api/workspaces/:workspaceId/tags/:id` accepts `{name,version}` and returns the renamed `Tag`.
+- `DELETE /api/workspaces/:workspaceId/tags/:id` requires JSON `{version}` and returns `204`. Deletion is hard: the tag is detached from every expense, the expenses themselves stay.
+
+A stale tag version returns `409 VERSION_CONFLICT` with `error.details.current`.
 
 ## Offline synchronization
 
@@ -263,7 +288,7 @@ with the `BitCard` permission and are encrypted before storage.
 - `DELETE /api/workspaces/:workspaceId/integrations/bybit-card` requires `{}`. Classified expenses remain.
 - `POST /api/workspaces/:workspaceId/integrations/bybit-card/sync` requires `{}` and polls cleared card transactions.
 - `GET /api/workspaces/:workspaceId/integrations/bybit-card/transactions?limit=` returns oldest-first pending transactions, capped at 200.
-- `POST .../transactions/:transactionId/classify` accepts `{categoryId,comment}` and atomically creates an expense. Compatible retries return the linked expense.
+- `POST .../transactions/:transactionId/classify` accepts `{categoryId,comment,tagIds?}` and atomically creates an expense carrying those tags. Compatible retries return the linked expense.
 - `POST .../transactions/:transactionId/ignore` requires `{}` and removes the item from review without creating an expense.
 - `POST .../transactions/:transactionId/undo` returns an ignored item to review. For a classified item it accepts `{expenseId,expenseVersion}` and soft-deletes the linked expense only if that version is still current; otherwise it returns `409 UNDO_CONFLICT`.
 
