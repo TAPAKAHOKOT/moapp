@@ -1,4 +1,4 @@
-import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { lazy, memo, Suspense, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { QRCodeSVG } from 'qrcode.react'
 import {
   WorkspaceApiError as ApiError, allowWorkspaceMutations, blockWorkspaceMutations, createCategory, discardOutboxIssues, getAnalytics, getBootstrap,
@@ -218,6 +218,37 @@ function EntryCard({ face, onDate, onCurrency, disabled = false, limitHit = 0 }:
 }
 
 const ChevronIcon = () => <svg className="chevron" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 6l5 5 5-5"/></svg>
+const CheckIcon = () => <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 8.5l3.2 3L13 4.5"/></svg>
+
+type SelectOption = { value: string; label: string; hint?: string }
+
+// Замена нативного <select>: системный список вариантов не стилизуется и выбивается из интерфейса,
+// поэтому варианты открываются в той же нижней шторке, что валюта и категории.
+function Select({ label, title = label, value, options, onChange, disabled = false, searchable = options.length > 8 }: { label: string; title?: string; value: string; options: SelectOption[]; onChange: (value: string) => void; disabled?: boolean; searchable?: boolean }) {
+  const [open, setOpen] = useState(false)
+  const current = options.find((option) => option.value === value)
+  return <>
+    <button type="button" className="select-trigger" aria-label={label} aria-haspopup="listbox" aria-expanded={open} disabled={disabled} onClick={() => setOpen(true)}><span>{current?.label ?? '—'}</span><ChevronIcon/></button>
+    {open && <SelectSheet title={title} value={value} options={options} searchable={searchable} onClose={() => setOpen(false)} onSelect={(next) => { setOpen(false); if (next !== value) onChange(next) }}/>}
+  </>
+}
+
+function SelectSheet({ title, value, options, searchable, onClose, onSelect }: { title: string; value: string; options: SelectOption[]; searchable: boolean; onClose: () => void; onSelect: (value: string) => void }) {
+  const [query, setQuery] = useState('')
+  const dialogRef = useDialog(onClose)
+  const titleId = useId()
+  const normalized = query.trim().toLowerCase()
+  const filtered = normalized ? options.filter((option) => `${option.label} ${option.hint ?? ''}`.toLowerCase().includes(normalized)) : options
+  return <div className="sheet-backdrop" onMouseDown={onClose}>
+    <section ref={dialogRef} className={`bottom-sheet select-sheet${searchable ? ' tall' : ''}`} role="dialog" aria-modal="true" aria-labelledby={titleId} onMouseDown={(event) => event.stopPropagation()}>
+      <div className="sheet-handle"/><div className="sheet-title"><h2 id={titleId}>{title}</h2><button type="button" className="icon-button" data-dialog-initial-focus onClick={onClose} aria-label="Закрыть">×</button></div>
+      {searchable && <input className="search" type="search" placeholder="Поиск" aria-label={`Поиск: ${title}`} value={query} onChange={(event) => setQuery(event.target.value)}/>}
+      <div className="select-options" role="listbox" aria-label={title}>{filtered.map((option) => <button type="button" role="option" key={option.value} aria-selected={option.value === value} aria-label={option.hint ? `${option.label}, ${option.hint}` : undefined} className="select-option" onClick={() => onSelect(option.value)}><span><b>{option.label}</b>{option.hint && <small>{option.hint}</small>}</span>{option.value === value && <CheckIcon/>}</button>)}</div>
+      {!filtered.length && <p className="sheet-empty" role="status">По запросу «{query}» ничего не найдено.</p>}
+    </section>
+  </div>
+}
+
 const TrashIcon = () => <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"/></svg>
 const PlusIcon = () => <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
 
@@ -873,10 +904,10 @@ export function HistoryView({ userId, workspaceId, bootstrap, setBootstrap, edit
     {activeExpenses.length > 0 && <div className="history-controls">
       <input className="search" type="search" placeholder="Сумма, заметка, дата или категория" value={filters.query} onChange={(event) => updateFilters({ query: event.target.value })}/>
       <div className="history-filter-grid">
-        <label>Категория<select aria-label="Категория истории" value={filters.categoryId} onChange={(event) => updateFilters({ categoryId: event.target.value })}><option value="">Все категории</option>{categoryOptions.map((category) => <option key={category.id} value={category.id}>{category.name}{category.archivedAt ? ' · архив' : ''}</option>)}</select></label>
-        <label>Валюта<select aria-label="Валюта истории" value={filters.currency} onChange={(event) => updateFilters({ currency: event.target.value })}><option value="">Все валюты</option>{currencyOptions.map((currency) => <option key={currency.code} value={currency.code}>{currency.code} · {currency.name}</option>)}</select></label>
+        <label>Категория<Select label="Категория истории" title="Категория" value={filters.categoryId} onChange={(value) => updateFilters({ categoryId: value })} options={[{ value: '', label: 'Все категории' }, ...categoryOptions.map((category) => ({ value: category.id, label: category.name, ...(category.archivedAt ? { hint: 'архив' } : {}) }))]}/></label>
+        <label>Валюта<Select label="Валюта истории" title="Валюта" value={filters.currency} onChange={(value) => updateFilters({ currency: value })} options={[{ value: '', label: 'Все валюты' }, ...currencyOptions.map((currency) => ({ value: currency.code, label: currency.code, hint: currency.name }))]}/></label>
       </div>
-      <label className="history-date-filter">Период<select aria-label="Период истории" value={filters.period} onChange={(event) => updateFilters({ period: event.target.value as HistoryPeriod })}><option value="all">Все даты</option><option value="day">День</option><option value="week">Неделя</option><option value="range">Интервал</option></select></label>
+      <label className="history-date-filter">Период<Select label="Период истории" title="Период" value={filters.period} onChange={(value) => updateFilters({ period: value as HistoryPeriod })} options={[{ value: 'all', label: 'Все даты' }, { value: 'day', label: 'День' }, { value: 'week', label: 'Неделя' }, { value: 'range', label: 'Интервал' }]}/></label>
       {filters.period === 'day' && <label className="history-date-filter">День<input type="date" value={filters.date} onChange={(event) => updateFilters({ date: event.target.value })}/></label>}
       {filters.period === 'week' && <label className="history-date-filter">Любой день нужной недели<input type="date" value={filters.date} onChange={(event) => updateFilters({ date: event.target.value })}/></label>}
       {filters.period === 'range' && <div className="history-filter-grid history-range"><label>С<input type="date" value={filters.from} onChange={(event) => updateFilters({ from: event.target.value })}/></label><label>По<input type="date" value={filters.to} onChange={(event) => updateFilters({ to: event.target.value })}/></label></div>}
@@ -943,7 +974,7 @@ export function AnalyticsView({ userId, workspaceId, bootstrap, theme, online }:
   const chartGrid=theme==='dark'?'rgba(255,255,255,.06)':'rgba(32,37,31,.06)'
   return <section className="page analytics"><header className="page-header analytics-title"><div><p className="eyebrow">{period==='week'?'Расходы за неделю':'Расходы за месяц'} · {selectedCategoryName}</p><h1>{new Intl.NumberFormat('ru-RU',{maximumFractionDigits:0}).format(total)} <small>{target}</small></h1>{period==='week'&&<p className="analytics-comparison">{weekComparisonLabel(total,previousTotal,currentWeekPartial)}</p>}</div><button className="currency-choice" onClick={()=>setCurrencySheet(true)}>{target}<ChevronIcon/></button></header>
     <div className="analytics-period" role="group" aria-label="Период аналитики"><button type="button" aria-pressed={period==='week'} className={period==='week'?'selected':''} onClick={()=>setPeriod('week')}>Неделя</button><button type="button" aria-pressed={period==='month'} className={period==='month'?'selected':''} onClick={()=>setPeriod('month')}>Месяц</button></div>
-    <label className="analytics-category"><span>Категория</span><select aria-label="Категория расходов" value={categoryId??''} onChange={(event)=>{const value=event.target.value||null;setCategoryByPeriod((current)=>({...current,[period]:value}));setWorkspacePreference(userId,workspaceId,period==='week'?'analytics-week-category':'analytics-month-category',value??'')}}><option value="">Все категории</option>{activeCategories.map((category)=><option key={category.id} value={category.id}>{category.name}</option>)}</select></label>
+    <label className="analytics-category"><span>Категория</span><Select label="Категория расходов" title="Категория" value={categoryId??''} onChange={(next)=>{const value=next||null;setCategoryByPeriod((current)=>({...current,[period]:value}));setWorkspacePreference(userId,workspaceId,period==='week'?'analytics-week-category':'analytics-month-category',value??'')}} options={[{value:'',label:'Все категории'},...activeCategories.map((category)=>({value:category.id,label:category.name}))]}/></label>
     {period==='week'&&<div className="week-navigator"><button type="button" onClick={()=>setWeekOffset((value)=>value-1)} aria-label="Предыдущая неделя">‹</button><div><b>{weekOffset===0?'Текущая неделя':weekOffset===-1?'Прошлая неделя':'Выбранная неделя'}</b><span>{weekRange}</span></div><button type="button" onClick={()=>setWeekOffset((value)=>Math.min(0,value+1))} disabled={weekOffset===0} aria-label="Следующая неделя">›</button></div>}
     {period==='month'&&<div className="week-navigator"><button type="button" onClick={()=>setMonthOffset((value)=>value-1)} aria-label="Предыдущий месяц">‹</button><div><b>{monthOffset===0?'Текущий месяц':monthOffset===-1?'Прошлый месяц':'Выбранный месяц'}</b><span>{monthLabel}</span></div><button type="button" onClick={()=>setMonthOffset((value)=>Math.min(0,value+1))} disabled={monthOffset===0} aria-label="Следующий месяц">›</button></div>}
     <div className="analytics-stats"><div><span>Среднее в день</span><strong>{formatAnalyticsAmount(total/elapsedDays,target)}</strong></div><div><span>Операций</span><strong>{data.expenseCount}</strong></div></div>
@@ -1281,7 +1312,7 @@ function BybitConnectionPanel({ workspace, workspaceId, status, online, onStatus
     </>:manage?<>
       <p>Moapp загрузит только платежи, совершённые после включения интеграции. Нужен отдельный read-only ключ с разрешением BitCard.</p>
       {!editing?<button type="button" className="primary" disabled={!online||status===null} onClick={()=>setEditing(true)}>Подключить Bybit Card</button>:<form className="integration-form" onSubmit={(event)=>void connect(event)}>
-        <label>Регион аккаунта<select value={region} disabled={busy} onChange={(event)=>setRegion(event.target.value as BybitRegion)}>{bybitRegions.map((item)=><option key={item.id} value={item.id}>{item.label}</option>)}</select></label>
+        <label>Регион аккаунта<Select label="Регион аккаунта" value={region} disabled={busy} onChange={(value)=>setRegion(value as BybitRegion)} options={bybitRegions.map((item)=>({value:item.id,label:item.label}))}/></label>
         {region==='eu'&&<small className="integration-meta">Для EU Bybit требует ключ, созданный через Connect to Third-Party Applications.</small>}
         <label>API key<input autoComplete="off" value={apiKey} disabled={busy} maxLength={256} onChange={(event)=>setApiKey(event.target.value)}/></label>
         <label>API secret<input type="password" autoComplete="new-password" value={apiSecret} disabled={busy} maxLength={512} onChange={(event)=>setApiSecret(event.target.value)}/></label>
@@ -1424,7 +1455,7 @@ function CategoryEditor({ category, colors, onClose, onSave }:{category:Category
     try{await onSave({...next,name:name||next.name})}finally{setBusy(false)}
   }
   const colorNames=['шалфейный','терракотовый','песочный','голубой','сиреневый','графитовый']
-  return <><div className="sheet-backdrop" onMouseDown={()=>{if(!busy)onClose()}}><form ref={dialogRef as React.Ref<HTMLFormElement>} className="bottom-sheet editor" role="dialog" aria-modal="true" aria-labelledby="category-editor-title" noValidate onSubmit={(e)=>{e.preventDefault();void submit(draft)}} onMouseDown={(e)=>e.stopPropagation()}><div className="sheet-handle"/><div className="sheet-title"><h2 id="category-editor-title">{category?'Изменить':'Новая категория'}</h2><button type="button" className="icon-button" data-dialog-initial-focus disabled={busy} aria-label="Закрыть" onClick={onClose}>×</button></div><label>Название<input maxLength={40} aria-invalid={Boolean(validation)} value={draft.name} onChange={(e)=>{setValidation('');setDraft({...draft,name:e.target.value})}}/></label>{validation&&<p className="form-error" role="alert">{validation}</p>}<fieldset><legend>Цвет</legend><div className="colors">{colors.map((color,index)=><button aria-label={`Цвет: ${colorNames[index] ?? color}`} aria-pressed={draft.color===color} type="button" key={color} className={draft.color===color?'selected':''} style={{background:color}} onClick={()=>setDraft({...draft,color})}/>)}</div></fieldset><label>Размещение<select value={draft.placement} onChange={(e)=>setDraft({...draft,placement:e.target.value as Category['placement']})}><option value="main">Основные</option><option value="additional">Дополнительные</option></select></label><button className="primary" disabled={busy}>{busy?'Сохраняем…':'Сохранить'}</button>{category&&<button type="button" className="danger-link" disabled={busy} onClick={()=>void (async()=>{if(await confirm({title:'Архивировать категорию?',message:'Она исчезнет из выбора, но останется у старых расходов.',confirmLabel:'Архивировать',danger:true}))await submit({...draft,archivedAt:new Date().toISOString()})})()}>Архивировать</button>}</form></div>{confirmation}</>
+  return <><div className="sheet-backdrop" onMouseDown={()=>{if(!busy)onClose()}}><form ref={dialogRef as React.Ref<HTMLFormElement>} className="bottom-sheet editor" role="dialog" aria-modal="true" aria-labelledby="category-editor-title" noValidate onSubmit={(e)=>{e.preventDefault();void submit(draft)}} onMouseDown={(e)=>e.stopPropagation()}><div className="sheet-handle"/><div className="sheet-title"><h2 id="category-editor-title">{category?'Изменить':'Новая категория'}</h2><button type="button" className="icon-button" data-dialog-initial-focus disabled={busy} aria-label="Закрыть" onClick={onClose}>×</button></div><label>Название<input maxLength={40} aria-invalid={Boolean(validation)} value={draft.name} onChange={(e)=>{setValidation('');setDraft({...draft,name:e.target.value})}}/></label>{validation&&<p className="form-error" role="alert">{validation}</p>}<fieldset><legend>Цвет</legend><div className="colors">{colors.map((color,index)=><button aria-label={`Цвет: ${colorNames[index] ?? color}`} aria-pressed={draft.color===color} type="button" key={color} className={draft.color===color?'selected':''} style={{background:color}} onClick={()=>setDraft({...draft,color})}/>)}</div></fieldset><label>Размещение<Select label="Размещение" value={draft.placement} onChange={(value)=>setDraft({...draft,placement:value as Category['placement']})} options={[{value:'main',label:'Основные'},{value:'additional',label:'Дополнительные'}]}/></label><button className="primary" disabled={busy}>{busy?'Сохраняем…':'Сохранить'}</button>{category&&<button type="button" className="danger-link" disabled={busy} onClick={()=>void (async()=>{if(await confirm({title:'Архивировать категорию?',message:'Она исчезнет из выбора, но останется у старых расходов.',confirmLabel:'Архивировать',danger:true}))await submit({...draft,archivedAt:new Date().toISOString()})})()}>Архивировать</button>}</form></div>{confirmation}</>
 }
 
 const tabs:{id:Tab;label:string}[]=[{id:'entry',label:'Расход'},{id:'history',label:'История'},{id:'analytics',label:'Аналитика'},{id:'review',label:'Разбор'},{id:'settings',label:'Настройки'}]

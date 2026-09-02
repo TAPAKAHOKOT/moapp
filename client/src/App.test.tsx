@@ -6,6 +6,11 @@ import { AnalyticsView, BybitReviewView, CapabilityScreen, CreateWorkspaceSheet,
 import * as workspaceApi from './workspace-api'
 import type { AuthenticatedSession, WorkspaceBootstrap } from './types'
 
+function chooseOption(label: string, option: string) {
+  fireEvent.click(screen.getByLabelText(label))
+  fireEvent.click(screen.getByRole('option', { name: (name) => name === option || name.startsWith(`${option}, `) }))
+}
+
 const prepared = {
   recoveryUrl: `https://example.test/#/recover/${'a'.repeat(43)}`,
   completionToken: 'complete',
@@ -228,11 +233,11 @@ describe('history discovery', () => {
     })
     render(<HistoryView userId="user-a" workspaceId="workspace-a" bootstrap={bootstrap} setBootstrap={vi.fn()} edit={vi.fn()} createNew={vi.fn()} refreshPending={vi.fn()}/>)
 
-    fireEvent.change(screen.getByLabelText('Категория истории'), { target: { value: 'transport' } })
+    chooseOption('Категория истории', 'Транспорт')
     expect(screen.queryByRole('button', { name: /Продукты/ })).toBeNull()
     expect(screen.getByRole('button', { name: /Транспорт/ })).not.toBeNull()
 
-    fireEvent.change(screen.getByLabelText('Период истории'), { target: { value: 'day' } })
+    chooseOption('Период истории', 'День')
     fireEvent.change(screen.getByLabelText('День'), { target: { value: '2026-08-30' } })
     expect(screen.getByText('Ничего не найдено')).not.toBeNull()
   })
@@ -251,8 +256,8 @@ describe('history discovery', () => {
     const props = { userId: 'user-a', workspaceId: 'workspace-a', bootstrap, setBootstrap: vi.fn(), edit: vi.fn(), createNew: vi.fn(), refreshPending: vi.fn() }
     render(<HistoryView {...props}/>)
 
-    fireEvent.change(screen.getByLabelText('Валюта истории'), { target: { value: 'EUR' } })
-    fireEvent.change(screen.getByLabelText('Период истории'), { target: { value: 'day' } })
+    chooseOption('Валюта истории', 'EUR')
+    chooseOption('Период истории', 'День')
     fireEvent.change(screen.getByLabelText('День'), { target: { value: '2026-08-30' } })
     fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'кофе' } })
     expect(screen.getAllByRole('button', { name: /Продукты/ })).toHaveLength(1)
@@ -260,8 +265,8 @@ describe('history discovery', () => {
     cleanup()
     render(<HistoryView {...props}/>)
 
-    expect((screen.getByLabelText('Валюта истории') as HTMLSelectElement).value).toBe('EUR')
-    expect((screen.getByLabelText('Период истории') as HTMLSelectElement).value).toBe('day')
+    expect(screen.getByLabelText('Валюта истории').textContent).toBe('EUR')
+    expect(screen.getByLabelText('Период истории').textContent).toBe('День')
     expect((screen.getByLabelText('День') as HTMLInputElement).value).toBe('2026-08-30')
     expect((screen.getByRole('searchbox') as HTMLInputElement).value).toBe('кофе')
     expect(screen.getAllByRole('button', { name: /Продукты/ })).toHaveLength(1)
@@ -292,7 +297,7 @@ describe('history discovery', () => {
     vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) { download = this.download })
     render(<HistoryView userId="user-a" workspaceId="workspace-a" bootstrap={bootstrap} setBootstrap={vi.fn()} edit={vi.fn()} createNew={vi.fn()} refreshPending={vi.fn()}/>)
 
-    fireEvent.change(screen.getByLabelText('Валюта истории'), { target: { value: 'EUR' } })
+    chooseOption('Валюта истории', 'EUR')
     fireEvent.click(screen.getByRole('button', { name: 'Экспорт CSV' }))
 
     expect(createdParts[0]?.[0]).toBe('\uFEFF')
@@ -307,7 +312,7 @@ describe('analytics filters and fallback', () => {
   it('starts with all categories and labels cached data with its timestamp', () => {
     const bootstrap = expenseBootstrap()
     render(<AnalyticsView userId="analytics-user" workspaceId="analytics-workspace" bootstrap={bootstrap} theme="light" online={false}/>)
-    expect((screen.getByLabelText('Категория расходов') as HTMLSelectElement).value).toBe('')
+    expect(screen.getByLabelText('Категория расходов').textContent).toBe('Все категории')
     expect(screen.getByRole('status').textContent).toContain('Показаны сохранённые данные на')
   })
 })
