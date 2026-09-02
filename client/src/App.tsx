@@ -800,9 +800,12 @@ export function EntryView({ userId, workspaceId, bootstrap, setBootstrap, curren
 
   const usesNativeTouch = () => 'ontouchstart' in window
 
+  // Полоса тегов листается сама по горизонтали: жест внутри неё не должен переключать расходы.
+  const insideTagStrip = (target: EventTarget | null) => target instanceof Element && Boolean(target.closest('.tag-strip'))
   const swipeStart = (event: React.PointerEvent) => {
     if (event.pointerType === 'touch' && usesNativeTouch()) return
     if (event.pointerType === 'mouse' && event.button !== 0) return
+    if (insideTagStrip(event.target)) return
     swipeStartAt(event.clientX, event.clientY)
   }
 
@@ -834,7 +837,7 @@ export function EntryView({ userId, workspaceId, bootstrap, setBootstrap, curren
     const findTouch = (touches: TouchList, identifier: number) => Array.from(touches).find((touch) => touch.identifier === identifier)
     const touchStart = (event: TouchEvent) => {
       suppressTouchPointerUp.current = false
-      if (event.touches.length !== 1) { swipe.current = null; return }
+      if (event.touches.length !== 1 || insideTagStrip(event.target)) { swipe.current = null; return }
       const touch = event.touches[0]
       if (touch) swipeStartAt(touch.clientX, touch.clientY, touch.identifier)
     }
