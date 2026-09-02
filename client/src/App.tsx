@@ -2429,7 +2429,8 @@ export default function App({ capability = null }: { capability?: CapabilityInte
       })
     }
     clearTimeout(pagerTimer.current)
-    pagerTimer.current=setTimeout(()=>{const node=pager.current;if(!node?.clientWidth)return;if(pagerTarget.current!==null&&Math.abs(node.scrollLeft-pagerTarget.current)>1)return;pagerTarget.current=null;const item=navigationTabs[Math.max(0,Math.min(navigationTabs.length-1,Math.round(node.scrollLeft/node.clientWidth)))];if(item)setTab(item.id)},90)
+    pagerTimer.current=setTimeout(()=>{const node=pager.current;if(!node?.clientWidth)return;if(pagerTarget.current!==null){// Safari может остановить плавную прокрутку между точками привязки, особенно при быстрых тапах по вкладкам — дожимаем без анимации.
+if(Math.abs(node.scrollLeft-pagerTarget.current)>1)node.scrollLeft=pagerTarget.current;pagerTarget.current=null}const item=navigationTabs[Math.max(0,Math.min(navigationTabs.length-1,Math.round(node.scrollLeft/node.clientWidth)))];if(item)setTab(item.id)},90)
   }
 
   if(state.phase==='checking')return <div className="splash"><div className="brand-mark">m</div>{error&&<p>{error}</p>}</div>
