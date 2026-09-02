@@ -944,6 +944,73 @@ export function EntryView({ userId, workspaceId, bootstrap, setBootstrap, curren
   </section>
 }
 
+const ROW_ACTION_WIDTH = 84
+const LONG_PRESS_MS = 450
+const ROW_DRAG_START = 8
+
+// Строка истории: тап открывает запись, долгое нажатие включает выбор нескольких, свайп влево открывает удаление.
+function HistoryRow({ expense, category, tags, currencies, checked, selecting, open, disabled, onOpen, onToggle, onEdit, onDelete }: {
+  expense: Expense; category?: Category; tags: Tag[]; currencies: Currency[]; checked: boolean; selecting: boolean; open: boolean; disabled: boolean
+  onOpen: (id: string | null) => void; onToggle: () => void; onEdit: () => void; onDelete: () => void
+}) {
+  const gesture = useRef<{ x: number; y: number; dragging: boolean; moved: boolean; longPress: ReturnType<typeof setTimeout> | undefined } | null>(null)
+  const [dragOffset, setDragOffset] = useState<number | null>(null)
+  const swipeDisabled = disabled || selecting
+  useEffect(() => () => clearTimeout(gesture.current?.longPress), [])
+  const finish = (commit: boolean, clientX?: number) => {
+    const state = gesture.current
+    gesture.current = null
+    if (!state) return
+    clearTimeout(state.longPress)
+    if (!state.dragging) return
+    setDragOffset(null)
+    if (!commit || clientX === undefined) return
+    const dx = clientX - state.x + (open ? -ROW_ACTION_WIDTH : 0)
+    onOpen(dx < -ROW_ACTION_WIDTH / 2 ? expense.id : null)
+  }
+  const pointerDown = (event: React.PointerEvent) => {
+    if (disabled || event.button !== 0) return
+    clearTimeout(gesture.current?.longPress)
+    gesture.current = { x: event.clientX, y: event.clientY, dragging: false, moved: false, longPress: selecting || open ? undefined : setTimeout(() => {
+      // Долгое нажатие без движения — вход в выбор нескольких записей.
+      if (gesture.current && !gesture.current.dragging) { gesture.current.moved = true; tap(8); onToggle() }
+    }, LONG_PRESS_MS) }
+  }
+  const pointerMove = (event: React.PointerEvent) => {
+    const state = gesture.current
+    if (!state) return
+    const dx = event.clientX - state.x
+    const dy = event.clientY - state.y
+    if (!state.dragging) {
+      if (Math.abs(dy) > ROW_DRAG_START && Math.abs(dy) > Math.abs(dx)) { clearTimeout(state.longPress); gesture.current = null; return }
+      if (Math.abs(dx) < ROW_DRAG_START || Math.abs(dx) < Math.abs(dy) * 1.5) return
+      clearTimeout(state.longPress)
+      if (swipeDisabled && !open) { gesture.current = null; return }
+      state.dragging = true
+      state.moved = true
+      event.currentTarget.setPointerCapture?.(event.pointerId)
+    }
+    const base = open ? -ROW_ACTION_WIDTH : 0
+    setDragOffset(Math.max(-ROW_ACTION_WIDTH * 1.15, Math.min(0, base + dx)))
+  }
+  const click = () => {
+    const moved = gesture.current?.moved
+    if (moved) return
+    if (open) { onOpen(null); return }
+    if (selecting) onToggle()
+    else onEdit()
+  }
+  const translate = dragOffset ?? (open ? -ROW_ACTION_WIDTH : 0)
+  const tagList = expense.tagIds?.length ? sortTags(tags.filter((tag) => expense.tagIds?.includes(tag.id))) : []
+  return <div className={`history-expense${checked ? ' selected' : ''}${open ? ' open' : ''}`} onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={(event) => finish(true, event.clientX)} onPointerCancel={() => finish(false)}>
+    <div className="history-swipe" style={{ transform: translate ? `translateX(${translate}px)` : undefined, transition: dragOffset === null ? undefined : 'none' }}>
+      <label className="expense-check" aria-label={`Выбрать расход ${category?.name || ''}`}><input type="checkbox" tabIndex={selecting ? 0 : -1} checked={checked} onChange={onToggle}/><span/></label>
+      <button type="button" className={`history-row${tagList.length ? ' has-tags' : ''}`} aria-pressed={selecting ? checked : undefined} onClick={click}><i style={{backgroundColor:category?.color ?? '#a9afa5'}}/><span><b>{category?.name || 'Архивная категория'}</b><small>{new Date(expense.occurredAt).toLocaleTimeString('ru-RU',{timeZone:'Europe/Belgrade',hour:'2-digit',minute:'2-digit'})}{expense.note ? ` · ${expense.note}`:''}</small>{tagList.length ? <span className="tag-chips">{tagList.map((tag) => <TagChip key={tag.id} name={tag.name} color={tag.color}/>)}</span> : null}</span><strong>{money(expense.amountMinor,expense.currency,currencies)}</strong>{expense.pending && <em aria-label="Ожидает синхронизации">●</em>}</button>
+    </div>
+    <button type="button" className="history-swipe-delete" tabIndex={open ? 0 : -1} aria-hidden={!open} disabled={disabled} onClick={onDelete}><TrashIcon/><span>Удалить</span></button>
+  </div>
+}
+
 export function HistoryView({ userId, workspaceId, bootstrap, setBootstrap, edit, createNew, refreshPending }: {
   userId: string
   workspaceId: string
@@ -959,6 +1026,7 @@ export function HistoryView({ userId, workspaceId, bootstrap, setBootstrap, edit
   ))
   const [selected, setSelected] = useState<Set<string>>(() => new Set())
   const [deleting, setDeleting] = useState(false)
+  const [openRow, setOpenRow] = useState<string | null>(null)
   const { toast, notify, dismiss } = useToast()
   const categoryMap = new Map(bootstrap.categories.map((category) => [category.id, category]))
   const tags = bootstrap.tags ?? []
@@ -1026,6 +1094,41 @@ export function HistoryView({ userId, workspaceId, bootstrap, setBootstrap, edit
       notify('Не удалось подготовить файл экспорта', undefined, true)
     }
   }
+  // Удаление одной записи свайпом: мягкое удаление на сервере можно отменить обновлением той же записи.
+  const restoreOne = async (deleted: Expense, original: Expense) => {
+    const revived: Expense = { ...original, deletedAt: null, version: deleted.version + 1, updatedAt: new Date().toISOString(), pending: !navigator.onLine }
+    setBootstrap((data) => ({ ...data, expenses: data.expenses.map((item) => item.id === revived.id ? revived : item) }))
+    try {
+      const result = await submitExpenseOperation(userId, workspaceId, 'updateExpense', revived)
+      if (result?.expense) setBootstrap((data) => ({ ...data, expenses: data.expenses.map((item) => item.id === revived.id ? result.expense! : item) }))
+      tap(6)
+    } catch (error) {
+      setBootstrap((data) => ({ ...data, expenses: data.expenses.map((item) => item.id === revived.id ? deleted : item) }))
+      notify(error instanceof ApiError ? error.message : 'Не удалось вернуть расход', undefined, true)
+    } finally { refreshPending() }
+  }
+  const removeOne = async (expense: Expense) => {
+    if (deleting) return
+    setOpenRow(null)
+    setDeleting(true)
+    const deletedAt = new Date().toISOString()
+    setBootstrap((data) => ({ ...data, expenses: data.expenses.map((item) => item.id === expense.id ? { ...item, deletedAt, pending: !navigator.onLine } : item) }))
+    setSelected((current) => { if (!current.has(expense.id)) return current; const next = new Set(current); next.delete(expense.id); return next })
+    try {
+      const result = await submitExpenseOperation(userId, workspaceId, 'deleteExpense', expense)
+      if (result?.status === 'error') throw new ApiError(400, result.error?.code ?? 'VALIDATION', result.error?.message ?? 'Не удалось удалить расход')
+      const stored = result?.expense ?? { ...expense, deletedAt, version: expense.version + 1, pending: true }
+      setBootstrap((data) => ({ ...data, expenses: data.expenses.map((item) => item.id === expense.id ? stored : item) }))
+      tap(8)
+      notify('Расход удалён', { label: 'Вернуть', run: () => void restoreOne(stored, expense) })
+    } catch (error) {
+      setBootstrap((data) => ({ ...data, expenses: data.expenses.map((item) => item.id === expense.id ? expense : item) }))
+      notify(error instanceof ApiError ? error.message : 'Не удалось удалить расход', undefined, true)
+    } finally {
+      refreshPending()
+      setDeleting(false)
+    }
+  }
   const removeSelected = async () => {
     const targets = bootstrap.expenses.filter((expense) => !expense.deletedAt && selected.has(expense.id))
     if (!targets.length || deleting) return
@@ -1075,7 +1178,7 @@ export function HistoryView({ userId, workspaceId, bootstrap, setBootstrap, edit
       {filters.period === 'range' && <div className="history-filter-grid history-range"><label>С<input type="date" value={filters.from} onChange={(event) => updateFilters({ from: event.target.value })}/></label><label>По<input type="date" value={filters.to} onChange={(event) => updateFilters({ to: event.target.value })}/></label></div>}
       <div className="history-filter-summary"><span>Показано {expenses.length} из {activeExpenses.length}</span><div>{filtersActive && <button type="button" onClick={resetFilters}>Сбросить</button>}<button type="button" className="history-export" disabled={!expenses.length} onClick={exportExpenses}>Экспорт CSV</button></div></div>
     </div>}
-    <div className="history-list">{groups.map(([date, items]) => <div key={date} className="history-day"><div className="history-date"><span>{formatHistoryDate(date)}</span><b>{items?.length}</b></div>{items?.map((expense) => { const category=categoryMap.get(expense.categoryId); const checked=selected.has(expense.id); return <div key={expense.id} className={`history-expense${checked ? ' selected' : ''}`}><label className="expense-check" aria-label={`Выбрать расход ${category?.name || ''}`}><input type="checkbox" checked={checked} onChange={()=>toggle(expense.id)}/><span/></label><button type="button" className="history-row" onClick={() => edit(expense.id)}><i style={{backgroundColor:category?.color ?? '#a9afa5'}}/><span><b>{category?.name || 'Архивная категория'}</b><small>{new Date(expense.occurredAt).toLocaleTimeString('ru-RU',{timeZone:'Europe/Belgrade',hour:'2-digit',minute:'2-digit'})}{expense.note ? ` · ${expense.note}`:''}</small>{expense.tagIds?.length ? <span className="tag-chips">{sortTags(tags.filter((tag) => expense.tagIds?.includes(tag.id))).map((tag) => <TagChip key={tag.id} name={tag.name} color={tag.color}/>)}</span> : null}</span><strong>{money(expense.amountMinor,expense.currency,bootstrap.currencies)}</strong>{expense.pending && <em aria-label="Ожидает синхронизации">●</em>}</button></div>})}</div>)}</div>
+    <div className={`history-list${selected.size ? ' selecting' : ''}`}>{groups.map(([date, items]) => <div key={date} className="history-day"><div className="history-date"><span>{formatHistoryDate(date)}</span><b>{items?.length}</b></div>{items?.map((expense) => <HistoryRow key={expense.id} expense={expense} category={categoryMap.get(expense.categoryId)} tags={tags} currencies={bootstrap.currencies} checked={selected.has(expense.id)} selecting={selected.size > 0} open={openRow === expense.id} disabled={deleting} onOpen={setOpenRow} onToggle={() => toggle(expense.id)} onEdit={() => edit(expense.id)} onDelete={() => void removeOne(expense)}/>)}</div>)}</div>
     {!groups.length && <div className="list-empty" role="status"><span>{filtersActive ? 'Ничего не найдено' : 'История пока пуста'}</span><p>{filtersActive ? 'Измените фильтры или сбросьте их.' : 'Добавьте первый расход — он сразу появится здесь.'}</p>{!filtersActive && <button type="button" className="primary history-empty-action" onClick={createNew}>Добавить первый расход</button>}</div>}
     {toast&&<Toast toast={toast} onDismiss={dismiss}/>}
   </section>
