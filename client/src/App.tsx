@@ -396,7 +396,9 @@ async function createTagOrReuse(workspaceId: string, name: string, color: string
 const TrashIcon = () => <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"/></svg>
 const PlusIcon = () => <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
 
-function styleDeleteButton(node: HTMLButtonElement | null, presence: number, duration: number) {
+// Блок действий над расходом («новый» и «удалить») проявляется и гаснет вместе с карточкой, а не скачком при подмене.
+const ENTRY_ACTIONS_HIDDEN: React.CSSProperties = { opacity: 0, transform: 'scale(.82)' }
+function styleEntryActions(node: HTMLElement | null, presence: number, duration: number) {
   if (!node) return
   if (prefersReducedMotion()) duration = 0
   const easing = 'cubic-bezier(.25,.8,.3,1)'
@@ -478,13 +480,31 @@ function DateSheet({ value, onClose, onPick }: { value: string; onClose: () => v
   const shift = (days: number) => {
     const date = new Date()
     date.setDate(date.getDate() - days)
+    setValidation('')
     setDraft(isoToLocalInput(date.toISOString()))
   }
+  const valid = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(draft)
+  // Сдвиг относительно уже выбранного момента: «час назад» или «вчера в это же время» одним касанием.
+  const nudge = (hours: number) => {
+    const base = valid ? new Date(localInputToIso(draft)) : new Date()
+    setValidation('')
+    setDraft(isoToLocalInput(new Date(base.getTime() + hours * 3_600_000).toISOString()))
+    tap(4)
+  }
+  const setTime = (hour: number) => {
+    setValidation('')
+    setDraft(`${(valid ? draft : now()).slice(0, 10)}T${String(hour).padStart(2, '0')}:00`)
+    tap(4)
+  }
+  const nudges: Array<[number, string]> = [[-24, '−1 д'], [-8, '−8 ч'], [-3, '−3 ч'], [-1, '−1 ч'], [1, '+1 ч'], [3, '+3 ч'], [8, '+8 ч'], [24, '+1 д']]
   return <div className="sheet-backdrop" onMouseDown={onClose}>
     <form ref={dialogRef as React.Ref<HTMLFormElement>} className="bottom-sheet editor" role="dialog" aria-modal="true" aria-labelledby="date-title" noValidate onSubmit={(event) => { event.preventDefault(); if (!draft) { setValidation('Выберите дату и время.'); return } onPick(draft) }} onMouseDown={(event) => event.stopPropagation()}>
       <div className="sheet-handle"/>
       <div className="sheet-title"><h2 id="date-title">Когда</h2><button type="button" className="icon-button" data-dialog-initial-focus onClick={onClose} aria-label="Закрыть">×</button></div>
+      <p className="date-preview" aria-live="polite">{valid ? formatEntryDate(draft) : 'Дата не выбрана'}</p>
       <div className="date-presets"><button type="button" onClick={() => shift(0)}>Сейчас</button><button type="button" onClick={() => shift(1)}>Вчера</button><button type="button" onClick={() => shift(2)}>Позавчера</button></div>
+      <div className="date-nudges" role="group" aria-label="Сдвинуть дату и время">{nudges.map(([hours, label]) => <button type="button" key={label} onClick={() => nudge(hours)}>{label}</button>)}</div>
+      <div className="date-presets date-times" role="group" aria-label="Время дня"><button type="button" onClick={() => setTime(9)}>Утро · 9:00</button><button type="button" onClick={() => setTime(13)}>День · 13:00</button><button type="button" onClick={() => setTime(19)}>Вечер · 19:00</button></div>
       <label className="date-field">Дата и время <b className="weekday-badge">{formatShortWeekday(draft)}</b><input type="datetime-local" aria-invalid={Boolean(validation)} value={draft} onChange={(event) => { setValidation(''); setDraft(event.target.value) }}/></label>
       {validation && <p className="form-error" role="alert">{validation}</p>}
       <button className="primary">Готово</button>
@@ -536,7 +556,7 @@ export function EntryView({ userId, workspaceId, bootstrap, setBootstrap, curren
   const suppressTouchPointerUp = useRef(false)
   const entryRef = useRef<HTMLElement>(null)
   const trackRef = useRef<HTMLDivElement>(null)
-  const deleteRef = useRef<HTMLButtonElement>(null)
+  const actionsRef = useRef<HTMLDivElement>(null)
   const offset = useRef(0)
   const swapped = useRef(false)
   const committing = useRef(false)
@@ -558,8 +578,8 @@ export function EntryView({ userId, workspaceId, bootstrap, setBootstrap, curren
       const node = trackRef.current
       if (node) { node.style.transition = 'none'; node.style.transform = ''; offset.current = 0 }
     }
-    // При свайпе новое состояние уже достигнуто анимацией; при удалении кнопка мягко гаснет сама.
-    styleDeleteButton(deleteRef.current, currentId ? 1 : 0, didSwap ? 0 : 180)
+    // При свайпе новое состояние уже достигнуто анимацией; при удалении и открытии из истории блок мягко гаснет или проявляется сам.
+    styleEntryActions(actionsRef.current, currentId ? 1 : 0, didSwap ? 0 : 180)
   }, [currentId])
 
   useLayoutEffect(() => {
@@ -697,7 +717,7 @@ export function EntryView({ userId, workspaceId, bootstrap, setBootstrap, curren
       ? sourcePresence
       : direction === 'older' || Boolean(newerNeighbour) ? 1 : 0
     const progress = Math.min(Math.abs(dx) / (node.clientWidth + CARD_GAP), 1)
-    styleDeleteButton(deleteRef.current, sourcePresence + (targetPresence - sourcePresence) * progress, duration)
+    styleEntryActions(actionsRef.current, sourcePresence + (targetPresence - sourcePresence) * progress, duration)
   }
 
   const move = async (direction: 'older' | 'newer') => {
@@ -918,10 +938,10 @@ export function EntryView({ userId, workspaceId, bootstrap, setBootstrap, curren
         {newerFace && <div className="entry-card aside newer" aria-hidden="true"><EntryCard face={newerFace}/></div>}
       </div>
     </div>
-    {current && <div className="entry-actions">
-      <button type="button" className="icon-add" disabled={saving} onClick={() => void startNew()} aria-label="Новый расход"><PlusIcon/></button>
-      <button ref={deleteRef} type="button" className="icon-danger entry-delete" disabled={saving} onClick={() => void remove()} aria-label="Удалить расход"><TrashIcon/></button>
-    </div>}
+    <div ref={actionsRef} className="entry-actions" style={ENTRY_ACTIONS_HIDDEN} inert={!current} aria-hidden={!current}>
+      <button type="button" className="icon-add" disabled={saving || !current} onClick={() => void startNew()} aria-label="Новый расход"><PlusIcon/></button>
+      <button type="button" className="icon-danger entry-delete" disabled={saving || !current} onClick={() => void remove()} aria-label="Удалить расход"><TrashIcon/></button>
+    </div>
     <Keypad onKey={key} disabled={saving}/>
     <div className={`categories${ready ? '' : ' locked'}${dirty ? ' unsaved' : ''}`}><p>{categoryHint}</p><div className="main-categories">{main.map((category) => <button type="button" disabled={!ready || saving} aria-pressed={category.id === selectedCategoryId} key={category.id} className={category.id === selectedCategoryId ? 'selected' : undefined} onClick={() => chooseCategory(category)}><i style={{backgroundColor:category.color ?? '#a9afa5'}}/><span>{category.name}</span></button>)}<button type="button" disabled={!ready || saving} aria-pressed={Boolean(otherFace)} className={otherFace ? 'selected' : undefined} onClick={() => setCategorySheet(true)}>{otherFace ? <i style={{backgroundColor:otherFace.color ?? '#a9afa5'}}/> : <i className="dots">•••</i>}<span>{otherFace ? otherFace.name : 'Другое'}</span></button></div></div>
     <div className={`edit-actions${current ? '' : ' empty'}`} aria-hidden={!current}>{current && <><button type="button" className="primary" disabled={!ready || !dirty || saving || !selectedCategoryId} onClick={() => selectedCategoryId && void submitExpense(selectedCategoryId)}>{saving ? 'Сохраняем…' : 'Сохранить'}</button><button type="button" className="sheet-cancel" disabled={!dirty || saving} onClick={cancelEdit}>Отменить</button></>}</div>
