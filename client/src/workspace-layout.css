@@ -662,8 +662,8 @@ html {
   }
 
   .swipe-area {
-    flex: 0 0 105px;
-    min-height: 105px;
+    flex: 0 1 105px;
+    min-height: 96px;
   }
 
   .topline {
@@ -709,8 +709,8 @@ html {
   }
 
   .keypad {
-    flex: 0 0 198px;
-    min-height: 198px;
+    flex: 1 1 198px;
+    min-height: 168px;
     max-height: 198px;
     gap: 4px;
     padding: 3px 12px;
