@@ -194,6 +194,7 @@ export type WorkspaceOutboxItem = {
   createdAt: string
   status?: 'queued' | 'conflict' | 'failed'
   error?: string
+  errorCode?: string
   current?: Expense
 }
 

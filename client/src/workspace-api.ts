@@ -98,6 +98,26 @@ function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === 'AbortError'
 }
 
+// navigator.onLine alone is unreliable (iOS reports "online" without connectivity), so the last transport
+// outcome is tracked too: any completed response marks the server reachable, a failed fetch marks it lost.
+let serverReachable = true
+const reachabilityListeners = new Set<(reachable: boolean) => void>()
+function setServerReachable(next: boolean) {
+  if (serverReachable === next) return
+  serverReachable = next
+  for (const listener of reachabilityListeners) listener(next)
+}
+export const isServerReachable = () => serverReachable
+export function subscribeServerReachability(listener: (reachable: boolean) => void): () => void {
+  reachabilityListeners.add(listener)
+  return () => { reachabilityListeners.delete(listener) }
+}
+/** Cheap connectivity check that never touches the session context. */
+export async function probeServer(signal?: AbortSignal): Promise<boolean> {
+  try { await fetch('/api/health', { signal, cache: 'no-store', credentials: 'omit' }); setServerReachable(true); return true }
+  catch (error) { if (!isAbortError(error)) setServerReachable(false); return false }
+}
+
 function isAuthoritativeWorkspaceError(error: unknown): boolean {
   return error instanceof WorkspaceApiError && (
     error.status === 401 || error.status === 409 ||
@@ -114,7 +134,14 @@ export async function request<T>(url: string, options: RequestOptions = {}): Pro
     headers.set('X-Moapp-Expected-User-Id', context.user.id)
     headers.set('X-Moapp-Expected-Session-Id', context.currentSessionId)
   }
-  const response = await fetch(url, { ...init, headers, credentials: 'include' })
+  let response: Response
+  try { response = await fetch(url, { ...init, headers, credentials: 'include' }) }
+  catch (error) {
+    // Only a transport failure means the server is unreachable; an aborted request says nothing about the network.
+    if (!isAbortError(error)) setServerReachable(false)
+    throw error
+  }
+  setServerReachable(true)
   if (!response.ok) {
     const body = await response.json().catch(() => ({})) as ErrorEnvelope
     const code = body.error?.code ?? 'REQUEST_ERROR'
@@ -298,9 +325,9 @@ export async function submitExpenseOperation(userId: string, workspaceId: string
     const result = response.results.find((candidate) => candidate.operationId === item.operationId)
     if (!result) return null
     if (result.status === 'applied' || result.status === 'unchanged') await removeMutation(userId, workspaceId, item.operationId)
-    else if (result.status === 'conflict') await queueMutation(userId, workspaceId, { ...item, status: 'conflict', error: result.error?.message, current: result.current })
+    else if (result.status === 'conflict') await queueMutation(userId, workspaceId, { ...item, status: 'conflict', error: result.error?.message, errorCode: result.error?.code, current: result.current })
     else if (result.status === 'error') {
-      await queueMutation(userId, workspaceId, { ...item, status: 'failed', error: result.error?.message })
+      await queueMutation(userId, workspaceId, { ...item, status: 'failed', error: result.error?.message, errorCode: result.error?.code })
       const code = result.error?.code ?? 'SYNC_ERROR'
       throw new WorkspaceApiError(422, code, localizeServerError(422, code, result.error?.message ?? 'Не удалось применить изменение'))
     }
@@ -332,7 +359,7 @@ export async function submitExpenseOperations(userId: string, workspaceId: strin
     const result = results.get(item.operationId)
     if (!result) return []
     if (result.status === 'applied' || result.status === 'unchanged') return [removeMutation(userId, workspaceId, item.operationId)]
-    return [queueMutation(userId, workspaceId, { ...item, status: result.status === 'conflict' ? 'conflict' : 'failed', error: result.error?.message, current: result.current })]
+    return [queueMutation(userId, workspaceId, { ...item, status: result.status === 'conflict' ? 'conflict' : 'failed', error: result.error?.message, errorCode: result.error?.code, current: result.current })]
   })
   // A successful server response is authoritative. Failed local cleanup leaves
   // the original stable operationId in the outbox, so a later sync can safely
@@ -342,8 +369,47 @@ export async function submitExpenseOperations(userId: string, workspaceId: strin
   return items.map((item) => results.get(item.operationId) ?? null)
 }
 
-export async function discardOutboxIssues(userId: string, workspaceId: string): Promise<WorkspaceBootstrap> {
+export function describeOutboxIssue(item: Pick<WorkspaceOutboxItem, 'status' | 'error' | 'errorCode'>): string {
+  if (item.status === 'conflict') return item.errorCode === 'IDEMPOTENCY_CONFLICT' ? 'Такой расход уже есть на сервере с другими данными.' : 'Этот расход уже изменили с другого устройства.'
+  return localizeServerError(422, item.errorCode ?? '', item.error ?? '')
+}
+
+const isOutboxIssue = (item: WorkspaceOutboxItem) => item.status === 'conflict' || item.status === 'failed'
+
+/** Re-sends a rejected change. A conflict is resent on top of the server's current version, so the local change wins. */
+export async function retryOutboxIssue(userId: string, workspaceId: string, operationId: string): Promise<SyncResult | null> {
   const snapshot = captureMutationContext(userId)
+  const issue = (await readOutbox(userId, workspaceId)).find((item) => item.operationId === operationId && isOutboxIssue(item))
+  assertCurrentContext(snapshot)
+  if (!issue) throw new WorkspaceApiError(404, 'NOT_FOUND', 'Это изменение уже обработано')
+  // The server remembers the rejected operationId with its verdict, so the retry needs a fresh id.
+  const current = issue.current
+  const type = issue.type === 'createExpense' && current ? 'updateExpense' : issue.type
+  const payload = type === 'createExpense' ? { ...issue.payload } : { ...issue.payload, version: current ? current.version : issue.payload.version }
+  const item: WorkspaceOutboxItem = { userId, workspaceId, operationId: crypto.randomUUID(), type, payload, createdAt: new Date().toISOString(), status: 'queued' }
+  await queueMutation(userId, workspaceId, item)
+  await removeMutation(userId, workspaceId, issue.operationId)
+  assertCurrentContext(snapshot)
+  if (typeof navigator !== 'undefined' && !navigator.onLine) return null
+  try {
+    const response = await sendOperations(workspaceId, [item])
+    assertCurrentContext(snapshot)
+    const result = response.results.find((candidate) => candidate.operationId === item.operationId)
+    if (!result) return null
+    if (result.status === 'applied' || result.status === 'unchanged') await removeMutation(userId, workspaceId, item.operationId)
+    else await queueMutation(userId, workspaceId, { ...item, status: result.status === 'conflict' ? 'conflict' : 'failed', error: result.error?.message, errorCode: result.error?.code, current: result.current })
+    return result
+  } catch (error) {
+    // A lost response leaves the item queued under its stable id; the next sync retries it safely.
+    if (isAbortError(error) || isAuthoritativeWorkspaceError(error)) throw error
+    return null
+  }
+}
+
+/** Drops rejected local changes (all of them, or only the given operation ids) and returns the authoritative snapshot. */
+export async function discardOutboxIssues(userId: string, workspaceId: string, operationIds?: readonly string[]): Promise<WorkspaceBootstrap> {
+  const snapshot = captureMutationContext(userId)
+  const selected = (item: WorkspaceOutboxItem) => isOutboxIssue(item) && (!operationIds || operationIds.includes(item.operationId))
   let items = await readOutbox(userId, workspaceId)
   const queued = items.filter((item) => !item.status || item.status === 'queued').sort((a, b) => a.createdAt.localeCompare(b.createdAt))
   if (queued.length) {
@@ -359,7 +425,7 @@ export async function discardOutboxIssues(userId: string, workspaceId: string): 
   if (data.workspaceId !== workspaceId) throw new WorkspaceApiError(409, 'WORKSPACE_RESPONSE_MISMATCH', 'Ответ сервера относится к другому пространству')
   await cacheBootstrap(userId, workspaceId, data)
   assertCurrentContext(snapshot)
-  await Promise.all(items.filter((item) => item.status === 'conflict' || item.status === 'failed').map((item) => removeMutation(userId, workspaceId, item.operationId)))
+  await Promise.all(items.filter(selected).map((item) => removeMutation(userId, workspaceId, item.operationId)))
   assertCurrentContext(snapshot)
   return data
 }
@@ -385,7 +451,7 @@ async function syncOutboxWithContext(userId: string, workspaceId: string, expect
     const item = items.find((candidate) => candidate.operationId === result.operationId)
     if (!item) continue
     if (result.status === 'applied' || result.status === 'unchanged') await removeMutation(userId, workspaceId, item.operationId)
-    else await queueMutation(userId, workspaceId, { ...item, status: result.status === 'conflict' ? 'conflict' : 'failed', error: result.error?.message, current: result.current })
+    else await queueMutation(userId, workspaceId, { ...item, status: result.status === 'conflict' ? 'conflict' : 'failed', error: result.error?.message, errorCode: result.error?.code, current: result.current })
     onProgress?.()
   }
 }

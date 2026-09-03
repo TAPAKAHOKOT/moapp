@@ -579,10 +579,6 @@ html {
   border-radius: 50%;
 }
 
-.legend-rest i {
-  background: var(--control-line);
-}
-
 .sync-issues-sheet > p {
   color: var(--muted);
   font-size: 12px;
@@ -592,37 +588,251 @@ html {
 .sync-issue-list {
   display: grid;
   gap: 8px;
-  margin: 8px 0 16px;
+  margin: 8px 0 12px;
+  max-height: min(52dvh, 460px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
-.sync-issue-list > div {
+.sync-issue {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 3px 10px;
-  padding: 11px 12px;
+  gap: 6px;
+  padding: 12px;
   border: 1px solid var(--line);
   border-radius: 13px;
   background: var(--card);
 }
 
-.sync-issue-list b {
+.sync-issue-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.sync-issue-head b {
   font-size: 12px;
 }
 
-.sync-issue-list span,
-.sync-issue-list small {
-  color: var(--muted);
+.sync-issue-head small {
+  color: var(--text-tertiary);
   font-size: 9px;
-}
-
-.sync-issue-list span {
-  grid-column: 1 / -1;
-}
-
-.sync-issue-list small {
-  grid-column: 2;
-  grid-row: 1;
   white-space: nowrap;
+}
+
+.sync-issue-expense {
+  display: grid;
+  gap: 2px;
+}
+
+.sync-issue-expense strong {
+  font-size: 17px;
+  letter-spacing: -0.01em;
+}
+
+.sync-issue-expense span {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.sync-issue-reason,
+.sync-issue-server {
+  margin: 0;
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.sync-issue-reason {
+  color: var(--danger);
+}
+
+.sync-issue-server {
+  color: var(--muted);
+}
+
+.sync-issue-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.sync-issue-actions .primary,
+.sync-issue-actions .sheet-cancel {
+  width: auto;
+  min-height: 40px;
+  margin: 0;
+  font-size: 12px;
+}
+
+.sync-issue-actions .sheet-cancel {
+  padding: 0 12px;
+}
+
+/* History: the running total of the visible rows sits under the row counter. */
+.history-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.history-summary .history-total {
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 750;
+  letter-spacing: -0.01em;
+}
+
+.history-summary small {
+  color: var(--text-tertiary);
+  font-size: 9px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Analytics legend: every category is listed and each row unfolds its expenses for the period. */
+.legend .legend-row {
+  grid-template-columns: 8px 1fr auto 12px;
+  width: 100%;
+  min-height: 38px;
+  border: 0;
+  border-top: 1px solid var(--line);
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+}
+
+.legend .legend-row > span:nth-child(2) {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.legend .legend-row .chevron {
+  width: 12px;
+  height: 12px;
+  color: var(--text-tertiary);
+  transition: transform 0.2s ease;
+}
+
+.legend-item.open .legend-row .chevron {
+  transform: rotate(180deg);
+}
+
+.legend-details {
+  display: grid;
+  gap: 0;
+  padding: 0 0 8px 15px;
+}
+
+.legend-detail {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: baseline;
+  padding: 6px 0;
+  border-top: 1px dashed color-mix(in srgb, var(--line) 75%, transparent);
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.legend-detail > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.legend-detail > span:first-child b {
+  margin-right: 2px;
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.legend-detail .legend-value b {
+  color: var(--ink);
+}
+
+.legend-more {
+  justify-self: start;
+  min-height: 36px;
+  margin-top: 2px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--sage);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.legend-empty {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+/* Header pill keeps its full label; the workspace name is the part that yields. */
+.workspace-header .sync-status {
+  flex: 0 0 auto;
+  max-width: min(64vw, 280px);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+/* Offline is stated in its own strip under the header, and the pager shrinks by exactly that strip. */
+.offline-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  height: 34px;
+  padding: 0 16px;
+  border-bottom: 1px solid color-mix(in srgb, var(--pending) 28%, var(--line));
+  background: color-mix(in srgb, var(--pending) 12%, var(--paper));
+  color: var(--pending);
+  font-size: 11px;
+}
+
+.offline-banner > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.offline-banner b {
+  font-weight: 800;
+}
+
+.offline-banner button {
+  flex: 0 0 auto;
+  min-height: 28px;
+  padding: 0 10px;
+  border: 1px solid color-mix(in srgb, var(--pending) 45%, transparent);
+  border-radius: 9px;
+  background: transparent;
+  color: inherit;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.app-shell.offline .pager {
+  height: calc(100dvh - 150px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+}
+
+:root[data-theme="dark"] .offline-banner {
+  border-bottom-color: #3a3226;
+  background: #26221a;
+  color: #e6bd72;
+}
+
+:root[data-theme="dark"] .offline-banner button {
+  border-color: #5a4a2c;
 }
 
 @keyframes chart-shimmer {

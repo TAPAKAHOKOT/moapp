@@ -1,5 +1,5 @@
-import type { Category, Currency, Expense, Tag } from './types'
-import { localDateKey, weekDateRange } from './utils'
+import type { Category, Currency, Expense, RateSnapshot, Tag } from './types'
+import { convertExpense, localDateKey, weekDateRange } from './utils'
 
 export type HistoryPeriod = 'all' | 'day' | 'week' | 'range'
 
@@ -100,4 +100,28 @@ export function buildHistoryCsv(expenses: Expense[], categories: Category[], cur
     ].map(csvCell).join(',')
   })
   return ['occurred_at,date,time,category,tags,amount,currency,note,id', ...rows].join('\n')
+}
+
+export type HistoryTotals = {
+  /** Sums per original currency, largest first. */
+  byCurrency: { currency: string; amountMinor: number }[]
+  /** Everything converted into the target currency, or null when a rate is missing. */
+  converted: number | null
+  target: string
+  missing: string[]
+}
+
+// Итог по показанным записям: в одной валюте — точная сумма, в нескольких — пересчёт по курсам снимка.
+export function historyTotals(expenses: Expense[], currencies: Currency[], rates: RateSnapshot, target: string): HistoryTotals {
+  const byCurrency = new Map<string, number>()
+  for (const expense of expenses) byCurrency.set(expense.currency, (byCurrency.get(expense.currency) ?? 0) + expense.amountMinor)
+  const hasRate = (code: string) => code === target || Boolean((rates.ratesToRsd[code] ?? (code === 'RSD' ? 1 : 0)) && (rates.ratesToRsd[target] ?? (target === 'RSD' ? 1 : 0)))
+  const missing = [...byCurrency.keys()].filter((code) => !hasRate(code)).sort()
+  const converted = missing.length ? null : expenses.reduce((sum, expense) => sum + convertExpense(expense, target, currencies, rates), 0)
+  return {
+    byCurrency: [...byCurrency].map(([currency, amountMinor]) => ({ currency, amountMinor })).sort((left, right) => right.amountMinor - left.amountMinor || left.currency.localeCompare(right.currency)),
+    converted,
+    target,
+    missing,
+  }
 }

@@ -309,6 +309,44 @@ describe('history discovery', () => {
   })
 })
 
+describe('history totals', () => {
+  it('shows the sum of the visible rows next to the counter', () => {
+    const bootstrap = expenseBootstrap({ expenses: [
+      { id: 'a', amountMinor: 1_000, currency: 'RSD', categoryId: 'products', note: null, occurredAt: '2026-08-31T09:37:00.000Z', createdAt: '2026-08-31T09:37:00.000Z', updatedAt: '2026-08-31T09:37:00.000Z', version: 1, deletedAt: null },
+      { id: 'b', amountMinor: 2_000, currency: 'RSD', categoryId: 'products', note: 'кофе', occurredAt: '2026-08-30T09:37:00.000Z', createdAt: '2026-08-30T09:37:00.000Z', updatedAt: '2026-08-30T09:37:00.000Z', version: 1, deletedAt: null },
+    ] })
+    render(<HistoryView userId="user-a" workspaceId="workspace-a" bootstrap={bootstrap} setBootstrap={vi.fn()} edit={vi.fn()} createNew={vi.fn()} refreshPending={vi.fn()}/>)
+    expect(screen.getByLabelText(/Сумма показанных расходов/).textContent).toMatch(/30,00\s*RSD/)
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'кофе' } })
+    expect(screen.getByLabelText(/Сумма показанных расходов/).textContent).toMatch(/20,00\s*RSD/)
+  })
+
+  it('closes a filter sheet from its × even though the sheet lives inside a label', () => {
+    render(<HistoryView userId="user-a" workspaceId="workspace-a" bootstrap={expenseBootstrap({ expenses: [{ id: 'a', amountMinor: 1_000, currency: 'RSD', categoryId: 'products', note: null, occurredAt: '2026-08-31T09:37:00.000Z', createdAt: '2026-08-31T09:37:00.000Z', updatedAt: '2026-08-31T09:37:00.000Z', version: 1, deletedAt: null }] })} setBootstrap={vi.fn()} edit={vi.fn()} createNew={vi.fn()} refreshPending={vi.fn()}/>)
+    fireEvent.click(screen.getByLabelText('Категория истории'))
+    // The label's own activation would re-press the trigger after the sheet unmounts, so the click must be cancelled.
+    const notCancelled = fireEvent.click(screen.getByRole('button', { name: 'Закрыть' }))
+    expect(notCancelled).toBe(false)
+    expect(screen.queryByRole('dialog')).toBeNull()
+  })
+})
+
+describe('analytics legend', () => {
+  it('lists every category and unfolds the expenses behind a row', () => {
+    const now = new Date().toISOString()
+    const names = ['Продукты', 'Транспорт', 'Дом', 'Здоровье', 'Досуг', 'Прочее']
+    const categories = names.map((name, index) => ({ id: `cat-${index}`, name, color: '#758d69', placement: 'main' as const, sortOrder: index, createdAt: now, updatedAt: now, archivedAt: null, version: 1 }))
+    const expenses = categories.map((category, index) => ({ id: `exp-${index}`, amountMinor: (index + 1) * 1_000, currency: 'RSD', categoryId: category.id, note: index === 5 ? 'зонтик' : null, occurredAt: now, createdAt: now, updatedAt: now, version: 1, deletedAt: null }))
+    render(<AnalyticsView userId="analytics-user" workspaceId="analytics-workspace" bootstrap={expenseBootstrap({ categories, expenses })} theme="light" online={false}/>)
+    expect(screen.queryByText('Остальные')).toBeNull()
+    const rows = screen.getAllByRole('button', { expanded: false }).filter((node) => node.classList.contains('legend-row'))
+    expect(rows).toHaveLength(6)
+    fireEvent.click(screen.getByRole('button', { name: /Прочее/ }))
+    expect(screen.getByText(/зонтик/)).not.toBeNull()
+    expect(screen.getByRole('button', { name: /Прочее/ }).getAttribute('aria-expanded')).toBe('true')
+  })
+})
+
 describe('analytics filters and fallback', () => {
   it('starts with all categories and labels cached data with its timestamp', () => {
     const bootstrap = expenseBootstrap()

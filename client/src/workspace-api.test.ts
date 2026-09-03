@@ -5,7 +5,7 @@ vi.mock('./workspace-offline', () => ({
 }))
 
 import { cacheBootstrap, queueMutation, queueMutations, readCachedBootstrap, readOutbox, removeMutation } from './workspace-offline'
-import { acceptDeviceLink, allowWorkspaceMutations, blockWorkspaceMutations, buildExpenseOperation, createCategory, createExpense, createInvitation, deleteCategory, discardOutboxIssues, getBootstrap, getSession, getSessionContext, prepareRecovery, previewInvitation, request, setSessionContext, submitExpenseOperation, submitExpenseOperations, syncAllWorkspaces, syncOutbox, updateCategory, updateExpense } from './workspace-api'
+import { acceptDeviceLink, allowWorkspaceMutations, blockWorkspaceMutations, buildExpenseOperation, createCategory, createExpense, createInvitation, deleteCategory, discardOutboxIssues, getBootstrap, getSession, getSessionContext, prepareRecovery, previewInvitation, request, retryOutboxIssue, setSessionContext, submitExpenseOperation, submitExpenseOperations, syncAllWorkspaces, syncOutbox, updateCategory, updateExpense } from './workspace-api'
 import type { AuthenticatedSession, Expense, WorkspaceBootstrap } from './types'
 
 const session: AuthenticatedSession = {
@@ -329,6 +329,54 @@ describe('workspace api identity context', () => {
     await expect(discardOutboxIssues('user-a', 'workspace-a')).rejects.toBeInstanceOf(Error)
     expect(removeMutation).not.toHaveBeenCalled()
     expect(cacheBootstrap).not.toHaveBeenCalled()
+  })
+
+  it('discards only the selected issue when operation ids are given', async () => {
+    setSessionContext(session)
+    vi.stubGlobal('navigator', { onLine: true })
+    const first = { ...buildExpenseOperation('user-a', 'workspace-a', 'updateExpense', expense, 'issue-a', '2026-01-01T00:00:00.000Z'), status: 'conflict' as const }
+    const second = { ...buildExpenseOperation('user-a', 'workspace-a', 'deleteExpense', expense, 'issue-b', '2026-01-01T00:00:01.000Z'), status: 'failed' as const }
+    const bootstrap = { workspaceId: 'workspace-a' } as WorkspaceBootstrap
+    vi.mocked(readOutbox).mockResolvedValueOnce([first, second])
+    vi.stubGlobal('fetch', vi.fn(async () => response(bootstrap)))
+
+    await expect(discardOutboxIssues('user-a', 'workspace-a', ['issue-b'])).resolves.toEqual(bootstrap)
+    expect(removeMutation).toHaveBeenCalledTimes(1)
+    expect(removeMutation).toHaveBeenCalledWith('user-a', 'workspace-a', 'issue-b')
+  })
+
+  it('retries a conflicted update on top of the server version under a fresh operation id', async () => {
+    setSessionContext(session)
+    vi.stubGlobal('navigator', { onLine: true })
+    const issue = { ...buildExpenseOperation('user-a', 'workspace-a', 'updateExpense', expense, 'issue-a', '2026-01-01T00:00:00.000Z'), status: 'conflict' as const, current: { ...expense, version: 7 } }
+    vi.mocked(readOutbox).mockResolvedValueOnce([issue])
+    const fetchMock = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { operations: { operationId: string }[] }
+      return response({ workspaceId: 'workspace-a', serverTime: '2026-01-02T00:00:00.000Z', results: [{ operationId: body.operations[0]!.operationId, status: 'applied', expense }] })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await retryOutboxIssue('user-a', 'workspace-a', 'issue-a')
+    expect(result?.status).toBe('applied')
+    const sent = (JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)) as { operations: { operationId: string; type: string; payload: { version: number } }[] }).operations[0]!
+    expect(sent.operationId).not.toBe('issue-a')
+    expect(sent.type).toBe('updateExpense')
+    expect(sent.payload.version).toBe(7)
+    expect(removeMutation).toHaveBeenCalledWith('user-a', 'workspace-a', 'issue-a')
+    expect(removeMutation).toHaveBeenCalledWith('user-a', 'workspace-a', sent.operationId)
+  })
+
+  it('keeps a retried change queued when the network drops', async () => {
+    setSessionContext(session)
+    vi.stubGlobal('navigator', { onLine: true })
+    const issue = { ...buildExpenseOperation('user-a', 'workspace-a', 'createExpense', expense, 'issue-a', '2026-01-01T00:00:00.000Z'), status: 'failed' as const, errorCode: 'VALIDATION' }
+    vi.mocked(readOutbox).mockResolvedValueOnce([issue])
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('offline') }))
+
+    await expect(retryOutboxIssue('user-a', 'workspace-a', 'issue-a')).resolves.toBeNull()
+    expect(queueMutation).toHaveBeenCalledWith('user-a', 'workspace-a', expect.objectContaining({ type: 'createExpense', status: 'queued' }))
+    expect(removeMutation).toHaveBeenCalledTimes(1)
+    expect(removeMutation).toHaveBeenCalledWith('user-a', 'workspace-a', 'issue-a')
   })
 
   it('removes only problematic entries after the authoritative bootstrap succeeds', async () => {

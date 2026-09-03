@@ -1,7 +1,7 @@
 import { lazy, memo, startTransition, Suspense, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { QRCodeSVG } from 'qrcode.react'
 import {
-  WorkspaceApiError as ApiError, allowWorkspaceMutations, blockWorkspaceMutations, createCategory, discardOutboxIssues, getAnalytics, getBootstrap,
+  WorkspaceApiError as ApiError, allowWorkspaceMutations, blockWorkspaceMutations, createCategory, describeOutboxIssue, discardOutboxIssues, getAnalytics, getBootstrap, isServerReachable, probeServer, retryOutboxIssue, subscribeServerReachability,
   classifyBybitCardTransaction, connectBybitCard, disconnectBybitCard, getBybitCardStatus, ignoreBybitCardTransaction, listBybitCardTransactions, syncBybitCard, undoBybitCardTransaction,
   createDeviceLink, createInvitation, createTag, deleteTag, reorderTags, updateTag, getSession, isLinkInvalid, legacyClaim, leaveWorkspace, listInvitations, listMembers, listSessions, logoutExpected, prepareInitialOrManualRecovery,
   prepareRecovery, previewDeviceLink, previewInvitation, previewRecovery, removeMember, renameWorkspace, reorderCategories, revokeInvitation, revokeSession, submitExpenseOperation,
@@ -15,7 +15,7 @@ import { completeRecoverySafely, completeRotationSafely } from './recovery-flow'
 import { monitorServiceWorkerUpdates } from './service-worker-update'
 import type { AnalyticsData, AuthenticatedSession, BybitCardStatus, BybitCardTransaction, BybitRegion, CapabilityIntent, Category, Currency, Expense, RecoveryPrepareResponse, SessionState, Tag, WorkspaceBootstrap, WorkspaceOutboxItem, WorkspaceSummary } from './types'
 import { amountToMinor, applyKeypad, convertExpense, countCalendarWeekdays, isoToLocalInput, localDateKey, localInputToIso, monthDateRange, shiftDateKey, swipeDirection, weekdayFromDateKey, weekDateRange } from './utils'
-import { buildHistoryCsv, defaultHistoryPreferences, expenseTagNames, filterHistoryExpenses, parseHistoryPreferences, type HistoryPeriod, type HistoryPreferences } from './history'
+import { buildHistoryCsv, defaultHistoryPreferences, expenseTagNames, filterHistoryExpenses, historyTotals, parseHistoryPreferences, type HistoryPeriod, type HistoryPreferences } from './history'
 
 const AnalyticsChart = lazy(() => import('./AnalyticsCharts'))
 
@@ -69,18 +69,38 @@ function prefersReducedMotion() {
   return window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
 }
 
+// «Онлайн» — это и флаг браузера, и факт, что сервер отвечает: iOS нередко считает сеть доступной, когда запросы падают.
 function useOnlineStatus() {
   const [online, setOnline] = useState(() => navigator.onLine)
+  const [reachable, setReachable] = useState(() => isServerReachable())
   useEffect(() => {
-    const update = () => setOnline(navigator.onLine)
+    const update = () => {
+      setOnline(navigator.onLine)
+      if (navigator.onLine && !isServerReachable()) void probeServer()
+    }
     window.addEventListener('online', update)
     window.addEventListener('offline', update)
+    const unsubscribe = subscribeServerReachability(setReachable)
     return () => {
       window.removeEventListener('online', update)
       window.removeEventListener('offline', update)
+      unsubscribe()
     }
   }, [])
-  return online
+  // Пока сервер не отвечает, связь проверяется сама: событие online на iPhone приходит не всегда.
+  useEffect(() => {
+    if (reachable || !online) return
+    const timer = setInterval(() => void probeServer(), 20_000)
+    return () => clearInterval(timer)
+  }, [reachable, online])
+  return online && reachable
+}
+
+function pluralRu(count: number, forms: [string, string, string]) {
+  const tail = count % 100
+  if (tail >= 11 && tail <= 19) return forms[2]
+  const last = tail % 10
+  return last === 1 ? forms[0] : last >= 2 && last <= 4 ? forms[1] : forms[2]
 }
 
 const SHEET_EXIT_MS = 180
@@ -274,7 +294,9 @@ function SelectSheet({ title, value, options, searchable, onClose, onSelect }: {
   const titleId = useId()
   const normalized = query.trim().toLowerCase()
   const filtered = normalized ? options.filter((option) => `${option.label} ${option.hint ?? ''}`.toLowerCase().includes(normalized)) : options
-  return <div className="sheet-backdrop" onMouseDown={onClose}>
+  // Шторка живёт внутри <label> рядом с кнопкой-триггером. Когда тап по «×» или варианту размонтирует её, клик
+  // добирается до label, и тот по умолчанию «нажимает» триггер — шторка открывалась заново (iOS Safari, WebKit).
+  return <div className="sheet-backdrop" onMouseDown={onClose} onClick={(event) => event.preventDefault()}>
     <section ref={dialogRef} className={`bottom-sheet select-sheet${searchable ? ' tall' : ''}`} role="dialog" aria-modal="true" aria-labelledby={titleId} onMouseDown={(event) => event.stopPropagation()}>
       <div className="sheet-handle"/><div className="sheet-title"><h2 id={titleId}>{title}</h2><button type="button" className="icon-button" data-dialog-initial-focus onClick={onClose} aria-label="Закрыть">×</button></div>
       {searchable && <input className="search" type="search" placeholder="Поиск" aria-label={`Поиск: ${title}`} value={query} onChange={(event) => setQuery(event.target.value)}/>}
@@ -307,7 +329,20 @@ function tagStyle(tag: Pick<Tag, 'color'>) {
 // Одна горизонтальная полоса со всеми тегами: тег включается одним касанием, «+» открывает поиск и создание.
 function TagStrip({ tags, selected, onChange, onCreate, disabled = false, online = true }: { tags: Tag[]; selected: string[]; onChange: (ids: string[]) => void; onCreate?: (name: string) => Promise<Tag | null>; disabled?: boolean; online?: boolean }) {
   const [open, setOpen] = useState(false)
+  const stripRef = useRef<HTMLDivElement>(null)
   const ordered = sortTags(tags)
+  // Полоса — единственное место экрана ввода, где разрешён горизонтальный пан. Пока тегам хватает ширины, ей нечего
+  // листать, и браузер отдавал жест пейджеру вкладок: страница отъезжала и возвращалась. Без переполнения пан запрещён.
+  useLayoutEffect(() => {
+    const node = stripRef.current
+    if (!node) return
+    const update = () => { node.style.touchAction = node.scrollWidth > node.clientWidth + 1 ? 'pan-x' : 'pan-y' }
+    update()
+    if (typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(update)
+    observer.observe(node)
+    return () => observer.disconnect()
+  })
   const toggle = (id: string) => {
     tap(4)
     if (selected.includes(id)) onChange(selected.filter((item) => item !== id))
@@ -316,7 +351,7 @@ function TagStrip({ tags, selected, onChange, onCreate, disabled = false, online
   // Шторка рендерится рядом с полосой, а не внутри неё: iOS Safari удерживает position:fixed внутри прокручиваемого
   // контейнера, и подложка оказывалась обрезанной полосой и под футером.
   return <>
-    <div className="tag-strip" role="group" aria-label="Теги">
+    <div className="tag-strip" role="group" aria-label="Теги" ref={stripRef}>
     <button type="button" className={`tag-add${ordered.length ? '' : ' tag-add-wide'}`} disabled={disabled} onClick={() => setOpen(true)} aria-label={ordered.length ? 'Найти или создать тег' : 'Добавить тег'}>{ordered.length ? '+' : '＋ Тег'}</button>
     {ordered.map((tag) => <TagChip key={tag.id} name={tag.name} color={tag.color} selected={selected.includes(tag.id)} disabled={disabled} onToggle={() => toggle(tag.id)}/>)}
     </div>
@@ -685,7 +720,7 @@ export function EntryView({ userId, workspaceId, bootstrap, setBootstrap, curren
       const result = await submitExpenseOperation(userId, workspaceId, submittedCurrent ? 'updateExpense' : 'createExpense', expense)
       if (result?.expense) setBootstrap((data) => ({ ...data, expenses: data.expenses.map((item) => item.id === expense.id ? result.expense! : item) }))
       else if (!result) setBootstrap((data) => ({ ...data, expenses: data.expenses.map((item) => item.id === expense.id ? { ...item, pending:true } : item) }))
-      notify(result?.status === 'conflict' ? 'Изменение конфликтует с сервером. Откройте «Нужна проверка» вверху.' : submittedCurrent ? 'Изменения сохранены' : 'Расход добавлен')
+      notify(result?.status === 'conflict' ? 'Изменение конфликтует с сервером. Откройте «Не сохранено» вверху.' : submittedCurrent ? 'Изменения сохранены' : 'Расход добавлен')
       if (!submittedCurrent && !currentId && JSON.stringify(formRef.current) === JSON.stringify(submittedForm)) {
         const next = { ...EMPTY_FORM, currency: submittedForm.currency }
         draft.current = next
@@ -726,7 +761,7 @@ export function EntryView({ userId, workspaceId, bootstrap, setBootstrap, curren
     try {
       const result = await submitExpenseOperation(userId, workspaceId, 'updateExpense', restored)
       if (result?.expense) setBootstrap((data) => ({ ...data, expenses: data.expenses.map((item) => item.id === restored.id ? result.expense! : item) }))
-      notify(result?.status === 'conflict' ? 'Возврат конфликтует с сервером. Откройте «Нужна проверка» вверху.' : 'Расход возвращён')
+      notify(result?.status === 'conflict' ? 'Возврат конфликтует с сервером. Откройте «Не сохранено» вверху.' : 'Расход возвращён')
     } catch (error) {
       setBootstrap((data) => ({ ...data, expenses: data.expenses.map((item) => item.id === deleted.id && item.version === restored.version && item.updatedAt === restored.updatedAt ? deleted : item) }))
       notify(error instanceof ApiError ? error.message : 'Не удалось вернуть расход', undefined, true)
@@ -745,7 +780,7 @@ export function EntryView({ userId, workspaceId, bootstrap, setBootstrap, curren
       // Версию после удаления сервер поднимает на единицу — без неё возврат ушёл бы в конфликт.
       const stored: Expense = result?.expense ?? { ...target, deletedAt, version: target.version + 1, pending: true }
       setBootstrap((data) => ({ ...data, expenses: data.expenses.map((item) => item.id === target.id ? stored : item) }))
-      if (result?.status === 'conflict') notify('Удаление конфликтует с сервером. Откройте «Нужна проверка» вверху.')
+      if (result?.status === 'conflict') notify('Удаление конфликтует с сервером. Откройте «Не сохранено» вверху.')
       else notify('Расход удалён', { label: 'Вернуть', run: () => void restore(stored) })
     } catch (error) {
       setBootstrap((data) => ({ ...data, expenses: data.expenses.map((item) => item.id === target.id && item.version === target.version && item.deletedAt === deletedAt ? target : item) }))
@@ -1157,6 +1192,13 @@ export function HistoryView({ userId, workspaceId, bootstrap, setBootstrap, edit
   })
   const grouped = expenses.reduce<Record<string, Expense[]>>((result, item) => { (result[localDateKey(item.occurredAt)] ||= []).push(item); return result }, {})
   const groups = Object.entries(grouped)
+  // Итог по показанным записям. В одной валюте — точная сумма; в нескольких — пересчёт в валюту аналитики и разбивка.
+  const totalsTarget = filters.currency || getWorkspacePreference(userId, workspaceId, 'analytics-currency') || bootstrap.defaultAnalyticsCurrency || 'RSD'
+  const totals = historyTotals(expenses, bootstrap.currencies, bootstrap.rates, totalsTarget)
+  const totalLabel = !expenses.length ? null
+    : totals.byCurrency.length === 1 ? money(totals.byCurrency[0]!.amountMinor, totals.byCurrency[0]!.currency, bootstrap.currencies)
+    : totals.converted !== null ? `≈ ${formatAnalyticsAmount(totals.converted, totals.target)}` : null
+  const totalParts = totals.byCurrency.length > 1 ? totals.byCurrency.map((part) => money(part.amountMinor, part.currency, bootstrap.currencies)).join(' + ') : ''
   useEffect(() => {
     setWorkspacePreference(userId, workspaceId, 'history-filters', JSON.stringify(filters))
   }, [filters, userId, workspaceId])
@@ -1275,7 +1317,7 @@ export function HistoryView({ userId, workspaceId, bootstrap, setBootstrap, edit
       {filters.period === 'day' && <label className="history-date-filter">День<input type="date" value={filters.date} onChange={(event) => updateFilters({ date: event.target.value })}/></label>}
       {filters.period === 'week' && <label className="history-date-filter">Любой день нужной недели<input type="date" value={filters.date} onChange={(event) => updateFilters({ date: event.target.value })}/></label>}
       {filters.period === 'range' && <div className="history-filter-grid history-range"><label>С<input type="date" value={filters.from} onChange={(event) => updateFilters({ from: event.target.value })}/></label><label>По<input type="date" value={filters.to} onChange={(event) => updateFilters({ to: event.target.value })}/></label></div>}
-      <div className="history-filter-summary"><span>Показано {expenses.length} из {activeExpenses.length}</span><div>{filtersActive && <button type="button" onClick={resetFilters}>Сбросить</button>}<button type="button" className="history-export" disabled={!expenses.length} onClick={exportExpenses}>Экспорт CSV</button></div></div>
+      <div className="history-filter-summary"><div className="history-summary"><span>Показано {expenses.length} из {activeExpenses.length}</span>{totalLabel && <b className="history-total" aria-label={`Сумма показанных расходов: ${totalLabel}`}>{totalLabel}</b>}{totalParts && <small>{totalParts}{totals.missing.length ? ` · нет курса: ${totals.missing.join(', ')}` : ''}</small>}</div><div>{filtersActive && <button type="button" onClick={resetFilters}>Сбросить</button>}<button type="button" className="history-export" disabled={!expenses.length} onClick={exportExpenses}>Экспорт CSV</button></div></div>
     </div>}
     <div className={`history-list${selected.size ? ' selecting' : ''}`}>{groups.map(([date, items]) => <div key={date} className="history-day"><div className="history-date"><span>{formatHistoryDate(date)}</span><b>{items?.length}</b></div>{items?.map((expense) => <HistoryRow key={expense.id} expense={expense} category={categoryMap.get(expense.categoryId)} tags={tags} currencies={bootstrap.currencies} checked={selected.has(expense.id)} selecting={selected.size > 0} open={openRow === expense.id} disabled={deleting} onOpen={setOpenRow} onToggle={() => toggle(expense.id)} onEdit={() => edit(expense.id)} onDelete={() => void removeOne(expense)}/>)}</div>)}</div>
     {!groups.length && <div className="list-empty" role="status"><span>{filtersActive ? 'Ничего не найдено' : 'История пока пуста'}</span><p>{filtersActive ? 'Измените фильтры или сбросьте их.' : 'Добавьте первый расход — он сразу появится здесь.'}</p>{!filtersActive && <button type="button" className="primary history-empty-action" onClick={createNew}>Добавить первый расход</button>}</div>}
@@ -1293,6 +1335,9 @@ export function AnalyticsView({ userId, workspaceId, bootstrap, theme, online }:
     month:getWorkspacePreference(userId, workspaceId, 'analytics-month-category') || null,
   })
   const [currencySheet, setCurrencySheet] = useState(false)
+  // Раскрытая строка легенды показывает записи этой категории за период прямо в карточке.
+  const [openCategory,setOpenCategory]=useState<string|null>(null)
+  const [allDetails,setAllDetails]=useState(false)
   const [remote,setRemote]=useState<{key:string;data:AnalyticsData;previousTotalMinor:number|null}|null>(null)
   const [analyticsOffline,setAnalyticsOffline]=useState(!online)
   const [analyticsLoading,setAnalyticsLoading]=useState(online)
@@ -1324,6 +1369,10 @@ export function AnalyticsView({ userId, workspaceId, bootstrap, theme, online }:
   const dailyMap=new Map(data.daily.map((point)=>[point.date,point.amountMinor/divisor]))
   const byDay=days.map((date)=>dailyMap.get(date)||0)
   const byCategory=data.categories.filter((item)=>item.amountMinor>0).map((item)=>({...item,value:item.amountMinor/divisor}))
+  useEffect(()=>{setOpenCategory(null);setAllDetails(false)},[period,from,categoryId])
+  const categoryDetails=useMemo(()=>openCategory?bootstrap.expenses.filter((expense)=>!expense.deletedAt&&expense.categoryId===openCategory).map((expense)=>({expense,date:localDateKey(expense.occurredAt)})).filter((item)=>item.date>=from&&item.date<=analyticsTo).sort((left,right)=>right.expense.occurredAt.localeCompare(left.expense.occurredAt)):[],[bootstrap.expenses,openCategory,from,analyticsTo])
+  const detailCaption=(expense:Expense)=>{if(expense.note)return ` · ${expense.note}`;const names=expenseTagNames(expense,bootstrap.tags??[]);return names.length?` · ${names.map((name)=>`#${name}`).join(' ')}`:''}
+  const detailDate=(date:string)=>new Date(`${date}T12:00:00Z`).toLocaleDateString('ru-RU',{timeZone:'UTC',day:'numeric',month:'short'}).replace('.','')
   const serverWeekdays=new Map(data.weekdays.map((point)=>[point.weekday,point.amountMinor/divisor]))
   const weekdayCounts=countCalendarWeekdays(from,analyticsTo)
   const weekdays=[1,2,3,4,5,6,0].map((day)=>Math.round((serverWeekdays.get(day)||0)/(weekdayCounts[day]||1)))
@@ -1344,11 +1393,13 @@ export function AnalyticsView({ userId, workspaceId, bootstrap, theme, online }:
     <div className="analytics-stats" key={`${period}:${categoryId??''}:${target}:${from}`}><div><span>Среднее в день</span><strong>{formatAnalyticsAmount(total/elapsedDays,target)}</strong></div><div><span>Операций</span><strong>{data.expenseCount}</strong></div></div>
     <div className={`rate-caption${analyticsOffline?' cached':''}`} role="status">{analyticsLoading?'Обновляем аналитику…':analyticsOffline?<>{analyticsError?'Не удалось обновить. ':''}Показаны сохранённые данные на {new Date(bootstrap.serverTime).toLocaleString('ru-RU')}{online&&<button type="button" onClick={()=>setRetryEpoch((value)=>value+1)}>Повторить</button>}</>:data.rateDate?`Исторические курсы с ${new Date(`${data.rateDate}T12:00:00Z`).toLocaleDateString('ru-RU')}`:data.expenseCount?'Курсы обновляются':'Курсы появятся после первого расхода'}{data.missingCurrencies.length?` · без ${data.missingCurrencies.join(', ')}`:''}</div>
     <div className="chart-card"><div><h2>Динамика</h2><p>{period==='week'?'Понедельник — воскресенье':'По дням выбранного месяца'}</p></div>{data.convertedCount?<div className="line-chart"><Suspense fallback={<ChartSkeleton/>}><AnalyticsChart kind="line" labels={days.map((d)=>new Date(`${d}T12:00`).toLocaleDateString('ru-RU',period==='week'?{weekday:'short'}:{day:'numeric',month:'short'}))} values={byDay} color={chartColor} fillColor={theme==='dark'?'rgba(177,207,163,.14)':'rgba(117,141,105,.12)'} pointRadius={period==='week'?3:0} target={target} textColor={chartText} gridColor={chartGrid} maxTicksLimit={period==='week'?7:6}/></Suspense></div>:<AnalyticsEmpty>{data.expenseCount?'Нет курса для выбранной валюты':'В этом периоде ещё нет расходов'}</AnalyticsEmpty>}</div>
-    <div className={`chart-card${byCategory.length?' split':''}`}><div><h2>Категории</h2><p>{period==='week'?'За выбранную неделю':'За выбранный месяц'}</p></div>{byCategory.length?<><div className="donut-wrap"><Suspense fallback={<ChartSkeleton/>}><AnalyticsChart kind="doughnut" labels={byCategory.map((x)=>x.name)} values={byCategory.map((x)=>x.value)} colors={byCategory.map((x)=>x.color||'#a9afa5')} target={target}/></Suspense><span>{formatCompactNumber(total)}</span></div><div className="legend">{byCategory.slice(0,5).map((x)=><div key={x.categoryId}><i style={{background:x.color||'#a9afa5'}}/><span>{x.name}</span><span className="legend-value"><b>{formatAnalyticsAmount(x.value,target)}</b><small>{Math.round(x.value/total*100)||0}%</small></span></div>)}{byCategory.length>5&&<div className="legend-rest"><i/><span>Остальные</span><span className="legend-value"><b>{formatAnalyticsAmount(byCategory.slice(5).reduce((sum,item)=>sum+item.value,0),target)}</b><small>{byCategory.length-5}</small></span></div>}</div></>:<AnalyticsEmpty>Категории появятся после первого расхода</AnalyticsEmpty>}</div>
+    <div className={`chart-card${byCategory.length?' split':''}`}><div><h2>Категории</h2><p>{period==='week'?'За выбранную неделю':'За выбранный месяц'}</p></div>{byCategory.length?<><div className="donut-wrap"><Suspense fallback={<ChartSkeleton/>}><AnalyticsChart kind="doughnut" labels={byCategory.map((x)=>x.name)} values={byCategory.map((x)=>x.value)} colors={byCategory.map((x)=>x.color||'#a9afa5')} target={target}/></Suspense><span>{formatCompactNumber(total)}</span></div><div className="legend">{byCategory.map((x)=>{const open=openCategory===x.categoryId;const rows=open?categoryDetails:[];const shown=allDetails?rows:rows.slice(0,LEGEND_DETAIL_LIMIT);return <div key={x.categoryId} className={`legend-item${open?' open':''}`}><button type="button" className="legend-row" aria-expanded={open} onClick={()=>{tap(4);setAllDetails(false);setOpenCategory(open?null:x.categoryId)}}><i style={{background:x.color||'#a9afa5'}}/><span>{x.name}</span><span className="legend-value"><b>{formatAnalyticsAmount(x.value,target)}</b><small>{Math.round(x.value/total*100)||0}%</small></span><ChevronIcon/></button>{open&&<div className="legend-details">{rows.length?<>{shown.map(({expense,date})=><div key={expense.id} className="legend-detail"><span><b>{detailDate(date)}</b>{detailCaption(expense)}</span><span className="legend-value"><b>{money(expense.amountMinor,expense.currency,bootstrap.currencies)}</b>{expense.currency!==target&&<small>≈ {formatAnalyticsAmount(convertExpense(expense,target,bootstrap.currencies,bootstrap.rates),target)}</small>}</span></div>)}{rows.length>shown.length&&<button type="button" className="legend-more" onClick={()=>setAllDetails(true)}>Показать все · {rows.length}</button>}</>:<p className="legend-empty">На этом устройстве нет записей этой категории за период.</p>}</div>}</div>})}</div></>:<AnalyticsEmpty>Категории появятся после первого расхода</AnalyticsEmpty>}</div>
     {period==='month'&&<div className="chart-card"><div><h2>По дням недели</h2><p>Средние траты за календарный день</p></div>{data.convertedCount?<div className="bar-chart"><Suspense fallback={<ChartSkeleton/>}><AnalyticsChart kind="bar" labels={['Пн','Вт','Ср','Чт','Пт','Сб','Вс']} values={weekdays} color={chartColor} target={target} textColor={chartText} gridColor={chartGrid}/></Suspense></div>:<AnalyticsEmpty>Недостаточно данных для сравнения</AnalyticsEmpty>}</div>}
     {currencySheet && <CurrencySheet currencies={bootstrap.currencies} selected={target} onClose={()=>setCurrencySheet(false)} onSelect={(code)=>{setTarget(code);setWorkspacePreference(userId, workspaceId, 'analytics-currency', code);setCurrencySheet(false)}}/>}
   </section>
 }
+
+const LEGEND_DETAIL_LIMIT=8
 
 function AnalyticsEmpty({children}:{children:string}) {
   return <div className="analytics-empty"><span>⌁</span><p>{children}</p></div>
@@ -1875,20 +1926,87 @@ function outboxActionLabel(type: WorkspaceOutboxItem['type']) {
   return 'Удаление расхода'
 }
 
-function SyncIssuesSheet({ userId, workspaceId, online, onClose, onDiscard }: { userId: string; workspaceId: string; online: boolean; onClose: () => void; onDiscard: () => Promise<void> }) {
+type IssueSummary = { amount: string | null; category: string; when: string; note: string }
+
+function describeExpenseLike(source: Partial<Pick<Expense, 'amountMinor' | 'currency' | 'categoryId' | 'note' | 'occurredAt'>>, bootstrap: Bootstrap): IssueSummary {
+  return {
+    amount: source.amountMinor !== undefined && source.currency ? money(source.amountMinor, source.currency, bootstrap.currencies) : null,
+    category: bootstrap.categories.find((category) => category.id === source.categoryId)?.name ?? 'Категория не найдена',
+    when: source.occurredAt ? formatEntryDate(isoToLocalInput(source.occurredAt)) : '',
+    note: source.note ?? '',
+  }
+}
+
+// Удаление несёт только id и версию, поэтому детали берём из локальной копии расхода или серверной версии.
+function summarizeOutboxItem(item: WorkspaceOutboxItem, bootstrap: Bootstrap): IssueSummary {
+  const payload = item.payload as Partial<Pick<Expense, 'id' | 'amountMinor' | 'currency' | 'categoryId' | 'note' | 'occurredAt'>>
+  if (payload.amountMinor !== undefined) return describeExpenseLike(payload, bootstrap)
+  const source = bootstrap.expenses.find((expense) => expense.id === payload.id) ?? item.current
+  return source ? describeExpenseLike(source, bootstrap) : { amount: null, category: '', when: '', note: '' }
+}
+
+function retryLabel(item: WorkspaceOutboxItem) {
+  if (item.status !== 'conflict') return 'Отправить ещё раз'
+  return item.type === 'deleteExpense' ? 'Удалить всё равно' : 'Сохранить мою версию'
+}
+
+const isOutboxIssue = (item: WorkspaceOutboxItem) => item.status === 'conflict' || item.status === 'failed'
+
+function SyncIssuesSheet({ userId, workspaceId, bootstrap, online, onClose, onRetry, onDiscard }: { userId: string; workspaceId: string; bootstrap: Bootstrap; online: boolean; onClose: () => void; onRetry: (operationId: string) => Promise<string | null>; onDiscard: (operationIds?: string[]) => Promise<void> }) {
   const [items,setItems]=useState<WorkspaceOutboxItem[]>([])
   const [loading,setLoading]=useState(true)
-  const [busy,setBusy]=useState(false)
+  const [busy,setBusy]=useState<string|null>(null)
   const [error,setError]=useState('')
-  const dialogRef=useDialog(onClose,!busy)
+  const [notice,setNotice]=useState('')
+  const dialogRef=useDialog(onClose,busy===null)
   const {confirm,confirmation}=useConfirm()
-  useEffect(()=>{let active=true;void readOutbox(userId,workspaceId).then((all)=>{if(active){setItems(all.filter((item)=>item.status==='conflict'||item.status==='failed'));setLoading(false)}},()=>{if(active){setError('Не удалось прочитать локальную очередь.');setLoading(false)}});return()=>{active=false}},[userId,workspaceId])
-  const discard=async()=>{
-    if(!await confirm({title:'Отменить проблемные изменения?',message:'Локальные версии этих расходов будут удалены из очереди. После обновления приложение покажет серверные данные.',confirmLabel:'Отменить изменения',danger:true}))return
-    setBusy(true);setError('')
-    try{await onDiscard()}catch(reason){setError(reason instanceof Error?reason.message:'Не удалось очистить проблемные изменения');setBusy(false)}
+  const reload=useCallback(async()=>{
+    try{const all=await readOutbox(userId,workspaceId);setItems(all.filter(isOutboxIssue).sort((left,right)=>left.createdAt.localeCompare(right.createdAt)))}
+    catch{setError('Не удалось прочитать локальную очередь.')}
+    finally{setLoading(false)}
+  },[userId,workspaceId])
+  useEffect(()=>{void reload()},[reload])
+  const retry=async(item:WorkspaceOutboxItem)=>{
+    setBusy(item.operationId);setError('');setNotice('')
+    try{const message=await onRetry(item.operationId);if(message)setNotice(message)}
+    catch(reason){setError(reason instanceof Error?reason.message:'Не удалось отправить изменение')}
+    finally{await reload();setBusy(null)}
   }
-  return <><div className="sheet-backdrop" onMouseDown={()=>{if(!busy)onClose()}}><section ref={dialogRef} className="bottom-sheet sync-issues-sheet" role="dialog" aria-modal="true" aria-labelledby="sync-issues-title" onMouseDown={(event)=>event.stopPropagation()}><div className="sheet-handle"/><div className="sheet-title"><h2 id="sync-issues-title">Нужна проверка</h2><button type="button" className="icon-button" data-dialog-initial-focus disabled={busy} onClick={onClose} aria-label="Закрыть">×</button></div><p>Сервер не принял некоторые локальные изменения. Их можно отменить и вернуть актуальную версию с сервера.</p>{loading&&<p className="management-state" role="status">Проверяем очередь…</p>}<div className="sync-issue-list">{items.map((item)=><div key={item.operationId}><b>{outboxActionLabel(item.type)}</b><span>{item.status==='conflict'?'Версия на сервере уже изменилась':'Не удалось отправить'}</span><small>{new Date(item.createdAt).toLocaleString('ru-RU')}</small></div>)}</div>{!loading&&!items.length&&!error&&<p className="management-state" role="status">Проблемных изменений уже нет.</p>}{!online&&<p className="form-error" role="status">Подключитесь к интернету, чтобы после отмены загрузить серверную версию.</p>}{error&&<p className="form-error" role="alert">{error}</p>}<button type="button" className="primary danger" disabled={!online||busy||loading||!items.length} onClick={()=>void discard()}>{busy?'Обновляем…':'Отменить проблемные изменения'}</button><button type="button" className="sheet-cancel" disabled={busy} onClick={onClose}>Закрыть</button></section></div>{confirmation}</>
+  const discardOne=async(item:WorkspaceOutboxItem)=>{
+    if(!await confirm({title:'Отменить это изменение?',message:'Локальная версия расхода будет удалена, вместо неё останется то, что сохранено на сервере.',confirmLabel:'Отменить изменение',danger:true}))return
+    setBusy(item.operationId);setError('');setNotice('')
+    try{await onDiscard([item.operationId]);setNotice('Изменение отменено, показана серверная версия.')}
+    catch(reason){setError(reason instanceof Error?reason.message:'Не удалось отменить изменение')}
+    finally{await reload();setBusy(null)}
+  }
+  const discardAll=async()=>{
+    if(!await confirm({title:'Отменить все проблемные изменения?',message:'Локальные версии этих расходов будут удалены из очереди. После обновления приложение покажет серверные данные.',confirmLabel:'Отменить изменения',danger:true}))return
+    setBusy('all');setError('');setNotice('')
+    try{await onDiscard()}
+    catch(reason){setError(reason instanceof Error?reason.message:'Не удалось очистить проблемные изменения');await reload();setBusy(null)}
+  }
+  return <><div className="sheet-backdrop" onMouseDown={()=>{if(busy===null)onClose()}}><section ref={dialogRef} className="bottom-sheet sync-issues-sheet" role="dialog" aria-modal="true" aria-labelledby="sync-issues-title" onMouseDown={(event)=>event.stopPropagation()}>
+    <div className="sheet-handle"/><div className="sheet-title"><h2 id="sync-issues-title">Не сохранено на сервере</h2><button type="button" className="icon-button" data-dialog-initial-focus disabled={busy!==null} onClick={onClose} aria-label="Закрыть">×</button></div>
+    <p>Эти изменения остались только на этом устройстве: сервер их не принял. Их можно отправить ещё раз или отменить — тогда вернётся серверная версия.</p>
+    {loading&&<p className="management-state" role="status">Проверяем очередь…</p>}
+    <div className="sync-issue-list">{items.map((item)=>{
+      const summary=summarizeOutboxItem(item,bootstrap)
+      const server=item.current&&item.type!=='createExpense'?describeExpenseLike(item.current,bootstrap):null
+      const itemBusy=busy===item.operationId
+      return <div key={item.operationId} className="sync-issue">
+        <div className="sync-issue-head"><b>{outboxActionLabel(item.type)}</b><small>{new Date(item.createdAt).toLocaleString('ru-RU',{dateStyle:'short',timeStyle:'short'})}</small></div>
+        {summary.amount&&<div className="sync-issue-expense"><strong>{summary.amount}</strong><span>{summary.category}{summary.when?` · ${summary.when}`:''}{summary.note?` · ${summary.note}`:''}</span></div>}
+        <p className="sync-issue-reason">{describeOutboxIssue(item)}</p>
+        {server&&<p className="sync-issue-server">На сервере сейчас: {item.current?.deletedAt?'расход удалён':`${server.amount ?? '—'} · ${server.category}${server.when?` · ${server.when}`:''}`}</p>}
+        <div className="sync-issue-actions"><button type="button" className="primary" disabled={!online||busy!==null} onClick={()=>void retry(item)}>{itemBusy?'Отправляем…':retryLabel(item)}</button><button type="button" className="sheet-cancel" disabled={!online||busy!==null} onClick={()=>void discardOne(item)}>Отменить</button></div>
+      </div>})}</div>
+    {!loading&&!items.length&&!error&&<p className="management-state" role="status">Проблемных изменений уже нет.</p>}
+    {notice&&<p className="management-state" role="status">{notice}</p>}
+    {!online&&<p className="form-error" role="status">Подключитесь к интернету, чтобы отправить или отменить изменения.</p>}
+    {error&&<p className="form-error" role="alert">{error}</p>}
+    {items.length>1&&<button type="button" className="danger-link" disabled={!online||busy!==null||loading} onClick={()=>void discardAll()}>{busy==='all'?'Обновляем…':'Отменить все'}</button>}
+    <button type="button" className="sheet-cancel" disabled={busy!==null} onClick={onClose}>Закрыть</button>
+  </section></div>{confirmation}</>
 }
 
 export function pagerTabsAt(scrollLeft: number, clientWidth: number, items=tabs): Tab[] {
@@ -2434,17 +2552,29 @@ export default function App({ capability = null }: { capability?: CapabilityInte
     if(id!==stateRef.current.activeWorkspaceId){updateState((value)=>setActiveWorkspace(value,id));setCurrentId(null);setDraftDirty(false);setTab('entry')}
     setSwitchOpen(false)
   }
-  const discardIssues=async()=>{
+  const retryIssue=async(operationId:string):Promise<string|null>=>{
+    const current=stateRef.current
+    if(!current.session?.authenticated||!current.activeWorkspaceId)throw new Error('Пространство уже закрыто')
+    const userId=current.session.user.id
+    const activeWorkspaceId=current.activeWorkspaceId
+    const result=await retryOutboxIssue(userId,activeWorkspaceId,operationId)
+    await refreshWorkspaceStats(userId,activeWorkspaceId)
+    if(!result)return 'Нет связи с сервером: изменение отправится, когда связь появится.'
+    if(result.status==='applied'||result.status==='unchanged'){setWorkspaceReloadEpoch((value)=>value+1);return 'Сохранено на сервере.'}
+    return null
+  }
+  const discardIssues=async(operationIds?:string[])=>{
     const current=stateRef.current
     if(!current.session?.authenticated||!current.activeWorkspaceId)throw new Error('Пространство уже закрыто')
     const userId=current.session.user.id
     const sessionId=current.session.currentSessionId
     const activeWorkspaceId=current.activeWorkspaceId
-    const data=await discardOutboxIssues(userId,activeWorkspaceId)
+    const data=await discardOutboxIssues(userId,activeWorkspaceId,operationIds)
     updateState((value)=>value.session?.authenticated&&value.session.user.id===userId&&value.session.currentSessionId===sessionId&&value.activeWorkspaceId===activeWorkspaceId&&value.runtimes[activeWorkspaceId]?updateWorkspace(value,activeWorkspaceId,(runtime)=>({...runtime,bootstrap:data,source:'network',offline:false,status:'ready'})):value)
     await refreshWorkspaceStats(userId,activeWorkspaceId)
-    setIssuesOpen(false)
     setWorkspaceReloadEpoch((value)=>value+1)
+    if(operationIds)return
+    setIssuesOpen(false)
     setNotice('Проблемные изменения отменены. Загружаем серверную версию.')
   }
   const activateUpdate=()=>{if(draftDirty){setError('Сначала сохраните или очистите черновик расхода.');return}monitor.current?.activateWaiting()}
@@ -2478,8 +2608,11 @@ if(Math.abs(node.scrollLeft-pagerTarget.current)>1)node.scrollLeft=pagerTarget.c
   if(!auth||!workspaceId||!workspace||!bootstrap)return <div className="splash"><div className="brand-mark">m</div><p role={runtime?.status==='error'?'alert':'status'}>{runtime?.status==='error'?'Не удалось открыть пространство':'Загружаем пространство…'}</p>{error&&<><p className="form-error" role="alert">{error}</p><button type="button" className="sheet-cancel" onClick={()=>void refresh(true)}>Повторить</button></>}</div>
   const stats=runtime.outbox
   const serverAvailable=online&&!runtime.offline
-  return <div className="app-shell" key={workspaceId}>
-    <header className="workspace-header"><button type="button" className="workspace-name-button" onClick={()=>setSwitchOpen(true)}><span>{workspace.name}</span><ChevronIcon/></button><div className="workspace-header-actions">{updateWaiting&&<button type="button" className="update-button" onClick={activateUpdate}>Обновить</button>}{stats.conflicts||stats.failed?<button type="button" className="sync-status attention" onClick={()=>setIssuesOpen(true)} aria-label={`Нужна проверка: ${stats.conflicts+stats.failed}`}><span>Нужна проверка · {stats.conflicts+stats.failed}</span><i/></button>:!serverAvailable?<button type="button" className="sync-status offline" onClick={()=>setWorkspaceReloadEpoch((value)=>value+1)} aria-label="Нет связи с сервером. Повторить подключение"><span>{stats.total?`Нет связи · ${stats.total}`:'Нет связи с сервером'}</span><i/></button>:stats.total?<div className="sync-status" role="status" aria-live="polite"><span>Отправляем · {stats.total}</span><i/></div>:null}</div></header>
+  const issueCount=stats.conflicts+stats.failed
+  const queuedCount=Math.max(0,stats.total-issueCount)
+  return <div className={`app-shell${serverAvailable?'':' offline'}`} key={workspaceId}>
+    <header className="workspace-header"><button type="button" className="workspace-name-button" onClick={()=>setSwitchOpen(true)}><span>{workspace.name}</span><ChevronIcon/></button><div className="workspace-header-actions">{updateWaiting&&<button type="button" className="update-button" onClick={activateUpdate}>Обновить</button>}{issueCount?<button type="button" className="sync-status attention" onClick={()=>setIssuesOpen(true)} aria-label={`Не сохранено на сервере: ${issueCount}. Открыть список`}><span>Не сохранено · {issueCount}</span><i/></button>:serverAvailable&&stats.total?<div className="sync-status" role="status" aria-live="polite"><span>Отправляем · {stats.total}</span><i/></div>:null}</div></header>
+    {!serverAvailable&&<div className="offline-banner" role="status" aria-live="polite"><span><b>Офлайн</b>{queuedCount?` · ${queuedCount} ${pluralRu(queuedCount,['изменение','изменения','изменений'])} ${queuedCount===1?'ждёт':'ждут'} отправки`:' · изменения сохраняются на устройстве и отправятся при подключении'}</span><button type="button" onClick={()=>{void probeServer();setWorkspaceReloadEpoch((value)=>value+1)}}>Повторить</button></div>}
     <main className="pager" ref={pager} onScroll={onPagerScroll} onPointerDown={()=>{stopPagerAnimation();pagerTarget.current=null}} onTouchStart={()=>{stopPagerAnimation();pagerTarget.current=null}}>
       <div className="page-slot" inert={tab!=='entry'} aria-hidden={tab!=='entry'}>{mountedTabs.includes('entry')&&<EntryView userId={auth.user.id} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} currentId={currentId} setCurrentId={setCurrentId} refreshPending={refreshPending} onDraftDirtyChange={setDraftDirty} active={tab==='entry'}/>}</div>
       <div className="page-slot" inert={tab!=='history'} aria-hidden={tab!=='history'}>{mountedTabs.includes('history')&&<HistoryView userId={auth.user.id} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} edit={(id)=>void openExpense(id)} createNew={()=>void openExpense(null)} refreshPending={refreshPending}/>}</div>
@@ -2488,7 +2621,7 @@ if(Math.abs(node.scrollLeft-pagerTarget.current)>1)node.scrollLeft=pagerTarget.c
       <div className="page-slot" inert={tab!=='settings'} aria-hidden={tab!=='settings'}>{mountedTabs.includes('settings')&&<SettingsView user={auth} workspace={workspace} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} pendingCount={stats.total} refreshPending={refreshPending} onLogout={()=>void logoutCurrent()} theme={theme} onThemeChange={setTheme} onSession={(next)=>hydrate(next,false,settingsIdentityEpoch)} onCreateWorkspace={()=>void openCreate()} online={serverAvailable} bybitStatus={bybitStatus} onBybitStatus={(status)=>updateBybitStatus(status)}/>}</div>
     </main>
     <nav className="bottom-nav" aria-label="Основная навигация">{navigationTabs.map((item)=><button type="button" key={item.id} aria-current={tab===item.id?'page':undefined} aria-label={item.id==='review'&&bybitStatus?.pendingCount?`Разбор: ${bybitStatus.pendingCount}`:item.label} className={tab===item.id?'active':''} onClick={()=>{if(tab!==item.id)tap(4);setTab(item.id)}}><span><NavIcon tab={item.id}/>{item.id==='review'&&Boolean(bybitStatus?.pendingCount)&&<b className="nav-badge">{bybitStatus!.pendingCount>99?'99+':bybitStatus!.pendingCount}</b>}</span><small>{item.label}</small></button>)}</nav>
-    {switchOpen&&<WorkspaceSwitcher items={auth.workspaces} active={workspaceId} runtimes={state.runtimes} online={serverAvailable} onSelect={(id)=>void switchWorkspace(id)} onCreate={()=>void openCreate()}/>} {createOpen&&<CreateWorkspaceSheet existing onClose={()=>setCreateOpen(false)} onCreate={create}/>} {issuesOpen&&<SyncIssuesSheet userId={auth.user.id} workspaceId={workspaceId} online={serverAvailable} onClose={()=>setIssuesOpen(false)} onDiscard={discardIssues}/>} {initialRecovery&&<RecoverySave key={initialRecovery.completionToken} prepared={initialRecovery} mode="initial" close={()=>setInitialRecovery(null)} complete={async()=>{
+    {switchOpen&&<WorkspaceSwitcher items={auth.workspaces} active={workspaceId} runtimes={state.runtimes} online={serverAvailable} onSelect={(id)=>void switchWorkspace(id)} onCreate={()=>void openCreate()}/>} {createOpen&&<CreateWorkspaceSheet existing onClose={()=>setCreateOpen(false)} onCreate={create}/>} {issuesOpen&&<SyncIssuesSheet userId={auth.user.id} workspaceId={workspaceId} bootstrap={bootstrap} online={serverAvailable} onClose={()=>setIssuesOpen(false)} onRetry={retryIssue} onDiscard={discardIssues}/>} {initialRecovery&&<RecoverySave key={initialRecovery.completionToken} prepared={initialRecovery} mode="initial" close={()=>setInitialRecovery(null)} complete={async()=>{
       const outcome=await completeRotationSafely({prepared:initialRecovery,targetUserId:auth.user.id})
       if(outcome.status!=='completed')throw new Error(outcome.status==='rotation-stale'?'Параллельно была завершена другая настройка восстановления.':'Не удалось подтвердить настройку. Повторите из настроек.')
       await hydrate(outcome.session,true)
