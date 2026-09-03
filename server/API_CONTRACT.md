@@ -297,8 +297,13 @@ with the `BitCard` permission and are encrypted before storage.
 
 Both the provider query and the storage transaction enforce
 `occurredAt >= enabledAt`. Subsequent polls overlap recent time to absorb delayed
-clearing but never move that boundary backwards. Only successful purchases,
-direct purchases, and ATM withdrawals enter review.
+clearing but never move that boundary backwards. The provider is queried with
+`type=SIDE_QUERY_AUTH` in the JSON body (the only value the live API accepts),
+paged at 100 records with a one-second pause between pages. Only completed card
+payments (`tradeStatus=1`, `status=1`) enter review; pending and declined
+records are skipped. The imported amount is what was actually paid
+(`paidAmount`/`paidCurrency`, e.g. RSD), falling back to the card-currency total.
+`type` is `atm` for side 13 or MCC 6011.
 
 ## Analytics and rates
 
