@@ -436,6 +436,8 @@ describe('Bybit transaction review', () => {
     expect(screen.queryByText(/Свайп/)).toBeNull()
     fireEvent.change(screen.getByLabelText(/Комментарий/), { target: { value: 'Встреча с Димой' } })
     fireEvent.click(screen.getByRole('button', { name: 'Продукты' }))
+    expect(workspaceApi.classifyBybitCardTransaction).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Сохранить расход' }))
     await screen.findByText('Расход добавлен')
     expect(workspaceApi.classifyBybitCardTransaction).toHaveBeenCalledWith('workspace-a', transaction.id, 'products', 'Встреча с Димой', [])
 

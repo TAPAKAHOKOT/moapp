@@ -1462,6 +1462,11 @@ html {
   box-shadow: inset 0 0 0 1px var(--sage);
 }
 
+.bybit-review-page .review-save {
+  flex: 0 0 auto;
+  margin-top: 10px;
+}
+
 .bybit-review-page .review-secondary {
   flex: 0 0 auto;
   margin-top: 6px;
