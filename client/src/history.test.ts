@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { buildHistoryCsv, defaultHistoryPreferences, filterHistoryExpenses, historyDateRange, parseHistoryPreferences, type HistoryFilters } from './history'
-import type { Category, Currency, Expense, Tag } from './types'
+import { buildHistoryCsv, defaultHistoryPreferences, filterHistoryExpenses, historyDateRange, historyTotals, parseHistoryPreferences, type HistoryFilters } from './history'
+import type { Category, Currency, Expense, RateSnapshot, Tag } from './types'
 
 const categories: Category[] = [
   { id: 'food', name: 'Еда', color: '#758d69', placement: 'main', sortOrder: 0, createdAt: '2026-08-01T00:00:00.000Z', updatedAt: '2026-08-01T00:00:00.000Z', archivedAt: null, version: 1 },
@@ -64,5 +64,28 @@ describe('history CSV export', () => {
     expect(csv).toContain('2026-08-24,12:00,Еда,Поездка; Работа,12.34,RSD,"Обед, кофе",monday-food')
     expect(csv.split('\n')).toHaveLength(2)
     expect(buildHistoryCsv([expenses[1]!], categories, currencies, tags)).toContain('Транспорт,,20.00')
+  })
+})
+
+describe('historyTotals', () => {
+  const rates: RateSnapshot = { base: 'RSD', date: '2026-08-10', ratesToRsd: { RSD: 1, EUR: 117 } }
+  const row = (id: string, amountMinor: number, currency: string): Expense => ({ id, amountMinor, currency, categoryId: 'food', note: null, occurredAt: '2026-08-24T10:00:00.000Z', createdAt: '2026-08-24T10:00:00.000Z', updatedAt: '2026-08-24T10:00:00.000Z', version: 1, deletedAt: null })
+
+  it('sums a single currency exactly in minor units', () => {
+    const totals = historyTotals([row('a', 1_000, 'RSD'), row('b', 2_550, 'RSD')], currencies, rates, 'RSD')
+    expect(totals).toMatchObject({ byCurrency: [{ currency: 'RSD', amountMinor: 3_550 }], target: 'RSD', missing: [] })
+    expect(totals.converted).toBeCloseTo(35.5)
+  })
+
+  it('converts a mixed set into the target currency and lists the parts largest first', () => {
+    const totals = historyTotals([row('a', 1_000, 'RSD'), row('b', 2_000, 'EUR')], currencies, rates, 'RSD')
+    expect(totals.byCurrency).toEqual([{ currency: 'EUR', amountMinor: 2_000 }, { currency: 'RSD', amountMinor: 1_000 }])
+    expect(totals.converted).toBeCloseTo(10 + 20 * 117)
+  })
+
+  it('names currencies without a rate instead of guessing a total', () => {
+    const totals = historyTotals([row('a', 1_000, 'RSD'), row('b', 500, 'USD')], currencies, rates, 'RSD')
+    expect(totals.missing).toEqual(['USD'])
+    expect(totals.converted).toBeNull()
   })
 })
