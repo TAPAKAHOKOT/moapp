@@ -415,7 +415,7 @@ describe('offline analytics fallback', () => {
 describe('Bybit transaction review', () => {
   it('undoes from a toast and restores the chosen category and comment', async () => {
     const transaction = {
-      id: 'card-transaction-a', txnId: 'bybit-a', orderNo: null, type: 'purchase' as const,
+      id: 'card-transaction-a', txnId: 'bybit-a', orderNo: null, type: 'purchase' as const, settled: true,
       amountMinor: 1_250, currency: 'RSD', merchantName: 'Coffee Corner', merchantCountry: 'RS', merchantCity: 'Beograd',
       mccCode: '5812', merchantCategory: 'Cafe', occurredAt: '2026-08-10T12:00:00.000Z', reviewStatus: 'pending' as const, expenseId: null,
     }
@@ -444,6 +444,37 @@ describe('Bybit transaction review', () => {
     await waitFor(() => expect(onExpenseUndo).toHaveBeenCalledWith(expense.id))
     expect((screen.getByLabelText(/Комментарий/) as HTMLInputElement).value).toBe('Встреча с Димой')
     expect(screen.getByRole('button', { name: 'Продукты' }).getAttribute('aria-pressed')).toBe('true')
+  })
+
+  it('reloads the queue when a sync elsewhere raises the pending count and marks open authorizations', async () => {
+    const base = {
+      txnId: null, orderNo: null, type: 'purchase' as const, currency: 'RSD', merchantCountry: 'SRB', merchantCity: 'Belgrade',
+      mccCode: '5411', merchantCategory: null, reviewStatus: 'pending' as const, expenseId: null,
+    }
+    const first = { ...base, id: 'txn-1', settled: true, amountMinor: 86_036, merchantName: 'VERO 3', occurredAt: '2026-09-02T17:22:09.000Z' }
+    const second = { ...base, id: 'txn-2', settled: false, amountMinor: 383_500, merchantName: 'Silver Dreams', occurredAt: '2026-09-03T08:00:00.000Z' }
+    const list = vi.spyOn(workspaceApi, 'listBybitCardTransactions')
+      .mockResolvedValueOnce({ transactions: [first], pendingCount: 1 })
+      .mockResolvedValueOnce({ transactions: [first, second], pendingCount: 2 })
+    const onStatus = vi.fn()
+    const props = { workspaceId: 'workspace-a', categories: expenseBootstrap().categories, currencies: expenseBootstrap().currencies, online: true, onExpense: vi.fn(), onExpenseUndo: vi.fn(), onStatus, active: true }
+
+    const view = render(<BybitReviewView {...props} pendingCount={1}/>)
+    await screen.findByText('VERO 3')
+    fireEvent.change(screen.getByLabelText(/Комментарий/), { target: { value: 'черновик' } })
+    await waitFor(() => expect(list).toHaveBeenCalledTimes(1))
+
+    // Settings → "Синхронизировать сейчас" reports a higher pendingCount through the shared status.
+    view.rerender(<BybitReviewView {...props} pendingCount={2}/>)
+    await waitFor(() => expect(list).toHaveBeenCalledTimes(2))
+    await screen.findByText(/к разбору 2/)
+    expect(screen.getByText('VERO 3')).not.toBeNull()
+    expect((screen.getByLabelText(/Комментарий/) as HTMLInputElement).value).toBe('черновик')
+    expect(onStatus).toHaveBeenLastCalledWith({ pendingCount: 2 })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Пропустить пока' }))
+    await screen.findByText('Silver Dreams')
+    expect(screen.getByText(/Ожидает списания/)).not.toBeNull()
   })
 })
 

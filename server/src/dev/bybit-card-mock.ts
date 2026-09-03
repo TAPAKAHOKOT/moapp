@@ -70,7 +70,8 @@ function demoRecords(now: number): Array<Record<string, unknown>> {
     }),
     payment({
       tradeStatus: "0", basicAmount: "12.000000000000000000", transactionAmount: "11.760000000000000000", transactionCurrencyAmount: "12.0000000000",
-      paidAmount: "1200.000000000000000000", txnCreate: String(now), merchName: "PENDING — MUST BE HIDDEN", merchCountry: "SRB", txnId: "demo-pending", mccCode: "5999"
+      paidAmount: "1200.000000000000000000", txnCreate: String(now), merchName: "Pending Authorization", merchCity: "Belgrade", merchCountry: "SRB",
+      txnId: "demo-pending", orderNo: "demo-order-4", mccCode: "5999", merchCategoryDesc: "Miscellaneous Retail"
     }),
     payment({
       tradeStatus: "2", status: "2", declinedReason: "51", basicAmount: "3.000000000000000000", transactionAmount: "2.940000000000000000",

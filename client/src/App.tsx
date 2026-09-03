@@ -1811,7 +1811,7 @@ function BybitConnectionPanel({ workspace, workspaceId, status, online, onStatus
 
 type ReviewAction={transaction:BybitCardTransaction;expense?:Expense;categoryId?:string;comment:string;tagIds:string[]}
 
-export function BybitReviewView({ workspaceId, categories, currencies, tags=[], onTag=()=>{}, online, onExpense, onExpenseUndo, onStatus }: {workspaceId:string;categories:Category[];currencies:Currency[];tags?:Tag[];onTag?:(tag:Tag)=>void;online:boolean;onExpense:(expense:Expense)=>void;onExpenseUndo:(expenseId:string)=>void;onStatus:(status:Partial<BybitCardStatus>&Pick<BybitCardStatus,'pendingCount'>)=>void}) {
+export function BybitReviewView({ workspaceId, categories, currencies, tags=[], onTag=()=>{}, online, onExpense, onExpenseUndo, onStatus, pendingCount=0, active=true }: {workspaceId:string;categories:Category[];currencies:Currency[];tags?:Tag[];onTag?:(tag:Tag)=>void;online:boolean;onExpense:(expense:Expense)=>void;onExpenseUndo:(expenseId:string)=>void;onStatus:(status:Partial<BybitCardStatus>&Pick<BybitCardStatus,'pendingCount'>)=>void;pendingCount?:number;active?:boolean}) {
   const [items,setItems]=useState<BybitCardTransaction[]>([])
   const [deferred,setDeferred]=useState<BybitCardTransaction[]>([])
   const [comment,setComment]=useState('')
@@ -1825,6 +1825,22 @@ export function BybitReviewView({ workspaceId, categories, currencies, tags=[], 
   const current=items[0]
   const activeCategories=categories.filter((item)=>!item.archivedAt).sort((a,b)=>(a.placement==='main'?0:1)-(b.placement==='main'?0:1)||a.sortOrder-b.sortOrder)
   useEffect(()=>{const controller=new AbortController();setLoading(true);setDeferred([]);listBybitCardTransactions(workspaceId,controller.signal).then((result)=>{setItems(result.transactions);onStatus({pendingCount:result.pendingCount})}).catch((reason)=>{if(!controller.signal.aborted)setError(reason instanceof ApiError?reason.message:'Не удалось загрузить операции')}).finally(()=>{if(!controller.signal.aborted)setLoading(false)});return()=>controller.abort()},[workspaceId]) // eslint-disable-line react-hooks/exhaustive-deps
+  // A sync elsewhere (Settings, the server scheduler) can add or settle items while this view is mounted.
+  // Re-read the queue when the tab is opened or the known count outgrows what is loaded, merging so the
+  // item under review, the deferred pile and the draft comment survive; only the server's newest state wins per item.
+  const refreshing=useRef(false)
+  useEffect(()=>{
+    if(loading||busy||!online||!active||refreshing.current)return
+    const controller=new AbortController();refreshing.current=true
+    listBybitCardTransactions(workspaceId,controller.signal).then((result)=>{
+      if(controller.signal.aborted)return
+      const fresh=new Map(result.transactions.map((item)=>[item.id,item]))
+      setDeferred((value)=>value.filter((item)=>fresh.has(item.id)).map((item)=>fresh.get(item.id)!))
+      setItems((value)=>{const kept=value.filter((item)=>fresh.has(item.id)).map((item)=>fresh.get(item.id)!);const seen=new Set([...kept,...deferred].map((item)=>item.id));return [...kept,...result.transactions.filter((item)=>!seen.has(item.id))]})
+      onStatus({pendingCount:result.pendingCount})
+    }).catch(()=>{/* the queue already on screen stays usable; the next trigger retries */}).finally(()=>{refreshing.current=false})
+    return()=>{controller.abort();refreshing.current=false}
+  },[active,pendingCount,workspaceId]) // eslint-disable-line react-hooks/exhaustive-deps
   const removeCurrent=(transaction:BybitCardTransaction,pendingCount:number)=>{setItems((value)=>value.filter((item)=>item.id!==transaction.id));setComment('');setSelectedCategoryId(null);setSelectedTagIds([]);onStatus({pendingCount})}
   const undo=async(action:ReviewAction)=>{
     if(busy||!online)return;setBusy(true);setError('')
@@ -1850,7 +1866,7 @@ export function BybitReviewView({ workspaceId, categories, currencies, tags=[], 
       <header className="topline review-topline"><div><p className="eyebrow">Bybit Card · к разбору {items.length}</p><p className="review-date">{new Date(current.occurredAt).toLocaleString('ru-RU',{weekday:'short',day:'numeric',month:'long',hour:'2-digit',minute:'2-digit'})}</p></div>{deferred.length>0&&<span className="review-deferred">Отложено · {deferred.length}</span>}</header>
       <div className="amount-row review-amount-row"><output className="amount-value" aria-label="Сумма">{amountNumber(current.amountMinor,current.currency,currencies)}</output><span className="review-currency">{current.currency}</span></div>
       <article className="review-merchant">
-        <span className="bybit-mark">B</span><div><h3>{current.merchantName||'Без названия продавца'}</h3><p>{current.type==='atm'?'Снятие наличных':current.merchantCategory||'Покупка'}{current.merchantCity?` · ${[current.merchantCity,current.merchantCountry].filter(Boolean).join(', ')}`:''}{current.mccCode?` · MCC ${current.mccCode}`:''}</p></div>
+        <span className="bybit-mark">B</span><div><h3>{current.merchantName||'Без названия продавца'}</h3><p>{current.type==='atm'?'Снятие наличных':current.merchantCategory||'Покупка'}{current.merchantCity?` · ${[current.merchantCity,current.merchantCountry].filter(Boolean).join(', ')}`:''}{current.mccCode?` · MCC ${current.mccCode}`:''}</p>{!current.settled&&<p className="review-pending-note">Ожидает списания · сумма может уточниться после расчёта</p>}</div>
       </article>
       <p className="review-hint">Выберите категорию — расход сохранится сразу</p>
       <div className="review-categories">{activeCategories.map((category)=><button type="button" key={category.id} className={selectedCategoryId===category.id?'selected':''} aria-pressed={selectedCategoryId===category.id} disabled={busy||!online} onClick={()=>void classify(category.id)}><i style={{background:category.color??'#a9afa5'}}/><span>{category.name}</span></button>)}</div>
@@ -2688,7 +2704,7 @@ if(Math.abs(node.scrollLeft-pagerTarget.current)>1)node.scrollLeft=pagerTarget.c
       <div className="page-slot" inert={tab!=='entry'} aria-hidden={tab!=='entry'}>{mountedTabs.includes('entry')&&<EntryView userId={auth.user.id} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} currentId={currentId} setCurrentId={setCurrentId} refreshPending={refreshPending} onDraftDirtyChange={setDraftDirty} active={tab==='entry'}/>}</div>
       <div className="page-slot" inert={tab!=='history'} aria-hidden={tab!=='history'}>{mountedTabs.includes('history')&&<HistoryView userId={auth.user.id} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} edit={(id)=>void openExpense(id)} createNew={()=>void openExpense(null)} refreshPending={refreshPending}/>}</div>
       <div className="page-slot" inert={tab!=='analytics'} aria-hidden={tab!=='analytics'}>{mountedTabs.includes('analytics')&&<AnalyticsView userId={auth.user.id} workspaceId={workspaceId} bootstrap={bootstrap} theme={theme} online={serverAvailable}/>}</div>
-      {reviewConnected&&<div className="page-slot review-page-slot" inert={tab!=='review'} aria-hidden={tab!=='review'}>{mountedTabs.includes('review')&&<BybitReviewView workspaceId={workspaceId} categories={bootstrap.categories} currencies={bootstrap.currencies} tags={bootstrap.tags??[]} onTag={(tag)=>setWorkspaceData((data)=>({...data,tags:[tag,...(data.tags??[]).filter((item)=>item.id!==tag.id)]}))} online={serverAvailable} onStatus={updateBybitStatus} onExpense={(expense)=>setWorkspaceData((data)=>({...data,expenses:[expense,...data.expenses.filter((item)=>item.id!==expense.id)]}))} onExpenseUndo={(expenseId)=>setWorkspaceData((data)=>({...data,expenses:data.expenses.filter((item)=>item.id!==expenseId)}))}/>}</div>}
+      {reviewConnected&&<div className="page-slot review-page-slot" inert={tab!=='review'} aria-hidden={tab!=='review'}>{mountedTabs.includes('review')&&<BybitReviewView workspaceId={workspaceId} categories={bootstrap.categories} currencies={bootstrap.currencies} tags={bootstrap.tags??[]} onTag={(tag)=>setWorkspaceData((data)=>({...data,tags:[tag,...(data.tags??[]).filter((item)=>item.id!==tag.id)]}))} online={serverAvailable} onStatus={updateBybitStatus} pendingCount={bybitStatus?.pendingCount??0} active={tab==='review'} onExpense={(expense)=>setWorkspaceData((data)=>({...data,expenses:[expense,...data.expenses.filter((item)=>item.id!==expense.id)]}))} onExpenseUndo={(expenseId)=>setWorkspaceData((data)=>({...data,expenses:data.expenses.filter((item)=>item.id!==expenseId)}))}/>}</div>}
       <div className="page-slot" inert={tab!=='settings'} aria-hidden={tab!=='settings'}>{mountedTabs.includes('settings')&&<SettingsView user={auth} workspace={workspace} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} pendingCount={stats.total} refreshPending={refreshPending} onLogout={()=>void logoutCurrent()} theme={theme} onThemeChange={setTheme} onSession={(next)=>hydrate(next,false,settingsIdentityEpoch)} onCreateWorkspace={()=>void openCreate()} online={serverAvailable} bybitStatus={bybitStatus} onBybitStatus={(status)=>updateBybitStatus(status)}/>}</div>
     </main>
     <nav className="bottom-nav" aria-label="Основная навигация">{navigationTabs.map((item)=><button type="button" key={item.id} aria-current={tab===item.id?'page':undefined} aria-label={item.id==='review'&&bybitStatus?.pendingCount?`Разбор: ${bybitStatus.pendingCount}`:item.label} className={tab===item.id?'active':''} onClick={()=>{if(tab!==item.id)tap(4);setTab(item.id)}}><span><NavIcon tab={item.id}/>{item.id==='review'&&Boolean(bybitStatus?.pendingCount)&&<b className="nav-badge">{bybitStatus!.pendingCount>99?'99+':bybitStatus!.pendingCount}</b>}</span><small>{item.label}</small></button>)}</nav>

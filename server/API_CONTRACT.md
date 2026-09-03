@@ -299,11 +299,15 @@ Both the provider query and the storage transaction enforce
 `occurredAt >= enabledAt`. Subsequent polls overlap recent time to absorb delayed
 clearing but never move that boundary backwards. The provider is queried with
 `type=SIDE_QUERY_AUTH` in the JSON body (the only value the live API accepts),
-paged at 100 records with a one-second pause between pages. Only completed card
-payments (`tradeStatus=1`, `status=1`) enter review; pending and declined
-records are skipped. The imported amount is what was actually paid
-(`paidAmount`/`paidCurrency`, e.g. RSD), falling back to the card-currency total.
-`type` is `atm` for side 13 or MCC 6011.
+paged at 100 records with a one-second pause between pages. Settled payments
+(`tradeStatus=1`) and open authorizations (`tradeStatus=0`) with `status=1` enter
+review; each transaction carries `settled`. Open authorizations are refreshed on
+every poll (the window always reaches back to the oldest one) until they settle,
+which may change the amount, or are declined/reversed, which removes a still
+pending item from review and leaves an already classified expense untouched.
+Declined records are never imported. The imported amount is what was actually
+paid (`paidAmount`/`paidCurrency`, e.g. RSD), falling back to the card-currency
+total. `type` is `atm` for side 13 or MCC 6011.
 
 ## Analytics and rates
 

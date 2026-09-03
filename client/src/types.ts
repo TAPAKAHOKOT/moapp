@@ -70,6 +70,8 @@ export type BybitCardTransaction = {
   occurredAt: string
   reviewStatus: 'pending' | 'classified' | 'ignored'
   expenseId: string | null
+  /** false while Bybit still holds the authorization; the amount may change when it settles */
+  settled: boolean
 }
 
 export type RateSnapshot = {
