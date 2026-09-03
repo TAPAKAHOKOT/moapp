@@ -11,6 +11,15 @@ const MIN_SYNC_INTERVAL_MS = 60 * 1000;
 const SCHEDULER_INITIAL_DELAY_MS = 60 * 1000;
 const MAX_RATE_LIMIT_RETRY_DELAY_MS = 5 * 1000;
 const MAX_PAGES = 100;
+/*
+ * Verified against api.bybit.com on 2026-09-03; the published documentation differs:
+ * parameters are read from the JSON body, only SIDE_QUERY_AUTH is accepted as `type`,
+ * `limit` above 100 silently falls back to 10, and the endpoint allows one request per second.
+ */
+const ASSET_QUERY_TYPE = "SIDE_QUERY_AUTH";
+const ASSET_PAGE_SIZE = 100;
+const ASSET_PAGE_PAUSE_MS = 1100;
+const ATM_MCC_CODE = "6011";
 
 export const BYBIT_REGIONS = {
   global: "https://api.bybit.com",
@@ -67,6 +76,8 @@ type AssetRecord = {
   transactionAmount?: unknown;
   transactionCurrency?: unknown;
   transactionCurrencyAmount?: unknown;
+  paidAmount?: unknown;
+  paidCurrency?: unknown;
   txnCreate?: unknown;
   merchCountry?: unknown;
   merchCity?: unknown;
@@ -207,11 +218,17 @@ function decimalToMinor(value: unknown, currency: string): number | null {
   return Number.isSafeInteger(minor) && minor > 0 ? minor : null;
 }
 
+/*
+ * `paidAmount` is what actually left the account in the currency the holder pays with
+ * (for a Serbian card that is RSD), `basicAmount` is the card-currency total including fees,
+ * `transactionAmount` is the card-currency amount before fees.
+ */
 function amountOf(record: AssetRecord): { amountMinor: number; currency: string } | null {
   const candidates = [
+    [record.paidAmount, record.paidCurrency],
+    [record.basicAmount, record.basicCurrency],
     [record.transactionCurrencyAmount, record.transactionCurrency],
-    [record.transactionAmount, record.transactionCurrency],
-    [record.basicAmount, record.basicCurrency]
+    [record.transactionAmount, record.transactionCurrency]
   ] as const;
   for (const [amount, rawCurrency] of candidates) {
     const currency = typeof rawCurrency === "string" ? rawCurrency.toUpperCase() : "";
@@ -228,8 +245,17 @@ function transactionKey(record: AssetRecord): string {
   return createHash("sha256").update(JSON.stringify(record)).digest("hex");
 }
 
+/*
+ * The SIDE_QUERY_AUTH feed reports every card payment as side 1; a completed one carries
+ * tradeStatus 1 and status 1, which fetchRecords already requires. Sides 3, 7 and 13 are kept
+ * for accounts whose feed exposes cleared financial records directly.
+ */
 function reviewableSide(side: string): boolean {
-  return side === "3" || side === "7" || side === "13";
+  return side === "1" || side === "3" || side === "7" || side === "13";
+}
+
+function isAtmWithdrawal(side: string, mccCode: string | null): boolean {
+  return side === "13" || mccCode === ATM_MCC_CODE;
 }
 
 function storedProviderMetadata(record: AssetRecord): string {
@@ -247,7 +273,7 @@ function transactionJson(row: TransactionRow) {
     id: row.id,
     txnId: row.txn_id,
     orderNo: row.order_no,
-    type: row.side === "13" ? "atm" : "purchase",
+    type: isAtmWithdrawal(row.side, row.mcc_code) ? "atm" : "purchase",
     amountMinor: row.amount_minor,
     currency: row.currency,
     merchantName: row.merchant_name,
@@ -282,12 +308,13 @@ async function fetchRecords(fetchImpl: FetchLike, credentials: Credentials, from
   const records: AssetRecord[] = [];
   let fetched = 0;
   for (let page = 1; page <= MAX_PAGES; page += 1) {
+    if (page > 1) await new Promise((resolve) => setTimeout(resolve, ASSET_PAGE_PAUSE_MS));
     const result = await signedRequest<{ pageSize?: unknown; totalCount?: unknown; data?: unknown }>(
       fetchImpl,
       credentials,
       "POST",
       "/v5/card/transaction/query-asset-records",
-      { query: { limit: 10, page }, body: {}, baseUrl }
+      { body: { type: ASSET_QUERY_TYPE, limit: ASSET_PAGE_SIZE, page, createBeginTime: from, createEndTime: to }, baseUrl }
     );
     const data = Array.isArray(result.data) ? result.data as AssetRecord[] : [];
     fetched += data.length;
@@ -297,7 +324,8 @@ async function fetchRecords(fetchImpl: FetchLike, credentials: Credentials, from
         && String(record.tradeStatus ?? "") === "1" && String(record.status ?? "") === "1";
     }));
     const total = typeof result.totalCount === "number" ? result.totalCount : fetched;
-    if (!data.length || fetched >= total || data.length < 10) break;
+    const pageSize = typeof result.pageSize === "number" && result.pageSize > 0 ? result.pageSize : ASSET_PAGE_SIZE;
+    if (!data.length || fetched >= total || data.length < pageSize) break;
   }
   return records;
 }
