@@ -71,7 +71,7 @@ const seeds = [
   ["other", "Прочее", "additional", 4, "#A8A8A8"]
 ] as const;
 
-const LATEST_SCHEMA_VERSION = 9;
+const LATEST_SCHEMA_VERSION = 10;
 
 type TableCount = {
   categories: number;
@@ -476,6 +476,10 @@ export function openDatabase(path: string): Database.Database {
           UPDATE tags SET sort_order = (SELECT count(*) FROM tags AS earlier
             WHERE earlier.workspace_id = tags.workspace_id
               AND (earlier.name_key < tags.name_key OR (earlier.name_key = tags.name_key AND earlier.id < tags.id)));
+        `);
+        else if (version === 10) db.exec(`
+          ALTER TABLE expenses ADD COLUMN voided_at TEXT;
+          ALTER TABLE expenses ADD COLUMN void_reason TEXT CHECK(void_reason IS NULL OR json_valid(void_reason));
         `);
         db.prepare("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)").run(version, appliedAt);
       }

@@ -60,10 +60,15 @@ describe('history filters', () => {
 describe('history CSV export', () => {
   it('keeps exact decimal amounts and safely quotes notes', () => {
     const csv = buildHistoryCsv([expenses[0]!], categories, currencies, tags)
-    expect(csv.split('\n')[0]).toBe('occurred_at,date,time,category,tags,amount,currency,note,id')
-    expect(csv).toContain('2026-08-24,12:00,Еда,Поездка; Работа,12.34,RSD,"Обед, кофе",monday-food')
+    expect(csv.split('\n')[0]).toBe('occurred_at,date,time,category,tags,amount,currency,note,status,id')
+    expect(csv).toContain('2026-08-24,12:00,Еда,Поездка; Работа,12.34,RSD,"Обед, кофе",counted,monday-food')
     expect(csv.split('\n')).toHaveLength(2)
     expect(buildHistoryCsv([expenses[1]!], categories, currencies, tags)).toContain('Транспорт,,20.00')
+  })
+
+  it('labels expenses the provider declined or reversed instead of dropping them', () => {
+    const reversed: Expense = { ...expenses[1]!, voidedAt: '2026-09-02T00:00:00.000Z', voidReason: { provider: 'bybit-card', kind: 'reversed', txnId: 't', merchantName: 'VERO', amountMinor: 2_000, currency: 'RSD' } }
+    expect(buildHistoryCsv([reversed], categories, currencies, tags)).toContain(',20.00,RSD,,reversed,sunday-transport')
   })
 })
 
@@ -81,6 +86,13 @@ describe('historyTotals', () => {
     const totals = historyTotals([row('a', 1_000, 'RSD'), row('b', 2_000, 'EUR')], currencies, rates, 'RSD')
     expect(totals.byCurrency).toEqual([{ currency: 'EUR', amountMinor: 2_000 }, { currency: 'RSD', amountMinor: 1_000 }])
     expect(totals.converted).toBeCloseTo(10 + 20 * 117)
+  })
+
+  it('leaves declined provider operations out of every total while they stay listed', () => {
+    const declined: Expense = { ...row('c', 9_000, 'RSD'), voidedAt: '2026-09-02T00:00:00.000Z', voidReason: { provider: 'bybit-card', kind: 'declined', txnId: null, merchantName: null, amountMinor: 9_000, currency: 'RSD' } }
+    const totals = historyTotals([row('a', 1_000, 'RSD'), declined], currencies, rates, 'RSD')
+    expect(totals.byCurrency).toEqual([{ currency: 'RSD', amountMinor: 1_000 }])
+    expect(totals.converted).toBeCloseTo(10)
   })
 
   it('names currencies without a rate instead of guessing a total', () => {

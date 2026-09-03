@@ -149,7 +149,7 @@ test("a clean file reaches the latest schema without hidden identity, workspace,
   const fixture = temporaryDatabase();
   try {
     let db = openDatabase(fixture.path);
-    assert.equal((db.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number }).version, 9);
+    assert.equal((db.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number }).version, 10);
     for (const table of ["users", "workspaces", "memberships", "categories", "legacy_claims", "oauth_clients", "oauth_authorization_codes", "oauth_tokens", "bybit_card_connections", "bybit_card_transactions"] as const) {
       assert.equal((db.prepare(`SELECT count(*) AS count FROM ${table}`).get() as { count: number }).count, 0);
     }
@@ -157,7 +157,7 @@ test("a clean file reaches the latest schema without hidden identity, workspace,
     const sizeAfterFirstStart = statSync(fixture.path).size;
 
     db = openDatabase(fixture.path);
-    assert.equal((db.prepare("SELECT count(*) AS count FROM schema_migrations").get() as { count: number }).count, 9);
+    assert.equal((db.prepare("SELECT count(*) AS count FROM schema_migrations").get() as { count: number }).count, 10);
     assert.equal((db.prepare("SELECT count(*) AS count FROM users").get() as { count: number }).count, 0);
     assert.equal(statSync(fixture.path).size, sizeAfterFirstStart);
     db.close();
@@ -209,7 +209,9 @@ for (const version of [1, 2] as const) {
         version: 6,
         created_at: "2025-05-06T07:08:10.000Z",
         updated_at: "2025-05-07T08:09:10.000Z",
-        deleted_at: null
+        deleted_at: null,
+        voided_at: null,
+        void_reason: null
       });
       assert.equal((db.prepare("SELECT deleted_at FROM expenses WHERE id='deleted-expense'").get() as { deleted_at: string }).deleted_at,
         "2025-06-09T10:11:12.000Z");
@@ -420,7 +422,7 @@ test("an existing v3 database receives the singleton hardening migration", () =>
     db.close();
 
     db = openDatabase(fixture.path);
-    assert.equal((db.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number }).version, 9);
+    assert.equal((db.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number }).version, 10);
     assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type='index' AND name='legacy_claims_singleton_idx'").get());
     db.close();
   } finally {
@@ -445,7 +447,7 @@ test("a copy failure rolls v3 back and leaves a retryable v2 database", () => {
     db.close();
 
     db = openDatabase(fixture.path);
-    assert.equal((db.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number }).version, 9);
+    assert.equal((db.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number }).version, 10);
     assert.equal((db.prepare("SELECT count(*) AS count FROM expenses").get() as { count: number }).count, 2);
     assert.deepEqual(db.pragma("foreign_key_check"), []);
     db.close();

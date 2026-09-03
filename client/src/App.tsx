@@ -3,7 +3,7 @@ import { QRCodeSVG } from 'qrcode.react'
 import {
   WorkspaceApiError as ApiError, allowWorkspaceMutations, blockWorkspaceMutations, createCategory, describeOutboxIssue, discardOutboxIssues, getAnalytics, getBootstrap, isServerReachable, probeServer, retryOutboxIssue, subscribeServerReachability,
   classifyBybitCardTransaction, connectBybitCard, disconnectBybitCard, getBybitCardStatus, ignoreBybitCardTransaction, listBybitCardTransactions, syncBybitCard, undoBybitCardTransaction,
-  createDeviceLink, createInvitation, createTag, deleteTag, reorderTags, updateTag, getSession, isLinkInvalid, legacyClaim, leaveWorkspace, listInvitations, listMembers, listSessions, logoutExpected, prepareInitialOrManualRecovery,
+  createDeviceLink, createInvitation, createTag, deleteTag, includeExpense, reorderTags, updateTag, getSession, isLinkInvalid, legacyClaim, leaveWorkspace, listInvitations, listMembers, listSessions, logoutExpected, prepareInitialOrManualRecovery,
   prepareRecovery, previewDeviceLink, previewInvitation, previewRecovery, removeMember, renameWorkspace, reorderCategories, revokeInvitation, revokeSession, submitExpenseOperation,
   setSessionContext, submitExpenseOperations, syncAllWorkspaces, transferOwnership, updateCategory, updateProfile,
 } from './workspace-api'
@@ -1138,9 +1138,9 @@ const LONG_PRESS_MS = 450
 const ROW_DRAG_START = 8
 
 // Строка истории: тап открывает запись, долгое нажатие включает выбор нескольких, свайп влево открывает удаление.
-function HistoryRow({ expense, category, tags, currencies, checked, selecting, open, disabled, onOpen, onToggle, onEdit, onDelete }: {
+function HistoryRow({ expense, category, tags, currencies, checked, selecting, open, disabled, onOpen, onToggle, onEdit, onDelete, onVoided }: {
   expense: Expense; category?: Category; tags: Tag[]; currencies: Currency[]; checked: boolean; selecting: boolean; open: boolean; disabled: boolean
-  onOpen: (id: string | null) => void; onToggle: () => void; onEdit: () => void; onDelete: () => void
+  onOpen: (id: string | null) => void; onToggle: () => void; onEdit: () => void; onDelete: () => void; onVoided?: () => void
 }) {
   const gesture = useRef<{ x: number; y: number; dragging: boolean; moved: boolean; longPress: ReturnType<typeof setTimeout> | undefined } | null>(null)
   const [dragOffset, setDragOffset] = useState<number | null>(null)
@@ -1187,6 +1187,7 @@ function HistoryRow({ expense, category, tags, currencies, checked, selecting, o
     if (moved) return
     if (open) { onOpen(null); return }
     if (selecting) onToggle()
+    else if (expense.voidedAt && onVoided) onVoided()
     else onEdit()
   }
   const translate = dragOffset ?? (open ? -ROW_ACTION_WIDTH : 0)
@@ -1194,7 +1195,7 @@ function HistoryRow({ expense, category, tags, currencies, checked, selecting, o
   return <div className={`history-expense${checked ? ' selected' : ''}${open ? ' open' : ''}`} onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={(event) => finish(true, event.clientX)} onPointerCancel={() => finish(false)}>
     <div className="history-swipe" style={{ transform: translate ? `translateX(${translate}px)` : undefined, transition: dragOffset === null ? undefined : 'none' }}>
       <label className="expense-check" aria-label={`Выбрать расход ${category?.name || ''}`}><input type="checkbox" tabIndex={selecting ? 0 : -1} checked={checked} onChange={onToggle}/><span/></label>
-      <button type="button" className={`history-row${tagList.length ? ' has-tags' : ''}`} aria-pressed={selecting ? checked : undefined} onClick={click}><i style={{backgroundColor:category?.color ?? '#a9afa5'}}/><span><b>{category?.name || 'Архивная категория'}</b><small>{new Date(expense.occurredAt).toLocaleTimeString('ru-RU',{timeZone:'Europe/Belgrade',hour:'2-digit',minute:'2-digit'})}{expense.note ? ` · ${expense.note}`:''}</small>{tagList.length ? <span className="tag-chips">{tagList.map((tag) => <TagChip key={tag.id} name={tag.name} color={tag.color}/>)}</span> : null}</span><strong>{money(expense.amountMinor,expense.currency,currencies)}</strong>{expense.pending && <em aria-label="Ожидает синхронизации">●</em>}</button>
+      <button type="button" className={`history-row${tagList.length ? ' has-tags' : ''}${expense.voidedAt ? ' voided' : ''}`} aria-pressed={selecting ? checked : undefined} onClick={click}><i style={{backgroundColor:category?.color ?? '#a9afa5'}}/><span><b>{category?.name || 'Архивная категория'}</b><small>{new Date(expense.occurredAt).toLocaleTimeString('ru-RU',{timeZone:'Europe/Belgrade',hour:'2-digit',minute:'2-digit'})}{expense.note ? ` · ${expense.note}`:''}</small>{tagList.length ? <span className="tag-chips">{tagList.map((tag) => <TagChip key={tag.id} name={tag.name} color={tag.color}/>)}</span> : null}</span><strong>{money(expense.amountMinor,expense.currency,currencies)}</strong>{expense.voidedAt ? <em className="voided-badge" aria-label="Отклонено провайдером, не учитывается">{expense.voidReason?.kind === 'reversed' ? 'Сторно' : 'Отклонено'}</em> : expense.pending && <em aria-label="Ожидает синхронизации">●</em>}</button>
     </div>
     <button type="button" className="history-swipe-delete" tabIndex={open ? 0 : -1} aria-hidden={!open} disabled={disabled} onClick={onDelete}><TrashIcon/><span>Удалить</span></button>
   </div>
@@ -1218,6 +1219,8 @@ export function HistoryView({ userId, workspaceId, bootstrap, setBootstrap, edit
   const [openRow, setOpenRow] = useState<string | null>(null)
   const [calendar, setCalendar] = useState<'date' | 'from' | 'to' | null>(null)
   const [periodOpen, setPeriodOpen] = useState(false)
+  const [voided, setVoided] = useState<Expense | null>(null)
+  const [including, setIncluding] = useState(false)
   const { toast, notify, dismiss } = useToast()
   const categoryMap = new Map(bootstrap.categories.map((category) => [category.id, category]))
   const tags = bootstrap.tags ?? []
@@ -1291,6 +1294,25 @@ export function HistoryView({ userId, workspaceId, bootstrap, setBootstrap, edit
     } catch {
       notify('Не удалось подготовить файл экспорта', undefined, true)
     }
+  }
+  // «Учитывать всё равно»: снимает пометку провайдера об отклонении. Только онлайн, как и остальные действия по Bybit.
+  const includeOne = async (expense: Expense) => {
+    if (!navigator.onLine) { notify('Нужно подключение к серверу', undefined, true); return }
+    setIncluding(true)
+    try {
+      const updated = await includeExpense(workspaceId, expense.id, expense.version)
+      setBootstrap((data) => ({ ...data, expenses: data.expenses.map((item) => item.id === updated.id ? updated : item) }))
+      setVoided(null)
+      notify('Расход снова учитывается')
+    } catch (reason) {
+      notify(reason instanceof ApiError ? reason.message : 'Не удалось обновить расход', undefined, true)
+    } finally { setIncluding(false) }
+  }
+  const describeVoid = (expense: Expense) => {
+    const reason = expense.voidReason
+    const when = expense.voidedAt ? new Date(expense.voidedAt).toLocaleDateString('ru-RU') : ''
+    const what = reason ? `${reason.merchantName ? `${reason.merchantName} · ` : ''}${money(reason.amountMinor, reason.currency, bootstrap.currencies)}` : ''
+    return `Bybit Card ${reason?.kind === 'reversed' ? 'сторнировал' : 'отклонил'} эту операцию${when ? ` ${when}` : ''}${what ? `: ${what}` : ''}. Расход остаётся в истории, но не учитывается в итогах и аналитике.`
   }
   // Удаление одной записи свайпом: мягкое удаление на сервере можно отменить обновлением той же записи.
   const restoreOne = async (deleted: Expense, original: Expense) => {
@@ -1383,7 +1405,7 @@ export function HistoryView({ userId, workspaceId, bootstrap, setBootstrap, edit
       {filters.period === 'range' && <div className="history-filter-grid history-range"><label>С<button type="button" className="select-trigger" aria-label="Начало интервала" onClick={() => setCalendar('from')}><span>{filters.from ? formatShortDate(filters.from) : 'Не задано'}</span><ChevronIcon/></button></label><label>По<button type="button" className="select-trigger" aria-label="Конец интервала" onClick={() => setCalendar('to')}><span>{filters.to ? formatShortDate(filters.to) : 'Не задано'}</span><ChevronIcon/></button></label></div>}
       <div className="history-filter-summary"><div className="history-summary"><span>Показано {expenses.length} из {activeExpenses.length}</span>{totalLabel && <b className="history-total" aria-label={`Сумма показанных расходов: ${totalLabel}`}>{totalLabel}</b>}{totalParts && <small>{totalParts}{totals.missing.length ? ` · нет курса: ${totals.missing.join(', ')}` : ''}</small>}</div><div>{filtersActive && <button type="button" onClick={resetFilters}>Сбросить</button>}<button type="button" className="history-export" disabled={!expenses.length} onClick={exportExpenses}>Экспорт CSV</button></div></div>
     </div>}
-    <div className={`history-list${selected.size ? ' selecting' : ''}`}>{groups.map(([date, items]) => <div key={date} className="history-day"><div className="history-date"><span>{formatHistoryDate(date)}</span><b>{items?.length}</b></div>{items?.map((expense) => <HistoryRow key={expense.id} expense={expense} category={categoryMap.get(expense.categoryId)} tags={tags} currencies={bootstrap.currencies} checked={selected.has(expense.id)} selecting={selected.size > 0} open={openRow === expense.id} disabled={deleting} onOpen={setOpenRow} onToggle={() => toggle(expense.id)} onEdit={() => edit(expense.id)} onDelete={() => void removeOne(expense)}/>)}</div>)}</div>
+    <div className={`history-list${selected.size ? ' selecting' : ''}`}>{groups.map(([date, items]) => <div key={date} className="history-day"><div className="history-date"><span>{formatHistoryDate(date)}</span><b>{items?.length}</b></div>{items?.map((expense) => <HistoryRow key={expense.id} expense={expense} category={categoryMap.get(expense.categoryId)} tags={tags} currencies={bootstrap.currencies} checked={selected.has(expense.id)} selecting={selected.size > 0} open={openRow === expense.id} disabled={deleting} onOpen={setOpenRow} onToggle={() => toggle(expense.id)} onEdit={() => edit(expense.id)} onDelete={() => void removeOne(expense)} onVoided={() => setVoided(expense)}/>)}</div>)}</div>
     {!groups.length && <div className="list-empty" role="status"><span>{filtersActive ? 'Ничего не найдено' : 'История пока пуста'}</span><p>{filtersActive ? 'Измените фильтры или сбросьте их.' : 'Добавьте первый расход — он сразу появится здесь.'}</p>{!filtersActive && <button type="button" className="primary history-empty-action" onClick={createNew}>Добавить первый расход</button>}</div>}
     {calendar && <CalendarSheet
       title={calendar === 'from' ? 'С какого дня' : calendar === 'to' ? 'По какой день' : filters.period === 'week' ? 'Какая неделя' : 'Какой день'}
@@ -1392,6 +1414,7 @@ export function HistoryView({ userId, workspaceId, bootstrap, setBootstrap, edit
       onClose={() => setCalendar(null)}
       onPick={(key) => { updateFilters(calendar === 'date' ? { date: key } : calendar === 'from' ? { from: key } : { to: key }); setCalendar(null) }}
     />}
+    {voided&&<div className="sheet-backdrop" onMouseDown={()=>{if(!including)setVoided(null)}}><div className="bottom-sheet confirm voided-sheet" role="dialog" aria-modal="true" aria-labelledby="voided-title" onMouseDown={(event)=>event.stopPropagation()}><div className="sheet-handle"/><h2 id="voided-title">{voided.voidReason?.kind==='reversed'?'Операция сторнирована':'Операция отклонена'}</h2><p>{describeVoid(voided)}</p><button type="button" className="primary" disabled={including} onClick={()=>void includeOne(voided)}>{including?'Сохраняем…':'Учитывать всё равно'}</button><button type="button" className="sheet-cancel" disabled={including} onClick={()=>{const target=voided;setVoided(null);edit(target.id)}}>Изменить</button><button type="button" className="danger-link" disabled={including} onClick={()=>{const target=voided;setVoided(null);void removeOne(target)}}>Удалить</button></div></div>}
     {toast&&<Toast toast={toast} onDismiss={dismiss}/>}
   </section>
 }
@@ -1426,7 +1449,7 @@ export function AnalyticsView({ userId, workspaceId, bootstrap, theme, online }:
   const selectedRange=period==='week'?selectedWeek:selectedMonth
   const from=selectedRange.from
   const analyticsTo=selectedRange.to>today?today:selectedRange.to
-  const expenseRevision=bootstrap.expenses.map((expense)=>`${expense.id}:${expense.version}:${expense.updatedAt}:${expense.deletedAt||''}:${expense.amountMinor}:${expense.currency}:${expense.categoryId}:${expense.occurredAt}`).join('|')
+  const expenseRevision=bootstrap.expenses.map((expense)=>`${expense.id}:${expense.version}:${expense.updatedAt}:${expense.deletedAt||''}:${expense.voidedAt||''}:${expense.amountMinor}:${expense.currency}:${expense.categoryId}:${expense.occurredAt}`).join('|')
   const requestKey=`${expenseRevision}:${from}:${analyticsTo}:${target}:${period}:${categoryId??'all'}`
   const fallback=useMemo(()=>fallbackAnalytics(bootstrap,target,from,analyticsTo,categoryId),[bootstrap,target,from,analyticsTo,categoryId])
   const previousFallback=useMemo(()=>fallbackAnalytics(bootstrap,target,previousWeek.from,previousAnalyticsTo,categoryId),[bootstrap,target,previousWeek.from,previousAnalyticsTo,categoryId])
@@ -1441,7 +1464,7 @@ export function AnalyticsView({ userId, workspaceId, bootstrap, theme, online }:
   const byDay=days.map((date)=>dailyMap.get(date)||0)
   const byCategory=data.categories.filter((item)=>item.amountMinor>0).map((item)=>({...item,value:item.amountMinor/divisor}))
   useEffect(()=>{setOpenCategory(null);setAllDetails(false)},[period,from,categoryId])
-  const categoryDetails=useMemo(()=>openCategory?bootstrap.expenses.filter((expense)=>!expense.deletedAt&&expense.categoryId===openCategory).map((expense)=>({expense,date:localDateKey(expense.occurredAt)})).filter((item)=>item.date>=from&&item.date<=analyticsTo).sort((left,right)=>right.expense.occurredAt.localeCompare(left.expense.occurredAt)):[],[bootstrap.expenses,openCategory,from,analyticsTo])
+  const categoryDetails=useMemo(()=>openCategory?bootstrap.expenses.filter((expense)=>!expense.deletedAt&&!expense.voidedAt&&expense.categoryId===openCategory).map((expense)=>({expense,date:localDateKey(expense.occurredAt)})).filter((item)=>item.date>=from&&item.date<=analyticsTo).sort((left,right)=>right.expense.occurredAt.localeCompare(left.expense.occurredAt)):[],[bootstrap.expenses,openCategory,from,analyticsTo])
   const detailCaption=(expense:Expense)=>{if(expense.note)return ` · ${expense.note}`;const names=expenseTagNames(expense,bootstrap.tags??[]);return names.length?` · ${names.map((name)=>`#${name}`).join(' ')}`:''}
   const detailDate=(date:string)=>new Date(`${date}T12:00:00Z`).toLocaleDateString('ru-RU',{timeZone:'UTC',day:'numeric',month:'short'}).replace('.','')
   const serverWeekdays=new Map(data.weekdays.map((point)=>[point.weekday,point.amountMinor/divisor]))
@@ -1499,7 +1522,7 @@ function weekComparisonLabel(total:number,previous:number,partial:boolean) {
 export function fallbackAnalytics(bootstrap:Bootstrap,target:string,from:string,to:string,categoryId:string|null):AnalyticsData {
   const decimals=bootstrap.currencies.find((currency)=>currency.code===target)?.decimals??2
   const categories=new Map(bootstrap.categories.map((category)=>[category.id,category]))
-  const periodExpenses=bootstrap.expenses.filter((expense)=>!expense.deletedAt&&(!categoryId||expense.categoryId===categoryId)).map((expense)=>({expense,date:localDateKey(expense.occurredAt)})).filter((item)=>item.date>=from&&item.date<=to)
+  const periodExpenses=bootstrap.expenses.filter((expense)=>!expense.deletedAt&&!expense.voidedAt&&(!categoryId||expense.categoryId===categoryId)).map((expense)=>({expense,date:localDateKey(expense.occurredAt)})).filter((item)=>item.date>=from&&item.date<=to)
   const canConvert=(expense:Expense)=>expense.currency===target||Boolean(bootstrap.rates.ratesToRsd[expense.currency]??(expense.currency==='RSD'?1:0))&&Boolean(bootstrap.rates.ratesToRsd[target]??(target==='RSD'?1:0))
   const missingCurrencies=[...new Set(periodExpenses.filter(({expense})=>!canConvert(expense)).map(({expense})=>expense.currency))]
   const expenses=periodExpenses.filter(({expense})=>canConvert(expense)).map(({expense,date})=>({expense,date,amountMinor:Math.round(convertExpense(expense,target,bootstrap.currencies,bootstrap.rates)*10**decimals)}))
@@ -1757,7 +1780,7 @@ const bybitRegions: Array<{id:BybitRegion;label:string}> = [
   {id:'ge',label:'Georgia'}, {id:'ae',label:'UAE'}, {id:'tr',label:'Turkey'}, {id:'nl',label:'Netherlands'}, {id:'id',label:'Indonesia'},
 ]
 
-function BybitConnectionPanel({ workspace, workspaceId, status, online, onStatus }: { workspace:WorkspaceSummary;workspaceId:string;status:BybitCardStatus|null;online:boolean;onStatus:(status:BybitCardStatus)=>void }) {
+function BybitConnectionPanel({ workspace, workspaceId, status, online, onStatus, onSynced=()=>{} }: { workspace:WorkspaceSummary;workspaceId:string;status:BybitCardStatus|null;online:boolean;onStatus:(status:BybitCardStatus)=>void;onSynced?:()=>void }) {
   const [editing,setEditing]=useState(false)
   const [apiKey,setApiKey]=useState('')
   const [apiSecret,setApiSecret]=useState('')
@@ -1777,7 +1800,7 @@ function BybitConnectionPanel({ workspace, workspaceId, status, online, onStatus
   }
   const sync=async()=>{
     setBusy(true);setError('')
-    try{onStatus(await syncBybitCard(workspaceId))}catch(reason){setError(reason instanceof ApiError?reason.message:'Не удалось синхронизировать Bybit Card')}
+    try{onStatus(await syncBybitCard(workspaceId));onSynced()}catch(reason){setError(reason instanceof ApiError?reason.message:'Не удалось синхронизировать Bybit Card')}
     finally{setBusy(false)}
   }
   const disconnect=async()=>{
@@ -1879,7 +1902,7 @@ export function BybitReviewView({ workspaceId, categories, currencies, tags=[], 
   </section>{notice&&<Toast toast={notice} onDismiss={dismiss}/>} {confirmation}</>
 }
 
-export function SettingsView({ user, workspace, workspaceId, bootstrap, setBootstrap, pendingCount, refreshPending, onLogout, theme, onThemeChange, onSession, onCreateWorkspace, online, bybitStatus=null, onBybitStatus=()=>{} }: { user: AuthenticatedSession; workspace:WorkspaceSummary; workspaceId:string; bootstrap:Bootstrap; setBootstrap:React.Dispatch<React.SetStateAction<Bootstrap>>; pendingCount:number; refreshPending:()=>void;onLogout:()=>void;theme:Theme;onThemeChange:(theme:Theme)=>void;onSession:(session:SessionState)=>Promise<void>;onCreateWorkspace:()=>void;online:boolean;bybitStatus?:BybitCardStatus|null;onBybitStatus?:(status:BybitCardStatus)=>void }) {
+export function SettingsView({ user, workspace, workspaceId, bootstrap, setBootstrap, pendingCount, refreshPending, onLogout, theme, onThemeChange, onSession, onCreateWorkspace, online, bybitStatus=null, onBybitStatus=()=>{}, onBybitSynced=()=>{} }: { user: AuthenticatedSession; workspace:WorkspaceSummary; workspaceId:string; bootstrap:Bootstrap; setBootstrap:React.Dispatch<React.SetStateAction<Bootstrap>>; pendingCount:number; refreshPending:()=>void;onLogout:()=>void;theme:Theme;onThemeChange:(theme:Theme)=>void;onSession:(session:SessionState)=>Promise<void>;onCreateWorkspace:()=>void;online:boolean;bybitStatus?:BybitCardStatus|null;onBybitStatus?:(status:BybitCardStatus)=>void;onBybitSynced?:()=>void }) {
   const [section,setSection]=useState<'space'|'integrations'|'general'>('space')
   const [editing,setEditing]=useState<Category|null>(null)
   const [adding,setAdding]=useState(false)
@@ -1968,7 +1991,7 @@ export function SettingsView({ user, workspace, workspaceId, bootstrap, setBoots
   return <section className="page settings-page"><header className="page-header settings-title"><div><p className="eyebrow">{workspace.name}</p><h1>Настройки</h1></div></header>
     <nav className="settings-sections" aria-label="Разделы настроек">{sections.map((item)=><button type="button" key={item.id} aria-current={section===item.id?'page':undefined} className={section===item.id?'selected':''} onClick={()=>setSection(item.id)}><b>{item.label}</b><small>{item.caption}</small></button>)}</nav>
     {section==='space'&&<div className="settings-section-panel"><div className="settings-section-copy"><p className="eyebrow">Пространство</p><h2>Люди и доступ</h2><p>Название пространства, участники, устройства и восстановление.</p></div><AccessSettings user={user} workspace={workspace} pendingCount={pendingCount} online={online} onSession={onSession} onCreateWorkspace={onCreateWorkspace} onNotice={accessNotice} onBusyChange={setAccessBusy}/><div className="settings-group"><h2>Локальный профиль</h2><p className="page-intro device-note">Расходы и сессия сохраняются в этом браузере для работы без интернета. Не используйте эту функцию на общем устройстве.</p><button type="button" className="danger-link" disabled={accessBusy||Boolean(moving)} onClick={onLogout}>Выйти и удалить локальные данные</button></div></div>}
-    {section==='integrations'&&<div className="settings-section-panel"><div className="settings-section-copy"><p className="eyebrow">Интеграции</p><h2>Подключённые сервисы</h2><p>Автоматический импорт операций из внешних источников.</p></div><BybitConnectionPanel workspace={workspace} workspaceId={workspaceId} status={bybitStatus} online={online} onStatus={onBybitStatus}/></div>}
+    {section==='integrations'&&<div className="settings-section-panel"><div className="settings-section-copy"><p className="eyebrow">Интеграции</p><h2>Подключённые сервисы</h2><p>Автоматический импорт операций из внешних источников.</p></div><BybitConnectionPanel workspace={workspace} workspaceId={workspaceId} status={bybitStatus} online={online} onStatus={onBybitStatus} onSynced={onBybitSynced}/></div>}
     {section==='general'&&<div className="settings-section-panel"><div className="settings-section-copy"><p className="eyebrow">Общее</p><h2>Вид и категории</h2><p>Оформление этого устройства и структура быстрых кнопок расходов.</p></div><div className="settings-group"><h2>Оформление</h2><div className="theme-setting"><div><b>Тема</b><small>Сохраняется только на этом устройстве</small></div><div className="theme-toggle" role="group" aria-label="Тема оформления"><button type="button" className={theme==='light'?'selected':''} aria-pressed={theme==='light'} onClick={()=>onThemeChange('light')}>Светлая</button><button type="button" className={theme==='dark'?'selected':''} aria-pressed={theme==='dark'} onClick={()=>onThemeChange('dark')}>Тёмная</button></div></div></div><p className="page-intro">Настройте быстрые кнопки и их порядок. Категории меняются только онлайн; архивные останутся в истории.</p>
       <div className="settings-group"><button type="button" className="primary" disabled={!online} onClick={()=>setAdding(true)}>Новая категория</button></div>
       {groups.map(([placement,title])=>{const items=bootstrap.categories.filter((x)=>x.placement===placement&&!x.archivedAt).sort((a,b)=>a.sortOrder-b.sortOrder);return <div className="settings-group" key={placement}><h2>{title}</h2>{items.map((category,index)=><div className="category-row" key={category.id}><i style={{background:category.color ?? '#a9afa5'}}/><button type="button" className="category-name" disabled={!online||Boolean(moving)} onClick={()=>setEditing(category)}>{category.name}</button><button type="button" disabled={!online||Boolean(moving)||index===0} onClick={()=>void move(category,-1)} aria-label={`Поднять категорию ${category.name}`}>↑</button><button type="button" disabled={!online||Boolean(moving)||index===items.length-1} onClick={()=>void move(category,1)} aria-label={`Опустить категорию ${category.name}`}>↓</button></div>)}{!items.length&&<p className="management-state" role="status">Категорий в этом разделе пока нет.</p>}</div>})}
@@ -2477,6 +2500,20 @@ export default function App({ capability = null }: { capability?: CapabilityInte
   },[auth?.currentSessionId,auth?.user.id,online,workspaceId])
   useEffect(()=>{if(tab==='review'&&!reviewConnected)setTab('settings')},[reviewConnected,setTab,tab])
 
+  // A Bybit sync can change expenses server-side (declined operations void their expense); pull the
+  // workspace again without the loading state so history and analytics reflect it immediately.
+  const reloadWorkspaceData=useCallback(()=>{
+    const id=stateRef.current.activeWorkspaceId;const session=stateRef.current.session
+    if(!id||!session?.authenticated)return
+    const userId=session.user.id,sessionId=session.currentSessionId
+    void getBootstrap(id).then((value)=>{
+      if(value.offline)return
+      updateState((current)=>{
+        if(!current.session?.authenticated||current.session.user.id!==userId||current.session.currentSessionId!==sessionId||!current.runtimes[id])return current
+        return updateWorkspace(current,id,(runtime)=>({...runtime,bootstrap:value.data,source:'network',offline:false}))
+      })
+    }).catch(()=>{/* the next regular load refreshes it */})
+  },[updateState])
   const refreshWorkspaceStats=useCallback(async(userId:string,id:string)=>{
     const stats=await outboxStats(userId,id)
     updateState((value)=>{
@@ -2705,7 +2742,7 @@ if(Math.abs(node.scrollLeft-pagerTarget.current)>1)node.scrollLeft=pagerTarget.c
       <div className="page-slot" inert={tab!=='history'} aria-hidden={tab!=='history'}>{mountedTabs.includes('history')&&<HistoryView userId={auth.user.id} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} edit={(id)=>void openExpense(id)} createNew={()=>void openExpense(null)} refreshPending={refreshPending}/>}</div>
       <div className="page-slot" inert={tab!=='analytics'} aria-hidden={tab!=='analytics'}>{mountedTabs.includes('analytics')&&<AnalyticsView userId={auth.user.id} workspaceId={workspaceId} bootstrap={bootstrap} theme={theme} online={serverAvailable}/>}</div>
       {reviewConnected&&<div className="page-slot review-page-slot" inert={tab!=='review'} aria-hidden={tab!=='review'}>{mountedTabs.includes('review')&&<BybitReviewView workspaceId={workspaceId} categories={bootstrap.categories} currencies={bootstrap.currencies} tags={bootstrap.tags??[]} onTag={(tag)=>setWorkspaceData((data)=>({...data,tags:[tag,...(data.tags??[]).filter((item)=>item.id!==tag.id)]}))} online={serverAvailable} onStatus={updateBybitStatus} pendingCount={bybitStatus?.pendingCount??0} active={tab==='review'} onExpense={(expense)=>setWorkspaceData((data)=>({...data,expenses:[expense,...data.expenses.filter((item)=>item.id!==expense.id)]}))} onExpenseUndo={(expenseId)=>setWorkspaceData((data)=>({...data,expenses:data.expenses.filter((item)=>item.id!==expenseId)}))}/>}</div>}
-      <div className="page-slot" inert={tab!=='settings'} aria-hidden={tab!=='settings'}>{mountedTabs.includes('settings')&&<SettingsView user={auth} workspace={workspace} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} pendingCount={stats.total} refreshPending={refreshPending} onLogout={()=>void logoutCurrent()} theme={theme} onThemeChange={setTheme} onSession={(next)=>hydrate(next,false,settingsIdentityEpoch)} onCreateWorkspace={()=>void openCreate()} online={serverAvailable} bybitStatus={bybitStatus} onBybitStatus={(status)=>updateBybitStatus(status)}/>}</div>
+      <div className="page-slot" inert={tab!=='settings'} aria-hidden={tab!=='settings'}>{mountedTabs.includes('settings')&&<SettingsView user={auth} workspace={workspace} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} pendingCount={stats.total} refreshPending={refreshPending} onLogout={()=>void logoutCurrent()} theme={theme} onThemeChange={setTheme} onSession={(next)=>hydrate(next,false,settingsIdentityEpoch)} onCreateWorkspace={()=>void openCreate()} online={serverAvailable} bybitStatus={bybitStatus} onBybitStatus={(status)=>updateBybitStatus(status)} onBybitSynced={reloadWorkspaceData}/>}</div>
     </main>
     <nav className="bottom-nav" aria-label="Основная навигация">{navigationTabs.map((item)=><button type="button" key={item.id} aria-current={tab===item.id?'page':undefined} aria-label={item.id==='review'&&bybitStatus?.pendingCount?`Разбор: ${bybitStatus.pendingCount}`:item.label} className={tab===item.id?'active':''} onClick={()=>{if(tab!==item.id)tap(4);setTab(item.id)}}><span><NavIcon tab={item.id}/>{item.id==='review'&&Boolean(bybitStatus?.pendingCount)&&<b className="nav-badge">{bybitStatus!.pendingCount>99?'99+':bybitStatus!.pendingCount}</b>}</span><small>{item.label}</small></button>)}</nav>
     {switchOpen&&<WorkspaceSwitcher items={auth.workspaces} active={workspaceId} runtimes={state.runtimes} online={serverAvailable} onSelect={(id)=>void switchWorkspace(id)} onCreate={()=>void openCreate()}/>} {createOpen&&<CreateWorkspaceSheet existing onClose={()=>setCreateOpen(false)} onCreate={create}/>} {issuesOpen&&<SyncIssuesSheet userId={auth.user.id} workspaceId={workspaceId} bootstrap={bootstrap} online={serverAvailable} onClose={()=>setIssuesOpen(false)} onRetry={retryIssue} onDiscard={discardIssues}/>} {initialRecovery&&<RecoverySave key={initialRecovery.completionToken} prepared={initialRecovery} mode="initial" close={()=>setInitialRecovery(null)} complete={async()=>{

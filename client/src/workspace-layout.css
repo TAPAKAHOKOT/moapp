@@ -308,6 +308,37 @@ html {
   font-size: 9px;
 }
 
+/* A provider (Bybit Card) declined or reversed the operation: visible, but out of every total. */
+.history-row.voided b,
+.history-row.voided strong {
+  color: var(--text-tertiary);
+  text-decoration: line-through;
+  text-decoration-color: var(--text-disabled);
+}
+
+.history-row.voided i {
+  opacity: 0.45;
+}
+
+.history-row em.voided-badge {
+  position: absolute;
+  right: 0;
+  bottom: 3px;
+  padding: 1px 5px;
+  border-radius: 6px;
+  background: var(--soft);
+  color: var(--danger);
+  font-size: 8px;
+  font-style: normal;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.voided-sheet .danger-link {
+  margin-top: 6px;
+}
+
 .expense-check span,
 .week-navigator,
 .currency-choice,

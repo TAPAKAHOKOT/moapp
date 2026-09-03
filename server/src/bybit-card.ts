@@ -391,14 +391,28 @@ export async function syncBybitCard(app: FastifyInstance, workspaceId: string, f
         SET trade_status=?,provider_status=?,raw_json=?,updated_at=?,
           review_status=CASE WHEN review_status='pending' THEN 'ignored' ELSE review_status END
         WHERE connection_id=? AND external_key=?`);
+      const linkedExpense = app.db.prepare(`SELECT expense_id,txn_id,merchant_name,amount_minor,currency FROM bybit_card_transactions
+        WHERE connection_id=? AND external_key=? AND review_status='classified' AND expense_id IS NOT NULL`);
+      /* The expense stays in history but leaves every total until the person decides what to do with it. */
+      const voidExpense = app.db.prepare(`UPDATE expenses SET voided_at=?,void_reason=?,updated_at=?,version=version+1
+        WHERE workspace_id=? AND id=? AND deleted_at IS NULL AND voided_at IS NULL`);
       for (const record of records) {
         const occurredMs = Number(record.txnCreate);
         if (!Number.isFinite(occurredMs) || occurredMs < enabledAtMs) continue;
         const externalKey = transactionKey(record);
         const state = recordState(record);
         if (state === "void") {
-          /* A declined or reversed authorization leaves the queue; an already classified expense is left to the user. */
+          /* A declined or reversed operation leaves the queue; an already classified expense is marked as declined. */
+          const linked = linkedExpense.get(connection.id, externalKey) as
+            { expense_id: string; txn_id: string | null; merchant_name: string | null; amount_minor: number; currency: string } | undefined;
           voidRow.run(String(record.tradeStatus ?? ""), String(record.status ?? ""), storedProviderMetadata(record), now, connection.id, externalKey);
+          if (linked) {
+            const reason = JSON.stringify({
+              provider: "bybit-card", kind: String(record.tradeStatus ?? "") === "3" ? "reversed" : "declined",
+              txnId: linked.txn_id, merchantName: linked.merchant_name, amountMinor: linked.amount_minor, currency: linked.currency
+            });
+            voidExpense.run(now, reason, now, workspaceId, linked.expense_id);
+          }
           continue;
         }
         const amount = amountOf(record);

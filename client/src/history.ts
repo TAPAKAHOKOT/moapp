@@ -108,10 +108,11 @@ export function buildHistoryCsv(expenses: Expense[], categories: Category[], cur
       decimalAmount(expense.amountMinor, decimals.get(expense.currency) ?? 2),
       expense.currency,
       expense.note ?? '',
+      expense.voidedAt ? (expense.voidReason?.kind ?? 'declined') : 'counted',
       expense.id,
     ].map(csvCell).join(',')
   })
-  return ['occurred_at,date,time,category,tags,amount,currency,note,id', ...rows].join('\n')
+  return ['occurred_at,date,time,category,tags,amount,currency,note,status,id', ...rows].join('\n')
 }
 
 export type HistoryTotals = {
@@ -124,7 +125,9 @@ export type HistoryTotals = {
 }
 
 // Итог по показанным записям: в одной валюте — точная сумма, в нескольких — пересчёт по курсам снимка.
-export function historyTotals(expenses: Expense[], currencies: Currency[], rates: RateSnapshot, target: string): HistoryTotals {
+export function historyTotals(shown: Expense[], currencies: Currency[], rates: RateSnapshot, target: string): HistoryTotals {
+  // Declined/reversed provider operations stay visible but never count.
+  const expenses = shown.filter((expense) => !expense.voidedAt)
   const byCurrency = new Map<string, number>()
   for (const expense of expenses) byCurrency.set(expense.currency, (byCurrency.get(expense.currency) ?? 0) + expense.amountMinor)
   const hasRate = (code: string) => code === target || Boolean((rates.ratesToRsd[code] ?? (code === 'RSD' ? 1 : 0)) && (rates.ratesToRsd[target] ?? (target === 'RSD' ? 1 : 0)))
