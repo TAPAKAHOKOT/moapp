@@ -11,9 +11,14 @@ function chooseOption(label: string, option: string) {
   fireEvent.click(screen.getByRole('option', { name: (name) => name === option || name.startsWith(`${option}, `) }))
 }
 
+function choosePeriod(option: string) {
+  fireEvent.click(screen.getByLabelText('Период истории'))
+  fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: option }))
+}
+
 // Даты в фильтрах выбираются в календарной шторке: листаем к нужному месяцу и нажимаем день.
 function pickDay(label: string, dateKey: string) {
-  fireEvent.click(screen.getByLabelText(label))
+  if (!screen.queryByRole('dialog')) fireEvent.click(screen.getByLabelText(label))
   const dialog = screen.getByRole('dialog')
   const targetMonth = `${dateKey.slice(0, 7)}-01`
   for (let guard = 0; guard < 36; guard += 1) {
@@ -251,7 +256,7 @@ describe('history discovery', () => {
     expect(screen.queryByRole('button', { name: /Продукты/ })).toBeNull()
     expect(screen.getByRole('button', { name: /Транспорт/ })).not.toBeNull()
 
-    chooseOption('Период истории', 'Выбрать день')
+    choosePeriod('День')
     pickDay('День', '2026-08-30')
     expect(screen.getByText('Ничего не найдено')).not.toBeNull()
   })
@@ -271,7 +276,7 @@ describe('history discovery', () => {
     render(<HistoryView {...props}/>)
 
     chooseOption('Валюта истории', 'EUR')
-    chooseOption('Период истории', 'Выбрать день')
+    choosePeriod('День')
     pickDay('День', '2026-08-30')
     fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'кофе' } })
     expect(screen.getAllByRole('button', { name: /Продукты/ })).toHaveLength(1)

@@ -15,7 +15,7 @@ import { completeRecoverySafely, completeRotationSafely } from './recovery-flow'
 import { monitorServiceWorkerUpdates } from './service-worker-update'
 import type { AnalyticsData, AuthenticatedSession, BybitCardStatus, BybitCardTransaction, BybitRegion, CapabilityIntent, Category, Currency, Expense, RecoveryPrepareResponse, SessionState, Tag, WorkspaceBootstrap, WorkspaceOutboxItem, WorkspaceSummary } from './types'
 import { amountToMinor, applyKeypad, convertExpense, countCalendarWeekdays, isoToLocalInput, localDateKey, localInputToIso, monthDateRange, shiftDateKey, startOfWeekDateKey, swipeDirection, weekdayFromDateKey, weekDateRange } from './utils'
-import { buildHistoryCsv, defaultHistoryPreferences, expenseTagNames, filterHistoryExpenses, HISTORY_PERIODS, HISTORY_PERIOD_LABELS, historyTotals, parseHistoryPreferences, type HistoryPeriod, type HistoryPreferences } from './history'
+import { buildHistoryCsv, defaultHistoryPreferences, expenseTagNames, filterHistoryExpenses, HISTORY_PERIOD_LABELS, historyTotals, parseHistoryPreferences, type HistoryPeriod, type HistoryPreferences } from './history'
 
 const AnalyticsChart = lazy(() => import('./AnalyticsCharts'))
 
@@ -581,6 +581,28 @@ function CalendarSheet({ title, value, weekMode = false, onClose, onPick }: { ti
         })}
       </div>
       <div className="date-presets"><button type="button" onClick={() => { tap(4); onPick(today) }}>Сегодня</button><button type="button" onClick={() => { tap(4); onPick(shiftDateKey(today, -1)) }}>Вчера</button></div>
+    </section>
+  </div>
+}
+
+const HISTORY_PRESETS: HistoryPeriod[] = ['today', 'yesterday', 'this-week', 'last-week', 'this-month', 'last-month']
+const HISTORY_CUSTOM_PERIODS: Array<[HistoryPeriod, string]> = [['day', 'День'], ['week', 'Неделя'], ['range', 'Интервал']]
+
+// Период истории: быстрые пресеты парами («эта / прошлая») отделены от режимов со своим выбором дат.
+function PeriodSheet({ value, onClose, onSelect }: { value: HistoryPeriod; onClose: () => void; onSelect: (period: HistoryPeriod) => void }) {
+  const dialogRef = useDialog(onClose)
+  const pick = (period: HistoryPeriod) => { tap(4); onSelect(period) }
+  const option = (period: HistoryPeriod, label: string) => <button type="button" key={period} className={value === period ? 'selected' : undefined} aria-pressed={value === period} onClick={() => pick(period)}>{label}</button>
+  // Шторка лежит внутри <label> рядом с триггером: клик гасим, иначе label «нажмёт» триггер после закрытия.
+  return <div className="sheet-backdrop" onMouseDown={onClose} onClick={(event) => event.preventDefault()}>
+    <section ref={dialogRef} className="bottom-sheet period-sheet" role="dialog" aria-modal="true" aria-labelledby="period-title" onMouseDown={(event) => event.stopPropagation()}>
+      <div className="sheet-handle"/>
+      <div className="sheet-title"><h2 id="period-title">Период</h2><button type="button" className="icon-button" data-dialog-initial-focus onClick={onClose} aria-label="Закрыть">×</button></div>
+      <div className="period-all">{option('all', HISTORY_PERIOD_LABELS.all)}</div>
+      <p className="period-section">Быстрый выбор</p>
+      <div className="period-presets">{HISTORY_PRESETS.map((period) => option(period, HISTORY_PERIOD_LABELS[period]))}</div>
+      <p className="period-section">Свой период</p>
+      <div className="period-custom">{HISTORY_CUSTOM_PERIODS.map(([period, label]) => option(period, label))}</div>
     </section>
   </div>
 }
@@ -1195,6 +1217,7 @@ export function HistoryView({ userId, workspaceId, bootstrap, setBootstrap, edit
   const [deleting, setDeleting] = useState(false)
   const [openRow, setOpenRow] = useState<string | null>(null)
   const [calendar, setCalendar] = useState<'date' | 'from' | 'to' | null>(null)
+  const [periodOpen, setPeriodOpen] = useState(false)
   const { toast, notify, dismiss } = useToast()
   const categoryMap = new Map(bootstrap.categories.map((category) => [category.id, category]))
   const tags = bootstrap.tags ?? []
@@ -1346,7 +1369,14 @@ export function HistoryView({ userId, workspaceId, bootstrap, setBootstrap, edit
       </div>
       <div className="history-filter-grid">
         <label>Тег<Select label="Тег истории" title="Тег" value={filters.tagId} onChange={(value) => updateFilters({ tagId: value })} options={[{ value: '', label: 'Все теги' }, ...tagOptions.map((tag) => ({ value: tag.id, label: tag.name }))]}/></label>
-        <label>Период<Select label="Период истории" title="Период" searchable={false} value={filters.period} onChange={(value) => updateFilters({ period: value as HistoryPeriod })} options={HISTORY_PERIODS.map((period) => ({ value: period, label: HISTORY_PERIOD_LABELS[period] }))}/></label>
+        <label>Период<button type="button" className="select-trigger" aria-label="Период истории" aria-haspopup="dialog" aria-expanded={periodOpen} onClick={() => setPeriodOpen(true)}><span>{HISTORY_PERIOD_LABELS[filters.period]}</span><ChevronIcon/></button>{periodOpen && <PeriodSheet value={filters.period} onClose={() => setPeriodOpen(false)} onSelect={(period) => {
+          setPeriodOpen(false)
+          if (period === filters.period) return
+          updateFilters({ period })
+          // Свой период без даты бесполезен, поэтому календарь открывается сразу.
+          if (period === 'day' || period === 'week') setCalendar('date')
+          if (period === 'range') setCalendar('from')
+        }}/>}</label>
       </div>
       {filters.period === 'day' && <label className="history-date-filter">День<button type="button" className="select-trigger" aria-label="День" onClick={() => setCalendar('date')}><span>{filters.date ? formatHistoryDate(filters.date) : 'Выберите день'}</span><ChevronIcon/></button></label>}
       {filters.period === 'week' && <label className="history-date-filter">Неделя<button type="button" className="select-trigger" aria-label="Неделя" onClick={() => setCalendar('date')}><span>{filters.date ? formatWeekRange(weekDateRange(filters.date).from, weekDateRange(filters.date).to) : 'Выберите неделю'}</span><ChevronIcon/></button></label>}
