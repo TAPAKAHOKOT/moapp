@@ -14,8 +14,8 @@ import { AccessFlowError, acceptDeviceWithProbe, acceptInvitationWithProbe, crea
 import { completeRecoverySafely, completeRotationSafely } from './recovery-flow'
 import { monitorServiceWorkerUpdates } from './service-worker-update'
 import type { AnalyticsData, AuthenticatedSession, BybitCardStatus, BybitCardTransaction, BybitRegion, CapabilityIntent, Category, Currency, Expense, RecoveryPrepareResponse, SessionState, Tag, WorkspaceBootstrap, WorkspaceOutboxItem, WorkspaceSummary } from './types'
-import { amountToMinor, applyKeypad, convertExpense, countCalendarWeekdays, isoToLocalInput, localDateKey, localInputToIso, monthDateRange, shiftDateKey, swipeDirection, weekdayFromDateKey, weekDateRange } from './utils'
-import { buildHistoryCsv, defaultHistoryPreferences, expenseTagNames, filterHistoryExpenses, historyTotals, parseHistoryPreferences, type HistoryPeriod, type HistoryPreferences } from './history'
+import { amountToMinor, applyKeypad, convertExpense, countCalendarWeekdays, isoToLocalInput, localDateKey, localInputToIso, monthDateRange, shiftDateKey, startOfWeekDateKey, swipeDirection, weekdayFromDateKey, weekDateRange } from './utils'
+import { buildHistoryCsv, defaultHistoryPreferences, expenseTagNames, filterHistoryExpenses, HISTORY_PERIODS, HISTORY_PERIOD_LABELS, historyTotals, parseHistoryPreferences, type HistoryPeriod, type HistoryPreferences } from './history'
 
 const AnalyticsChart = lazy(() => import('./AnalyticsCharts'))
 
@@ -241,6 +241,10 @@ export function formatEntryDate(localInput: string) {
   if (!parts) return ''
   const calendarDate = parts.date.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', timeZone: 'UTC' })
   return `${formatShortWeekday(localInput)} · ${calendarDate} ${parts.year}, ${parts.hour}:${parts.minute}`
+}
+
+export function formatShortDate(dateKey: string) {
+  return new Date(`${dateKey}T12:00:00Z`).toLocaleDateString('ru-RU', { timeZone: 'UTC', day: 'numeric', month: 'short', year: 'numeric' }).replace(' г.', '')
 }
 
 export function formatHistoryDate(dateKey: string) {
@@ -549,6 +553,35 @@ function DateSheet({ value, onClose, onPick }: { value: string; onClose: () => v
       {validation && <p className="form-error" role="alert">{validation}</p>}
       <button className="primary">Готово</button>
     </form>
+  </div>
+}
+
+// Календарь на месяц для фильтров истории. Нативный <input type="date"> в iOS Safari закрывался сразу после
+// открытия, поэтому дата выбирается в той же шторке, что и всё остальное.
+function CalendarSheet({ title, value, weekMode = false, onClose, onPick }: { title: string; value: string; weekMode?: boolean; onClose: () => void; onPick: (dateKey: string) => void }) {
+  const today = localDateKey(new Date())
+  const dialogRef = useDialog(onClose)
+  const [month, setMonth] = useState(() => monthDateRange(/^\d{4}-\d{2}-\d{2}$/.test(value) ? value : today).from)
+  const monthLabel = new Date(`${month}T12:00:00Z`).toLocaleDateString('ru-RU', { timeZone: 'UTC', month: 'long', year: 'numeric' }).replace(' г.', '')
+  const firstCell = shiftDateKey(month, -weekdayFromDateKey(month))
+  const cells = Array.from({ length: 42 }, (_, index) => shiftDateKey(firstCell, index))
+  const selectedWeek = weekMode && value ? startOfWeekDateKey(value) : null
+  const moveMonth = (offset: number) => { setMonth(monthDateRange(month, offset).from); tap(4) }
+  return <div className="sheet-backdrop" onMouseDown={onClose}>
+    <section ref={dialogRef} className="bottom-sheet calendar-sheet" role="dialog" aria-modal="true" aria-labelledby="calendar-title" onMouseDown={(event) => event.stopPropagation()}>
+      <div className="sheet-handle"/>
+      <div className="sheet-title"><h2 id="calendar-title">{title}</h2><button type="button" className="icon-button" data-dialog-initial-focus onClick={onClose} aria-label="Закрыть">×</button></div>
+      <div className="calendar-nav"><button type="button" onClick={() => moveMonth(-1)} aria-label="Предыдущий месяц">‹</button><b data-month={month}>{monthLabel}</b><button type="button" onClick={() => moveMonth(1)} aria-label="Следующий месяц">›</button></div>
+      <div className="calendar-grid" role="grid" aria-label={monthLabel}>
+        {['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'].map((day) => <small key={day} aria-hidden="true">{day}</small>)}
+        {cells.map((key) => {
+          const inWeek = selectedWeek !== null && startOfWeekDateKey(key) === selectedWeek
+          const classes = [key.slice(0, 7) !== month.slice(0, 7) ? 'other' : '', key === today ? 'today' : '', key > today ? 'future' : '', inWeek ? 'in-week' : ''].filter(Boolean).join(' ')
+          return <button type="button" key={key} className={classes || undefined} aria-pressed={key === value} aria-label={formatHistoryDate(key)} onClick={() => { tap(4); onPick(key) }}>{Number(key.slice(8))}</button>
+        })}
+      </div>
+      <div className="date-presets"><button type="button" onClick={() => { tap(4); onPick(today) }}>Сегодня</button><button type="button" onClick={() => { tap(4); onPick(shiftDateKey(today, -1)) }}>Вчера</button></div>
+    </section>
   </div>
 }
 
@@ -1161,6 +1194,7 @@ export function HistoryView({ userId, workspaceId, bootstrap, setBootstrap, edit
   const [selected, setSelected] = useState<Set<string>>(() => new Set())
   const [deleting, setDeleting] = useState(false)
   const [openRow, setOpenRow] = useState<string | null>(null)
+  const [calendar, setCalendar] = useState<'date' | 'from' | 'to' | null>(null)
   const { toast, notify, dismiss } = useToast()
   const categoryMap = new Map(bootstrap.categories.map((category) => [category.id, category]))
   const tags = bootstrap.tags ?? []
@@ -1312,15 +1346,22 @@ export function HistoryView({ userId, workspaceId, bootstrap, setBootstrap, edit
       </div>
       <div className="history-filter-grid">
         <label>Тег<Select label="Тег истории" title="Тег" value={filters.tagId} onChange={(value) => updateFilters({ tagId: value })} options={[{ value: '', label: 'Все теги' }, ...tagOptions.map((tag) => ({ value: tag.id, label: tag.name }))]}/></label>
-        <label>Период<Select label="Период истории" title="Период" value={filters.period} onChange={(value) => updateFilters({ period: value as HistoryPeriod })} options={[{ value: 'all', label: 'Все даты' }, { value: 'day', label: 'День' }, { value: 'week', label: 'Неделя' }, { value: 'range', label: 'Интервал' }]}/></label>
+        <label>Период<Select label="Период истории" title="Период" searchable={false} value={filters.period} onChange={(value) => updateFilters({ period: value as HistoryPeriod })} options={HISTORY_PERIODS.map((period) => ({ value: period, label: HISTORY_PERIOD_LABELS[period] }))}/></label>
       </div>
-      {filters.period === 'day' && <label className="history-date-filter">День<input type="date" value={filters.date} onChange={(event) => updateFilters({ date: event.target.value })}/></label>}
-      {filters.period === 'week' && <label className="history-date-filter">Любой день нужной недели<input type="date" value={filters.date} onChange={(event) => updateFilters({ date: event.target.value })}/></label>}
-      {filters.period === 'range' && <div className="history-filter-grid history-range"><label>С<input type="date" value={filters.from} onChange={(event) => updateFilters({ from: event.target.value })}/></label><label>По<input type="date" value={filters.to} onChange={(event) => updateFilters({ to: event.target.value })}/></label></div>}
+      {filters.period === 'day' && <label className="history-date-filter">День<button type="button" className="select-trigger" aria-label="День" onClick={() => setCalendar('date')}><span>{filters.date ? formatHistoryDate(filters.date) : 'Выберите день'}</span><ChevronIcon/></button></label>}
+      {filters.period === 'week' && <label className="history-date-filter">Неделя<button type="button" className="select-trigger" aria-label="Неделя" onClick={() => setCalendar('date')}><span>{filters.date ? formatWeekRange(weekDateRange(filters.date).from, weekDateRange(filters.date).to) : 'Выберите неделю'}</span><ChevronIcon/></button></label>}
+      {filters.period === 'range' && <div className="history-filter-grid history-range"><label>С<button type="button" className="select-trigger" aria-label="Начало интервала" onClick={() => setCalendar('from')}><span>{filters.from ? formatShortDate(filters.from) : 'Не задано'}</span><ChevronIcon/></button></label><label>По<button type="button" className="select-trigger" aria-label="Конец интервала" onClick={() => setCalendar('to')}><span>{filters.to ? formatShortDate(filters.to) : 'Не задано'}</span><ChevronIcon/></button></label></div>}
       <div className="history-filter-summary"><div className="history-summary"><span>Показано {expenses.length} из {activeExpenses.length}</span>{totalLabel && <b className="history-total" aria-label={`Сумма показанных расходов: ${totalLabel}`}>{totalLabel}</b>}{totalParts && <small>{totalParts}{totals.missing.length ? ` · нет курса: ${totals.missing.join(', ')}` : ''}</small>}</div><div>{filtersActive && <button type="button" onClick={resetFilters}>Сбросить</button>}<button type="button" className="history-export" disabled={!expenses.length} onClick={exportExpenses}>Экспорт CSV</button></div></div>
     </div>}
     <div className={`history-list${selected.size ? ' selecting' : ''}`}>{groups.map(([date, items]) => <div key={date} className="history-day"><div className="history-date"><span>{formatHistoryDate(date)}</span><b>{items?.length}</b></div>{items?.map((expense) => <HistoryRow key={expense.id} expense={expense} category={categoryMap.get(expense.categoryId)} tags={tags} currencies={bootstrap.currencies} checked={selected.has(expense.id)} selecting={selected.size > 0} open={openRow === expense.id} disabled={deleting} onOpen={setOpenRow} onToggle={() => toggle(expense.id)} onEdit={() => edit(expense.id)} onDelete={() => void removeOne(expense)}/>)}</div>)}</div>
     {!groups.length && <div className="list-empty" role="status"><span>{filtersActive ? 'Ничего не найдено' : 'История пока пуста'}</span><p>{filtersActive ? 'Измените фильтры или сбросьте их.' : 'Добавьте первый расход — он сразу появится здесь.'}</p>{!filtersActive && <button type="button" className="primary history-empty-action" onClick={createNew}>Добавить первый расход</button>}</div>}
+    {calendar && <CalendarSheet
+      title={calendar === 'from' ? 'С какого дня' : calendar === 'to' ? 'По какой день' : filters.period === 'week' ? 'Какая неделя' : 'Какой день'}
+      weekMode={calendar === 'date' && filters.period === 'week'}
+      value={calendar === 'date' ? filters.date : calendar === 'from' ? filters.from : filters.to}
+      onClose={() => setCalendar(null)}
+      onPick={(key) => { updateFilters(calendar === 'date' ? { date: key } : calendar === 'from' ? { from: key } : { to: key }); setCalendar(null) }}
+    />}
     {toast&&<Toast toast={toast} onDismiss={dismiss}/>}
   </section>
 }

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import * as accessFlow from './access-flow'
 import { AnalyticsView, BybitReviewView, CapabilityScreen, CreateWorkspaceSheet, EntryView, fallbackAnalytics, formatEntryDate, formatHistoryDate, HistoryView, pagerTabsAt, RecoverySave, SettingsView, useToast, WorkspaceSwitcher } from './App'
@@ -9,6 +9,19 @@ import type { AuthenticatedSession, WorkspaceBootstrap } from './types'
 function chooseOption(label: string, option: string) {
   fireEvent.click(screen.getByLabelText(label))
   fireEvent.click(screen.getByRole('option', { name: (name) => name === option || name.startsWith(`${option}, `) }))
+}
+
+// Даты в фильтрах выбираются в календарной шторке: листаем к нужному месяцу и нажимаем день.
+function pickDay(label: string, dateKey: string) {
+  fireEvent.click(screen.getByLabelText(label))
+  const dialog = screen.getByRole('dialog')
+  const targetMonth = `${dateKey.slice(0, 7)}-01`
+  for (let guard = 0; guard < 36; guard += 1) {
+    const shown = dialog.querySelector<HTMLElement>('[data-month]')?.dataset.month ?? ''
+    if (shown === targetMonth) break
+    fireEvent.click(within(dialog).getByLabelText(shown < targetMonth ? 'Следующий месяц' : 'Предыдущий месяц'))
+  }
+  fireEvent.click(within(dialog).getByRole('button', { name: formatHistoryDate(dateKey) }))
 }
 
 const prepared = {
@@ -238,8 +251,8 @@ describe('history discovery', () => {
     expect(screen.queryByRole('button', { name: /Продукты/ })).toBeNull()
     expect(screen.getByRole('button', { name: /Транспорт/ })).not.toBeNull()
 
-    chooseOption('Период истории', 'День')
-    fireEvent.change(screen.getByLabelText('День'), { target: { value: '2026-08-30' } })
+    chooseOption('Период истории', 'Выбрать день')
+    pickDay('День', '2026-08-30')
     expect(screen.getByText('Ничего не найдено')).not.toBeNull()
   })
 
@@ -258,8 +271,8 @@ describe('history discovery', () => {
     render(<HistoryView {...props}/>)
 
     chooseOption('Валюта истории', 'EUR')
-    chooseOption('Период истории', 'День')
-    fireEvent.change(screen.getByLabelText('День'), { target: { value: '2026-08-30' } })
+    chooseOption('Период истории', 'Выбрать день')
+    pickDay('День', '2026-08-30')
     fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'кофе' } })
     expect(screen.getAllByRole('button', { name: /Продукты/ })).toHaveLength(1)
 
@@ -267,8 +280,8 @@ describe('history discovery', () => {
     render(<HistoryView {...props}/>)
 
     expect(screen.getByLabelText('Валюта истории').textContent).toBe('EUR')
-    expect(screen.getByLabelText('Период истории').textContent).toBe('День')
-    expect((screen.getByLabelText('День') as HTMLInputElement).value).toBe('2026-08-30')
+    expect(screen.getByLabelText('Период истории').textContent).toBe('Выбрать день')
+    expect(screen.getByLabelText('День').textContent).toContain('30 августа 2026')
     expect((screen.getByRole('searchbox') as HTMLInputElement).value).toBe('кофе')
     expect(screen.getAllByRole('button', { name: /Продукты/ })).toHaveLength(1)
   })

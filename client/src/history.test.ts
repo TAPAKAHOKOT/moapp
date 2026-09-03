@@ -89,3 +89,22 @@ describe('historyTotals', () => {
     expect(totals.converted).toBeNull()
   })
 })
+
+describe('relative history periods', () => {
+  const filters = (period: HistoryFilters['period']): HistoryFilters => ({ categoryId: '', tagId: '', currency: '', period, date: '', from: '', to: '' })
+
+  it('derives presets from the given day', () => {
+    expect(historyDateRange(filters('today'), '2026-09-03')).toEqual({ from: '2026-09-03', to: '2026-09-03' })
+    expect(historyDateRange(filters('yesterday'), '2026-09-03')).toEqual({ from: '2026-09-02', to: '2026-09-02' })
+    expect(historyDateRange(filters('this-week'), '2026-09-03')).toEqual({ from: '2026-08-31', to: '2026-09-06' })
+    expect(historyDateRange(filters('last-week'), '2026-09-03')).toEqual({ from: '2026-08-24', to: '2026-08-30' })
+    expect(historyDateRange(filters('this-month'), '2026-09-03')).toEqual({ from: '2026-09-01', to: '2026-09-30' })
+    expect(historyDateRange(filters('last-month'), '2026-09-03')).toEqual({ from: '2026-08-01', to: '2026-08-31' })
+  })
+
+  it('applies a preset to the expense list and keeps it after a reload', () => {
+    expect(filterHistoryExpenses(expenses, filters('last-week'), '2026-09-03').map((expense) => expense.id)).toEqual(['sunday-transport', 'monday-food'])
+    expect(parseHistoryPreferences(JSON.stringify({ period: 'last-week' }), '2026-09-03').period).toBe('last-week')
+    expect(parseHistoryPreferences(JSON.stringify({ period: 'fortnight' }), '2026-09-03').period).toBe('all')
+  })
+})

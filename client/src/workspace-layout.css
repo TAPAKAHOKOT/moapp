@@ -784,6 +784,99 @@ html {
   font-size: 10px;
 }
 
+.history-date-filter {
+  margin: 8px 20px 0;
+}
+
+.history-date-filter .select-trigger {
+  margin-top: 5px;
+}
+
+.history-range {
+  margin-top: 8px;
+}
+
+/* Calendar sheet for the history filters. */
+.calendar-nav {
+  display: grid;
+  grid-template-columns: 44px 1fr 44px;
+  align-items: center;
+  margin: 0 0 4px;
+}
+
+.calendar-nav button {
+  height: 44px;
+  border: 0;
+  background: transparent;
+  color: var(--sage);
+  font-size: 26px;
+}
+
+.calendar-nav b {
+  font-size: 13px;
+  text-align: center;
+  text-transform: capitalize;
+}
+
+.calendar-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 3px;
+}
+
+.calendar-grid small {
+  padding: 4px 0 6px;
+  color: var(--text-tertiary);
+  font-size: 9px;
+  font-weight: 700;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.calendar-grid button {
+  min-height: 42px;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.calendar-grid button.other,
+.calendar-grid button.future {
+  color: var(--text-disabled);
+  font-weight: 500;
+}
+
+.calendar-grid button.today {
+  border-color: var(--control-line);
+}
+
+.calendar-grid button.in-week {
+  background: var(--soft);
+}
+
+.calendar-grid button[aria-pressed="true"] {
+  border-color: var(--sage);
+  background: var(--sage);
+  color: #fff;
+  font-weight: 750;
+}
+
+.calendar-grid button:active {
+  transform: scale(0.94);
+}
+
+.calendar-sheet .date-presets {
+  grid-template-columns: 1fr 1fr;
+  margin-top: 12px;
+}
+
+:root[data-theme="dark"] .calendar-grid button[aria-pressed="true"] {
+  color: #141414;
+}
+
 /* Header pill keeps its full label; the workspace name is the part that yields. */
 .workspace-header .sync-status {
   flex: 0 0 auto;

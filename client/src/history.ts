@@ -1,7 +1,13 @@
 import type { Category, Currency, Expense, RateSnapshot, Tag } from './types'
-import { convertExpense, localDateKey, weekDateRange } from './utils'
+import { convertExpense, localDateKey, monthDateRange, shiftDateKey, weekDateRange } from './utils'
 
-export type HistoryPeriod = 'all' | 'day' | 'week' | 'range'
+// Относительные пресеты считаются от сегодняшнего дня при каждом применении, поэтому сохранённый фильтр не устаревает.
+export const HISTORY_PERIODS = ['all', 'today', 'yesterday', 'this-week', 'last-week', 'this-month', 'last-month', 'day', 'week', 'range'] as const
+export type HistoryPeriod = typeof HISTORY_PERIODS[number]
+export const HISTORY_PERIOD_LABELS: Record<HistoryPeriod, string> = {
+  all: 'Все даты', today: 'Сегодня', yesterday: 'Вчера', 'this-week': 'Эта неделя', 'last-week': 'Прошлая неделя',
+  'this-month': 'Этот месяц', 'last-month': 'Прошлый месяц', day: 'Выбрать день', week: 'Выбрать неделю', range: 'Интервал',
+}
 
 export type HistoryFilters = {
   categoryId: string
@@ -25,7 +31,7 @@ export function parseHistoryPreferences(raw: string | null, today: string): Hist
   try {
     const saved = JSON.parse(raw) as Partial<Record<keyof HistoryPreferences, unknown>>
     const date = (value: unknown, fallback: string) => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : fallback
-    const period = saved.period === 'day' || saved.period === 'week' || saved.period === 'range' || saved.period === 'all' ? saved.period : defaults.period
+    const period = (HISTORY_PERIODS as readonly unknown[]).includes(saved.period) ? saved.period as HistoryPeriod : defaults.period
     return {
       query: typeof saved.query === 'string' ? saved.query.slice(0, 200) : defaults.query,
       categoryId: typeof saved.categoryId === 'string' ? saved.categoryId.slice(0, 100) : defaults.categoryId,
@@ -41,7 +47,13 @@ export function parseHistoryPreferences(raw: string | null, today: string): Hist
   }
 }
 
-export function historyDateRange(filters: HistoryFilters) {
+export function historyDateRange(filters: HistoryFilters, today = localDateKey(new Date())): { from?: string; to?: string } {
+  if (filters.period === 'today') return { from: today, to: today }
+  if (filters.period === 'yesterday') { const yesterday = shiftDateKey(today, -1); return { from: yesterday, to: yesterday } }
+  if (filters.period === 'this-week') return weekDateRange(today)
+  if (filters.period === 'last-week') return weekDateRange(today, -1)
+  if (filters.period === 'this-month') return monthDateRange(today)
+  if (filters.period === 'last-month') return monthDateRange(today, -1)
   if (filters.period === 'day') return filters.date ? { from: filters.date, to: filters.date } : {}
   if (filters.period === 'week') return filters.date ? weekDateRange(filters.date) : {}
   if (filters.period !== 'range') return {}
@@ -49,8 +61,8 @@ export function historyDateRange(filters: HistoryFilters) {
   return { from: filters.from || undefined, to: filters.to || undefined }
 }
 
-export function filterHistoryExpenses(expenses: Expense[], filters: HistoryFilters) {
-  const { from, to } = historyDateRange(filters)
+export function filterHistoryExpenses(expenses: Expense[], filters: HistoryFilters, today = localDateKey(new Date())) {
+  const { from, to } = historyDateRange(filters, today)
   return expenses.filter((expense) => {
     if (expense.deletedAt) return false
     if (filters.categoryId && expense.categoryId !== filters.categoryId) return false
