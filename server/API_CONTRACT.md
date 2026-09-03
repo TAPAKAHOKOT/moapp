@@ -309,6 +309,15 @@ Declined records are never imported. The imported amount is what was actually
 paid (`paidAmount`/`paidCurrency`, e.g. RSD), falling back to the card-currency
 total. `type` is `atm` for side 13 or MCC 6011.
 
+When Bybit declines or reverses an operation whose expense was already created,
+the expense is not deleted: it gets `voidedAt` and a `voidReason`
+(`{provider:"bybit-card",kind:"declined"|"reversed",txnId,merchantName,amountMinor,currency}`),
+its version increments, and it is excluded from analytics, history totals and
+the MCP history while staying visible in the expense list.
+`POST /api/workspaces/:workspaceId/expenses/:id/include` with `{version}` clears
+that mark ("count it anyway"); `409 VERSION_CONFLICT` applies as for other
+expense mutations. Deleting the expense works as usual.
+
 ## Analytics and rates
 
 `GET /api/workspaces/:workspaceId/analytics?from=YYYY-MM-DD&to=YYYY-MM-DD&currency=RSD&categoryId=` returns:

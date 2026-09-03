@@ -14,8 +14,29 @@ export type ExpenseRow = {
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
+  voided_at: string | null;
+  void_reason: string | null;
   tag_ids?: string | null;
 };
+
+/*
+ * A voided expense was created from a provider operation (Bybit Card) that the provider later
+ * declined or reversed. It stays visible in history so the person can decide, but is excluded
+ * from every total until they explicitly choose to count it again.
+ */
+export type ExpenseVoidReason = {
+  provider: "bybit-card";
+  kind: "declined" | "reversed";
+  txnId: string | null;
+  merchantName: string | null;
+  amountMinor: number;
+  currency: string;
+};
+
+function parseVoidReason(value: string | null): ExpenseVoidReason | null {
+  if (!value) return null;
+  try { return JSON.parse(value) as ExpenseVoidReason; } catch { return null; }
+}
 
 export type ExpenseInput = {
   id: string;
@@ -54,7 +75,9 @@ export function expenseJson(row: ExpenseRow) {
     version: row.version,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
-    deletedAt: row.deleted_at
+    deletedAt: row.deleted_at,
+    voidedAt: row.voided_at,
+    voidReason: parseVoidReason(row.void_reason)
   };
 }
 
@@ -179,6 +202,17 @@ export function deleteExpense(app: FastifyInstance, workspaceId: string, id: str
   return { expense: expenseJson(readExpense(app, workspaceId, id)!) };
 }
 
+/* "Count it anyway": the person overrides a provider's decline/reversal for this expense. */
+export function includeExpense(app: FastifyInstance, workspaceId: string, id: string, version: number): ExpenseChange {
+  const current = readExpense(app, workspaceId, id);
+  if (!current || current.deleted_at) return { error: "Expense not found", code: "NOT_FOUND" };
+  if (current.version !== version) return { error: "Expense was changed", code: "VERSION_CONFLICT", current: expenseJson(current) };
+  if (!current.voided_at) return { expense: expenseJson(current) };
+  app.db.prepare(`UPDATE expenses SET voided_at=NULL,void_reason=NULL,updated_at=?,version=version+1
+    WHERE workspace_id=? AND id=? AND version=?`).run(new Date().toISOString(), workspaceId, id, version);
+  return { expense: expenseJson(readExpense(app, workspaceId, id)!) };
+}
+
 function sendResult(reply: FastifyReply, result: ExpenseChange) {
   if (!result.error) return reply.send(result.expense);
   const status = result.code === "NOT_FOUND" ? 404 : result.code === "VERSION_CONFLICT" || result.code === "IDEMPOTENCY_CONFLICT" ? 409 : 400;
@@ -251,6 +285,17 @@ export async function registerExpenseRoutes(app: FastifyInstance): Promise<void>
     const outcome = app.db.transaction(() => {
       if (!hasWorkspaceMembership(app, workspaceId, userId)) return { member: false as const };
       return { member: true as const, result: updateExpense(app, workspaceId, (request.params as { id: string }).id, body) };
+    })();
+    return outcome.member ? sendResult(reply, outcome.result) : sendWorkspaceNotFound(reply);
+  });
+
+  app.post(`${prefix}/:id/include`, { preHandler: [app.requireWorkspaceMember, requireMutation], onSend: noStore }, async (request, reply) => {
+    const { workspaceId, userId } = workspaceContext(request);
+    const { version } = (request.body ?? {}) as { version?: number };
+    if (!Number.isInteger(version)) return reply.code(400).send(jsonError("VALIDATION", "version is required"));
+    const outcome = app.db.transaction(() => {
+      if (!hasWorkspaceMembership(app, workspaceId, userId)) return { member: false as const };
+      return { member: true as const, result: includeExpense(app, workspaceId, (request.params as { id: string }).id, version!) };
     })();
     return outcome.member ? sendResult(reply, outcome.result) : sendWorkspaceNotFound(reply);
   });

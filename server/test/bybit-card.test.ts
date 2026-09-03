@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createHmac, randomUUID } from "node:crypto";
 import { after, before, test } from "node:test";
 import { registerBybitCardRoutes } from "../src/bybit-card.js";
+import { registerTenantDomainRoutes } from "../src/tenant-domain.js";
 import { buildTestApp, testConfig } from "./test-app.js";
 
 const config = testConfig();
@@ -93,7 +94,7 @@ const mockFetch: typeof fetch = async (input, init) => {
   });
 };
 
-const app = await buildTestApp({ config, plugins: [(instance) => registerBybitCardRoutes(instance, { fetch: mockFetch })] });
+const app = await buildTestApp({ config, plugins: [registerTenantDomainRoutes, (instance) => registerBybitCardRoutes(instance, { fetch: mockFetch })] });
 const origin = { origin: config.appOrigin };
 let cookie = "";
 let userId = "";
@@ -116,6 +117,11 @@ before(async () => {
     method: "POST", url: "/api/workspaces", headers: { ...origin, ...contextHeaders() }, payload: { id: workspaceId, name: "Home" }
   });
   assert.equal(workspace.statusCode, 201, workspace.body);
+  /* Analytics loads rates for the requested day; seed them so the test never reaches the network. */
+  const today = new Date().toISOString().slice(0, 10);
+  const now = new Date().toISOString();
+  app.db.prepare("INSERT INTO exchange_rates(rate_date,base_currency,quote_currency,rate,fetched_at) VALUES (?,'EUR','RSD',117,?)").run(today, now);
+  app.db.prepare("INSERT INTO exchange_rates(rate_date,base_currency,quote_currency,rate,fetched_at) VALUES (?,'EUR','EUR',1,?)").run(today, now);
 });
 
 after(async () => app.close());
@@ -164,6 +170,17 @@ test("Bybit Card imports only records at or after the exact connection boundary"
 });
 
 test("a later sync settles open authorizations and drops reversed ones from review", async () => {
+  /* The reversed authorization was already classified: its expense must be voided, not deleted. */
+  const reversedRow = app.db.prepare("SELECT id FROM bybit_card_transactions WHERE workspace_id=? AND merchant_name='Reversed'").get(workspaceId) as { id: string };
+  const classified = await app.inject({
+    method: "POST",
+    url: `/api/workspaces/${workspaceId}/integrations/bybit-card/transactions/${reversedRow.id}/classify`,
+    headers: { ...origin, ...contextHeaders() },
+    payload: { categoryId: "eating-out", comment: "Lunch" }
+  });
+  assert.equal(classified.statusCode, 200, classified.body);
+  const reversedExpense = classified.json().expense as { id: string; version: number };
+
   phase = 2;
   app.db.prepare("UPDATE bybit_card_connections SET last_synced_at=? WHERE workspace_id=?").run(new Date(Date.now() - 10 * 60_000).toISOString(), workspaceId);
   const requestsBefore = assetRequests.length;
@@ -183,8 +200,36 @@ test("a later sync settles open authorizations and drops reversed ones from revi
   const queue = await app.inject({ method: "GET", url: `/api/workspaces/${workspaceId}/integrations/bybit-card/transactions`, headers: contextHeaders() });
   const settled = [...(queue.json().transactions as Array<{ merchantName: string; settled: boolean; amountMinor: number }>)].sort((a, b) => a.merchantName.localeCompare(b.merchantName));
   assert.deepEqual(settled.map((item) => [item.merchantName, item.settled, item.amountMinor]), [["Pending", true, 55000], ["WOLT", true, 123400]]);
-  const reversed = app.db.prepare("SELECT review_status, trade_status FROM bybit_card_transactions WHERE workspace_id=? AND merchant_name='Reversed'").get(workspaceId) as { review_status: string; trade_status: string };
-  assert.deepEqual(reversed, { review_status: "ignored", trade_status: "3" });
+  const reversed = app.db.prepare("SELECT review_status, trade_status, expense_id FROM bybit_card_transactions WHERE workspace_id=? AND merchant_name='Reversed'").get(workspaceId) as { review_status: string; trade_status: string; expense_id: string };
+  assert.deepEqual(reversed, { review_status: "classified", trade_status: "3", expense_id: reversedExpense.id }, "a classified operation keeps its link; only pending ones are ignored");
+
+  const voided = await app.inject({ method: "GET", url: `/api/workspaces/${workspaceId}/expenses/${reversedExpense.id}`, headers: contextHeaders() });
+  assert.equal(voided.statusCode, 200, voided.body);
+  assert.equal(voided.json().deletedAt, null);
+  assert.ok(voided.json().voidedAt, "the linked expense is marked as declined by the provider");
+  assert.equal(voided.json().version, reversedExpense.version + 1);
+  assert.deepEqual(voided.json().voidReason, { provider: "bybit-card", kind: "reversed", txnId: "reversed", merchantName: "Reversed", amountMinor: 90000, currency: "RSD" });
+
+  const day = new Date().toISOString().slice(0, 10);
+  const analytics = await app.inject({ method: "GET", url: `/api/workspaces/${workspaceId}/analytics?from=${day}&to=${day}&currency=RSD`, headers: contextHeaders() });
+  assert.equal(analytics.statusCode, 200, analytics.body);
+  assert.equal(analytics.json().totalMinor, 0, "a voided expense is excluded from analytics");
+
+  const stale = await app.inject({
+    method: "POST", url: `/api/workspaces/${workspaceId}/expenses/${reversedExpense.id}/include`,
+    headers: { ...origin, ...contextHeaders() }, payload: { version: reversedExpense.version }
+  });
+  assert.equal(stale.statusCode, 409, stale.body);
+  const included = await app.inject({
+    method: "POST", url: `/api/workspaces/${workspaceId}/expenses/${reversedExpense.id}/include`,
+    headers: { ...origin, ...contextHeaders() }, payload: { version: voided.json().version }
+  });
+  assert.equal(included.statusCode, 200, included.body);
+  assert.equal(included.json().voidedAt, null);
+  assert.equal(included.json().voidReason, null);
+  assert.equal(included.json().version, voided.json().version + 1);
+  const counted = await app.inject({ method: "GET", url: `/api/workspaces/${workspaceId}/analytics?from=${day}&to=${day}&currency=RSD`, headers: contextHeaders() });
+  assert.equal(counted.json().totalMinor, 90000, "counting it again restores it everywhere");
 });
 
 test("review actions can be safely undone and disconnect keeps the final expense", async () => {
@@ -204,7 +249,7 @@ test("review actions can be safely undone and disconnect keeps the final expense
   const replay = await classify();
   assert.equal(replay.statusCode, 200, replay.body);
   assert.equal(replay.json().expense.id, first.json().expense.id);
-  assert.equal((app.db.prepare("SELECT count(*) count FROM expenses WHERE workspace_id=?").get(workspaceId) as { count: number }).count, 1);
+  assert.equal((app.db.prepare("SELECT count(*) count FROM expenses WHERE workspace_id=?").get(workspaceId) as { count: number }).count, 2, "the WOLT expense plus the reversed operation's expense");
 
   const undo = async (payload: Record<string, unknown>) => app.inject({
     method: "POST",
@@ -220,7 +265,7 @@ test("review actions can be safely undone and disconnect keeps the final expense
   assert.equal(undoneClassification.statusCode, 200, undoneClassification.body);
   assert.equal(undoneClassification.json().pendingCount, 2);
   assert.equal(undoneClassification.json().transaction.reviewStatus, "pending");
-  assert.equal((app.db.prepare("SELECT count(*) count FROM expenses WHERE workspace_id=? AND deleted_at IS NULL").get(workspaceId) as { count: number }).count, 0);
+  assert.equal((app.db.prepare("SELECT count(*) count FROM expenses WHERE workspace_id=? AND deleted_at IS NULL").get(workspaceId) as { count: number }).count, 1);
 
   const ignored = await app.inject({
     method: "POST",
@@ -243,5 +288,5 @@ test("review actions can be safely undone and disconnect keeps the final expense
   });
   assert.equal(disconnected.statusCode, 204, disconnected.body);
   assert.equal((app.db.prepare("SELECT count(*) count FROM bybit_card_transactions WHERE workspace_id=?").get(workspaceId) as { count: number }).count, 0);
-  assert.equal((app.db.prepare("SELECT count(*) count FROM expenses WHERE workspace_id=? AND deleted_at IS NULL").get(workspaceId) as { count: number }).count, 1);
+  assert.equal((app.db.prepare("SELECT count(*) count FROM expenses WHERE workspace_id=? AND deleted_at IS NULL").get(workspaceId) as { count: number }).count, 2);
 });

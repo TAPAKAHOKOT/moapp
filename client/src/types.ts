@@ -39,7 +39,19 @@ export type Expense = {
   updatedAt: string
   version: number
   deletedAt: string | null
+  /** Set when the provider (Bybit Card) declined or reversed the operation this expense came from. */
+  voidedAt?: string | null
+  voidReason?: ExpenseVoidReason | null
   pending?: boolean
+}
+
+export type ExpenseVoidReason = {
+  provider: 'bybit-card'
+  kind: 'declined' | 'reversed'
+  txnId: string | null
+  merchantName: string | null
+  amountMinor: number
+  currency: string
 }
 
 export type BybitRegion = 'global' | 'eu' | 'nl' | 'tr' | 'kz' | 'ge' | 'ae' | 'id'

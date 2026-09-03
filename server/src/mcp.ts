@@ -144,7 +144,7 @@ function createMcpServer(app: FastifyInstance, userId: string): McpServer {
     } catch (error) {
       return historyToolError(error instanceof Error ? error.message : "cursor is invalid");
     }
-    const where = ["e.workspace_id=?", "e.deleted_at IS NULL"];
+    const where = ["e.workspace_id=?", "e.deleted_at IS NULL", "e.voided_at IS NULL"];
     const values: unknown[] = [workspaceId];
     if (categoryId) { where.push("e.category_id=?"); values.push(categoryId); }
     if (tagId) { where.push("EXISTS (SELECT 1 FROM expense_tags f WHERE f.workspace_id=e.workspace_id AND f.expense_id=e.id AND f.tag_id=?)"); values.push(tagId); }

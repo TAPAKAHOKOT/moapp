@@ -50,7 +50,7 @@ export async function registerAnalyticsRoutes(app: FastifyInstance): Promise<voi
     // dates. SQL establishes tenant/deletion/category scope before the calendar
     // conversion is applied in memory.
     const rows = (app.db.prepare(`SELECT * FROM expenses
-      WHERE workspace_id=? AND deleted_at IS NULL ${categoryId ? "AND category_id=?" : ""}
+      WHERE workspace_id=? AND deleted_at IS NULL AND voided_at IS NULL ${categoryId ? "AND category_id=?" : ""}
       ORDER BY occurred_at`).all(...(categoryId ? [workspaceId, categoryId] : [workspaceId])) as ExpenseRow[])
       .filter((row) => {
         const date = localDateKey(row.occurred_at);
