@@ -1365,6 +1365,12 @@ html {
   white-space: nowrap;
 }
 
+.review-merchant .review-pending-note {
+  margin-top: 3px;
+  color: var(--pending, var(--muted));
+  font-weight: 600;
+}
+
 .bybit-review-page .review-comment {
   flex: 0 0 auto;
   display: block;

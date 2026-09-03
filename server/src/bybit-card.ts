@@ -64,9 +64,30 @@ type TransactionRow = {
   mcc_code: string | null;
   merchant_category: string | null;
   occurred_at: string;
+  trade_status: string;
+  provider_status: string;
   review_status: "pending" | "classified" | "ignored";
   expense_id: string | null;
 };
+
+/* Reviewable rows: settled payments (trade 1) and open authorizations (trade 0) that Bybit accepted. */
+const REVIEWABLE_ROW_FILTER = "trade_status IN ('0','1') AND provider_status='1'";
+
+type RecordState = "settled" | "authorized" | "void";
+
+/*
+ * tradeStatus: 0 in progress, 1 completed, 2 declined, 3 reversal. status: 1 success, 2 fail.
+ * An open authorization is money the holder has already spent, so it is reviewable right away
+ * and its row is refreshed on later syncs until Bybit settles, declines or reverses it.
+ */
+function recordState(record: AssetRecord): RecordState {
+  const tradeStatus = String(record.tradeStatus ?? "");
+  const status = String(record.status ?? "");
+  if (status !== "1") return "void";
+  if (tradeStatus === "1") return "settled";
+  if (tradeStatus === "0") return "authorized";
+  return "void";
+}
 
 type AssetRecord = {
   tradeStatus?: unknown;
@@ -283,7 +304,8 @@ function transactionJson(row: TransactionRow) {
     merchantCategory: row.merchant_category,
     occurredAt: row.occurred_at,
     reviewStatus: row.review_status,
-    expenseId: row.expense_id
+    expenseId: row.expense_id,
+    settled: row.trade_status === "1"
   };
 }
 
@@ -291,7 +313,7 @@ function connectionStatus(app: FastifyInstance, workspaceId: string) {
   const row = app.db.prepare("SELECT * FROM bybit_card_connections WHERE workspace_id=?").get(workspaceId) as ConnectionRow | undefined;
   if (!row) return { connected: false as const, pendingCount: 0 };
   const pending = app.db.prepare(`SELECT count(*) count FROM bybit_card_transactions
-    WHERE workspace_id=? AND review_status='pending' AND trade_status='1' AND provider_status='1'`)
+    WHERE workspace_id=? AND review_status='pending' AND ${REVIEWABLE_ROW_FILTER}`)
     .get(workspaceId) as { count: number };
   return {
     connected: true as const,
@@ -320,8 +342,7 @@ async function fetchRecords(fetchImpl: FetchLike, credentials: Credentials, from
     fetched += data.length;
     records.push(...data.filter((record) => {
       const occurredAt = Number(record.txnCreate);
-      return Number.isFinite(occurredAt) && occurredAt >= from && occurredAt <= to
-        && String(record.tradeStatus ?? "") === "1" && String(record.status ?? "") === "1";
+      return Number.isFinite(occurredAt) && occurredAt >= from && occurredAt <= to;
     }));
     const total = typeof result.totalCount === "number" ? result.totalCount : fetched;
     const pageSize = typeof result.pageSize === "number" && result.pageSize > 0 ? result.pageSize : ASSET_PAGE_SIZE;
@@ -344,7 +365,11 @@ export async function syncBybitCard(app: FastifyInstance, workspaceId: string, f
     if (connection.last_synced_at && Date.now() - lastSyncedMs < MIN_SYNC_INTERVAL_MS) {
       return { imported: 0, pendingCount: connectionStatus(app, workspaceId).pendingCount };
     }
-    const from = Math.max(enabledAtMs, lastSyncedMs - SYNC_OVERLAP_MS);
+    /* Open authorizations may settle weeks later, so the window always reaches back to the oldest one. */
+    const oldestOpen = app.db.prepare(`SELECT min(occurred_at) occurred_at FROM bybit_card_transactions
+      WHERE connection_id=? AND trade_status='0'`).get(connection.id) as { occurred_at: string | null };
+    const oldestOpenMs = oldestOpen.occurred_at ? Date.parse(oldestOpen.occurred_at) : Number.POSITIVE_INFINITY;
+    const from = Math.max(enabledAtMs, Math.min(lastSyncedMs - SYNC_OVERLAP_MS, oldestOpenMs));
     const to = Date.now();
     const records = await fetchRecords(fetchImpl, decryptBybitCredentials(app, connection.credentials_encrypted), from, to, app.config.bybitApiBaseUrl);
     const now = new Date(to).toISOString();
@@ -362,13 +387,23 @@ export async function syncBybitCard(app: FastifyInstance, workspaceId: string, f
           merchant_name=excluded.merchant_name,merchant_country=excluded.merchant_country,merchant_city=excluded.merchant_city,
           mcc_code=excluded.mcc_code,merchant_category=excluded.merchant_category,occurred_at=excluded.occurred_at,
           raw_json=excluded.raw_json,updated_at=excluded.updated_at`);
+      const voidRow = app.db.prepare(`UPDATE bybit_card_transactions
+        SET trade_status=?,provider_status=?,raw_json=?,updated_at=?,
+          review_status=CASE WHEN review_status='pending' THEN 'ignored' ELSE review_status END
+        WHERE connection_id=? AND external_key=?`);
       for (const record of records) {
         const occurredMs = Number(record.txnCreate);
         if (!Number.isFinite(occurredMs) || occurredMs < enabledAtMs) continue;
+        const externalKey = transactionKey(record);
+        const state = recordState(record);
+        if (state === "void") {
+          /* A declined or reversed authorization leaves the queue; an already classified expense is left to the user. */
+          voidRow.run(String(record.tradeStatus ?? ""), String(record.status ?? ""), storedProviderMetadata(record), now, connection.id, externalKey);
+          continue;
+        }
         const amount = amountOf(record);
         if (!amount) continue;
         const side = String(record.side ?? "");
-        const externalKey = transactionKey(record);
         const existed = app.db.prepare("SELECT 1 FROM bybit_card_transactions WHERE connection_id=? AND external_key=?")
           .get(connection.id, externalKey);
         insert.run(
@@ -468,7 +503,7 @@ export async function registerBybitCardRoutes(app: FastifyInstance, options: { f
     const requestedLimit = Number((request.query as { limit?: string }).limit ?? 100);
     if (!Number.isInteger(requestedLimit) || requestedLimit < 1) return fail(reply, 400, "VALIDATION", "limit must be a positive integer");
     const rows = app.db.prepare(`SELECT * FROM bybit_card_transactions
-      WHERE workspace_id=? AND review_status='pending' AND trade_status='1' AND provider_status='1'
+      WHERE workspace_id=? AND review_status='pending' AND ${REVIEWABLE_ROW_FILTER}
       ORDER BY occurred_at,id LIMIT ?`).all(workspaceId, Math.min(200, requestedLimit)) as TransactionRow[];
     return { transactions: rows.map(transactionJson), pendingCount: connectionStatus(app, workspaceId).pendingCount };
   });

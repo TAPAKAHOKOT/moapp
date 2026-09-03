@@ -9,6 +9,7 @@ const assetRequests: Array<Record<string, unknown>> = [];
 const assetRequestIds: string[] = [];
 let validationTime = 0;
 let rateLimited = false;
+let phase = 1;
 
 function payment(overrides: Record<string, unknown>): Record<string, unknown> {
   return {
@@ -55,25 +56,35 @@ const mockFetch: typeof fetch = async (input, init) => {
       headers: { "content-type": "application/json", "X-Bapi-Limit-Reset-Timestamp": String(Date.now()) }
     });
   }
-  const boundary = validationTime;
+  /* Records are placed relative to the requested window: the mocked fetch answers within the same
+     millisecond, so anything "after" createEndTime would be legitimately outside the sync window. */
+  const begin = Number(assetRequest.createBeginTime);
+  const end = Number(assetRequest.createEndTime);
+  const at = (offset: number) => String(Math.min(begin + offset, end));
   const data = [
     payment({
       basicAmount: "19.250000000000000000", transactionAmount: "18.870000000000000000", transactionCurrencyAmount: "19.2500000000",
-      paidAmount: "1925.000000000000000000", txnCreate: String(boundary - 60_000), merchName: "Old merchant", merchCountry: "SRB",
+      paidAmount: "1925.000000000000000000", txnCreate: String(begin - 60_000), merchName: "Old merchant", merchCountry: "SRB",
       txnId: "old", orderNo: "old-order", mccCode: "5411"
     }),
     payment({
       basicAmount: "12.460000000000000000", transactionAmount: "12.220000000000000000", transactionCurrencyAmount: "12.4600000000",
-      paidAmount: "1234.000000000000000000", txnCreate: String(boundary + 1), merchName: "WOLT", merchCity: "Belgrade", merchCountry: "SRB",
+      paidAmount: "1234.000000000000000000", txnCreate: at(1), merchName: "WOLT", merchCity: "Belgrade", merchCountry: "SRB",
       txnId: "new", orderNo: "new-order", mccCode: "5812", merchCategoryDesc: "Eating Places"
     }),
+    /* An open authorization: reviewable immediately, settled in phase 2 with a slightly different amount. */
     payment({
-      tradeStatus: "0", basicAmount: "5.000000000000000000", transactionAmount: "4.900000000000000000", transactionCurrencyAmount: "5.0000000000",
-      paidAmount: "500.000000000000000000", txnCreate: String(boundary + 2), merchName: "Pending", merchCountry: "SRB", txnId: "pending", mccCode: "5411"
+      tradeStatus: phase === 1 ? "0" : "1", basicAmount: "5.000000000000000000", transactionAmount: "4.900000000000000000", transactionCurrencyAmount: "5.0000000000",
+      paidAmount: phase === 1 ? "500.000000000000000000" : "550.000000000000000000", txnCreate: at(2), merchName: "Pending", merchCountry: "SRB", txnId: "pending", mccCode: "5411"
+    }),
+    /* An open authorization that Bybit reverses in phase 2: it must leave the review queue. */
+    payment({
+      tradeStatus: phase === 1 ? "0" : "3", basicAmount: "9.000000000000000000", transactionAmount: "8.820000000000000000", transactionCurrencyAmount: "9.0000000000",
+      paidAmount: "900.000000000000000000", txnCreate: at(3), merchName: "Reversed", merchCountry: "SRB", txnId: "reversed", mccCode: "5411"
     }),
     payment({
       tradeStatus: "2", status: "2", declinedReason: "51", basicAmount: "3.000000000000000000", transactionAmount: "2.940000000000000000",
-      transactionCurrencyAmount: "3.0000000000", paidAmount: "300.000000000000000000", txnCreate: String(boundary + 3), merchName: "Declined",
+      transactionCurrencyAmount: "3.0000000000", paidAmount: "300.000000000000000000", txnCreate: at(4), merchName: "Declined",
       merchCountry: "SRB", txnId: "declined", mccCode: "5411"
     })
   ];
@@ -118,7 +129,7 @@ test("Bybit Card imports only records at or after the exact connection boundary"
   });
   assert.equal(connected.statusCode, 201, connected.body);
   assert.equal(connected.json().connected, true);
-  assert.equal(connected.json().pendingCount, 1);
+  assert.equal(connected.json().pendingCount, 3, "one settled payment plus two open authorizations are reviewable");
   assert.equal(assetRequests.length, 2, "the rate-limited first attempt is retried once");
   for (const assetRequest of assetRequests) {
     assert.equal(assetRequest.type, "SIDE_QUERY_AUTH");
@@ -132,7 +143,7 @@ test("Bybit Card imports only records at or after the exact connection boundary"
 
   const storedConnection = app.db.prepare("SELECT * FROM bybit_card_connections WHERE workspace_id=?").get(workspaceId) as { credentials_encrypted: string };
   assert.doesNotMatch(storedConnection.credentials_encrypted, /read-only-card-key|super-secret/);
-  assert.equal((app.db.prepare("SELECT count(*) count FROM bybit_card_transactions WHERE workspace_id=?").get(workspaceId) as { count: number }).count, 1);
+  assert.equal((app.db.prepare("SELECT count(*) count FROM bybit_card_transactions WHERE workspace_id=?").get(workspaceId) as { count: number }).count, 3, "declined and pre-boundary records are never stored");
 
   const repeatedSync = await app.inject({
     method: "POST",
@@ -145,15 +156,39 @@ test("Bybit Card imports only records at or after the exact connection boundary"
 
   const queue = await app.inject({ method: "GET", url: `/api/workspaces/${workspaceId}/integrations/bybit-card/transactions`, headers: contextHeaders() });
   assert.equal(queue.statusCode, 200, queue.body);
-  assert.equal(queue.json().transactions.length, 1);
-  assert.equal(queue.json().transactions[0].merchantName, "WOLT");
-  assert.equal(queue.json().transactions[0].amountMinor, 123400, "the amount actually paid (RSD) is imported, not the card-currency total");
-  assert.equal(queue.json().transactions[0].currency, "RSD");
-  assert.equal(queue.json().transactions[0].type, "purchase");
+  const byName = (items: Array<{ merchantName: string }>) => [...items].sort((a, b) => a.merchantName.localeCompare(b.merchantName));
+  const imported = byName(queue.json().transactions) as Array<{ merchantName: string; settled: boolean; amountMinor: number; currency: string; type: string }>;
+  assert.deepEqual(imported.map((item) => [item.merchantName, item.settled, item.amountMinor]), [["Pending", false, 50000], ["Reversed", false, 90000], ["WOLT", true, 123400]]);
+  assert.equal(imported[2]!.currency, "RSD", "the amount actually paid (RSD) is imported, not the card-currency total");
+  assert.equal(imported[2]!.type, "purchase");
+});
+
+test("a later sync settles open authorizations and drops reversed ones from review", async () => {
+  phase = 2;
+  app.db.prepare("UPDATE bybit_card_connections SET last_synced_at=? WHERE workspace_id=?").run(new Date(Date.now() - 10 * 60_000).toISOString(), workspaceId);
+  const requestsBefore = assetRequests.length;
+  const sync = await app.inject({
+    method: "POST",
+    url: `/api/workspaces/${workspaceId}/integrations/bybit-card/sync`,
+    headers: { ...origin, ...contextHeaders() },
+    payload: {}
+  });
+  assert.equal(sync.statusCode, 200, sync.body);
+  assert.equal(assetRequests.length, requestsBefore + 1);
+  assert.ok((assetRequests.at(-1)!.createBeginTime as number) <= Date.parse((app.db.prepare("SELECT min(occurred_at) occurred_at FROM bybit_card_transactions WHERE workspace_id=? AND merchant_name='Pending'").get(workspaceId) as { occurred_at: string }).occurred_at),
+    "the window reaches back to the oldest open authorization even after the overlap would have passed");
+  assert.equal(sync.json().imported, 0, "settling an already imported authorization is not a new import");
+  assert.equal(sync.json().pendingCount, 2);
+
+  const queue = await app.inject({ method: "GET", url: `/api/workspaces/${workspaceId}/integrations/bybit-card/transactions`, headers: contextHeaders() });
+  const settled = [...(queue.json().transactions as Array<{ merchantName: string; settled: boolean; amountMinor: number }>)].sort((a, b) => a.merchantName.localeCompare(b.merchantName));
+  assert.deepEqual(settled.map((item) => [item.merchantName, item.settled, item.amountMinor]), [["Pending", true, 55000], ["WOLT", true, 123400]]);
+  const reversed = app.db.prepare("SELECT review_status, trade_status FROM bybit_card_transactions WHERE workspace_id=? AND merchant_name='Reversed'").get(workspaceId) as { review_status: string; trade_status: string };
+  assert.deepEqual(reversed, { review_status: "ignored", trade_status: "3" });
 });
 
 test("review actions can be safely undone and disconnect keeps the final expense", async () => {
-  const row = app.db.prepare("SELECT id FROM bybit_card_transactions WHERE workspace_id=?").get(workspaceId) as { id: string };
+  const row = app.db.prepare("SELECT id FROM bybit_card_transactions WHERE workspace_id=? AND merchant_name='WOLT'").get(workspaceId) as { id: string };
   const classify = async () => app.inject({
     method: "POST",
     url: `/api/workspaces/${workspaceId}/integrations/bybit-card/transactions/${row.id}/classify`,
@@ -162,7 +197,7 @@ test("review actions can be safely undone and disconnect keeps the final expense
   });
   const first = await classify();
   assert.equal(first.statusCode, 200, first.body);
-  assert.equal(first.json().pendingCount, 0);
+  assert.equal(first.json().pendingCount, 1);
   assert.equal(first.json().expense.amountMinor, 123400);
   assert.equal(first.json().expense.currency, "RSD");
   assert.equal(first.json().expense.note, "WOLT · Dinner");
@@ -183,7 +218,7 @@ test("review actions can be safely undone and disconnect keeps the final expense
 
   const undoneClassification = await undo({ expenseId: first.json().expense.id, expenseVersion: first.json().expense.version });
   assert.equal(undoneClassification.statusCode, 200, undoneClassification.body);
-  assert.equal(undoneClassification.json().pendingCount, 1);
+  assert.equal(undoneClassification.json().pendingCount, 2);
   assert.equal(undoneClassification.json().transaction.reviewStatus, "pending");
   assert.equal((app.db.prepare("SELECT count(*) count FROM expenses WHERE workspace_id=? AND deleted_at IS NULL").get(workspaceId) as { count: number }).count, 0);
 
@@ -194,10 +229,10 @@ test("review actions can be safely undone and disconnect keeps the final expense
     payload: {}
   });
   assert.equal(ignored.statusCode, 200, ignored.body);
-  assert.equal(ignored.json().pendingCount, 0);
+  assert.equal(ignored.json().pendingCount, 1);
   const undoneIgnore = await undo({});
   assert.equal(undoneIgnore.statusCode, 200, undoneIgnore.body);
-  assert.equal(undoneIgnore.json().pendingCount, 1);
+  assert.equal(undoneIgnore.json().pendingCount, 2);
 
   const finalClassification = await classify();
   assert.equal(finalClassification.statusCode, 200, finalClassification.body);

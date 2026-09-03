@@ -49,7 +49,9 @@ In **Settings → Integrations → Bybit Card**, choose `Global / Serbia` and us
 - API secret: `moapp-demo-secret`
 
 The mock deliberately returns one operation just before the enable boundary
-(it must not appear) and three operations at or after it. The override is
+(it must not appear), three settled operations at or after it, one open
+authorization that must appear as "awaiting settlement", and one declined
+operation that must stay hidden. The override is
 rejected in production and accepts only a loopback HTTP origin.
 
 ## ChatGPT and MCP
