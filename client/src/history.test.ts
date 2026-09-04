@@ -23,17 +23,17 @@ const expenses: Expense[] = [
 ]
 
 function filters(overrides: Partial<HistoryFilters> = {}): HistoryFilters {
-  return { categoryId: '', tagId: '', currency: '', period: 'all', date: '2026-08-30', from: '', to: '', ...overrides }
+  return { categoryId: '', tagId: '', currency: '', period: 'all', from: '', to: '', ...overrides }
 }
 
 describe('history filters', () => {
-  it('filters by category and Belgrade calendar day', () => {
-    expect(filterHistoryExpenses(expenses, filters({ categoryId: 'transport', period: 'day' })).map((expense) => expense.id)).toEqual(['sunday-transport'])
+  it('filters by category and a single Belgrade calendar day', () => {
+    expect(filterHistoryExpenses(expenses, filters({ categoryId: 'transport', period: 'range', from: '2026-08-30', to: '2026-08-30' })).map((expense) => expense.id)).toEqual(['sunday-transport'])
   })
 
-  it('uses Monday through Sunday for a selected week', () => {
-    expect(historyDateRange(filters({ period: 'week' }))).toEqual({ from: '2026-08-24', to: '2026-08-30' })
-    expect(filterHistoryExpenses(expenses, filters({ period: 'week' })).map((expense) => expense.id)).toEqual(['sunday-transport', 'monday-food'])
+  it('uses Monday through Sunday for the current week', () => {
+    expect(historyDateRange(filters({ period: 'this-week' }), '2026-08-30')).toEqual({ from: '2026-08-24', to: '2026-08-30' })
+    expect(filterHistoryExpenses(expenses, filters({ period: 'this-week' }), '2026-08-30').map((expense) => expense.id)).toEqual(['sunday-transport', 'monday-food'])
   })
 
   it('accepts an interval entered in either order', () => {
@@ -50,8 +50,10 @@ describe('history filters', () => {
   })
 
   it('restores valid saved preferences and ignores malformed storage', () => {
-    const saved = parseHistoryPreferences(JSON.stringify({ query: 'кофе', categoryId: 'food', currency: 'EUR', period: 'range', date: '2026-08-30', from: '2026-08-01', to: '2026-08-31' }), '2026-09-01')
-    expect(saved).toEqual({ query: 'кофе', categoryId: 'food', tagId: '', currency: 'EUR', period: 'range', date: '2026-08-30', from: '2026-08-01', to: '2026-08-31' })
+    const saved = parseHistoryPreferences(JSON.stringify({ query: 'кофе', categoryId: 'food', currency: 'EUR', period: 'range', from: '2026-08-01', to: '2026-08-31' }), '2026-09-01')
+    expect(saved).toEqual({ query: 'кофе', categoryId: 'food', tagId: '', currency: 'EUR', period: 'range', from: '2026-08-01', to: '2026-08-31' })
+    // Старые сохранённые режимы («день», «неделя») больше не существуют и сбрасываются на «все даты».
+    expect(parseHistoryPreferences(JSON.stringify({ period: 'day', date: '2026-08-30' }), '2026-09-01').period).toBe('all')
     expect(parseHistoryPreferences(JSON.stringify({ tagId: 'trip' }), '2026-09-01').tagId).toBe('trip')
     expect(parseHistoryPreferences('{broken', '2026-09-01')).toEqual(defaultHistoryPreferences('2026-09-01'))
   })
@@ -103,20 +105,19 @@ describe('historyTotals', () => {
 })
 
 describe('relative history periods', () => {
-  const filters = (period: HistoryFilters['period']): HistoryFilters => ({ categoryId: '', tagId: '', currency: '', period, date: '', from: '', to: '' })
+  const filters = (period: HistoryFilters['period']): HistoryFilters => ({ categoryId: '', tagId: '', currency: '', period, from: '', to: '' })
 
   it('derives presets from the given day', () => {
     expect(historyDateRange(filters('today'), '2026-09-03')).toEqual({ from: '2026-09-03', to: '2026-09-03' })
-    expect(historyDateRange(filters('yesterday'), '2026-09-03')).toEqual({ from: '2026-09-02', to: '2026-09-02' })
     expect(historyDateRange(filters('this-week'), '2026-09-03')).toEqual({ from: '2026-08-31', to: '2026-09-06' })
-    expect(historyDateRange(filters('last-week'), '2026-09-03')).toEqual({ from: '2026-08-24', to: '2026-08-30' })
     expect(historyDateRange(filters('this-month'), '2026-09-03')).toEqual({ from: '2026-09-01', to: '2026-09-30' })
-    expect(historyDateRange(filters('last-month'), '2026-09-03')).toEqual({ from: '2026-08-01', to: '2026-08-31' })
   })
 
   it('applies a preset to the expense list and keeps it after a reload', () => {
-    expect(filterHistoryExpenses(expenses, filters('last-week'), '2026-09-03').map((expense) => expense.id)).toEqual(['sunday-transport', 'monday-food'])
-    expect(parseHistoryPreferences(JSON.stringify({ period: 'last-week' }), '2026-09-03').period).toBe('last-week')
+    expect(filterHistoryExpenses(expenses, filters('this-week'), '2026-09-03').map((expense) => expense.id)).toEqual(['eur-food', 'next-week-food'])
+    expect(parseHistoryPreferences(JSON.stringify({ period: 'this-week' }), '2026-09-03').period).toBe('this-week')
+    // «Прошлая неделя» и «прошлый месяц» больше не пресеты, а диапазоны из календаря: сохранённый режим сбрасывается.
+    expect(parseHistoryPreferences(JSON.stringify({ period: 'last-week' }), '2026-09-03').period).toBe('all')
     expect(parseHistoryPreferences(JSON.stringify({ period: 'fortnight' }), '2026-09-03').period).toBe('all')
   })
 })

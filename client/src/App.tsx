@@ -14,12 +14,12 @@ import { AccessFlowError, acceptDeviceWithProbe, acceptInvitationWithProbe, crea
 import { completeRecoverySafely, completeRotationSafely } from './recovery-flow'
 import { monitorServiceWorkerUpdates } from './service-worker-update'
 import type { AnalyticsData, AuthenticatedSession, BybitCardStatus, BybitCardTransaction, BybitRegion, CapabilityIntent, Category, Currency, Expense, RecoveryPrepareResponse, SessionState, Tag, WorkspaceBootstrap, WorkspaceOutboxItem, WorkspaceSummary } from './types'
-import { amountToMinor, applyKeypad, cachedDateTimeFormat, cachedNumberFormat, convertExpense, countCalendarWeekdays, isoToLocalInput, localDateKey, localInputToIso, monthDateRange, shiftDateKey, startOfWeekDateKey, swipeDirection, weekdayFromDateKey, weekDateRange } from './utils'
+import { amountToMinor, applyKeypad, cachedDateTimeFormat, cachedNumberFormat, convertExpense, countCalendarWeekdays, isoToLocalInput, localDateKey, localInputToIso, monthDateRange, shiftDateKey, swipeDirection, weekdayFromDateKey, weekDateRange } from './utils'
 import { buildHistoryCsv, defaultHistoryPreferences, expenseTagNames, filterHistoryExpenses, HISTORY_PERIOD_LABELS, historyTotals, parseHistoryPreferences, type HistoryPeriod, type HistoryPreferences } from './history'
 
 const AnalyticsChart = lazy(() => import('./AnalyticsCharts'))
 
-export type Tab = 'entry' | 'history' | 'analytics' | 'review' | 'settings'
+export type Tab = 'entry' | 'history' | 'analytics' | 'settings'
 type Theme = 'light' | 'dark'
 type AnalyticsPeriod = 'week' | 'month'
 const CHART_COLOR = '#758d69'
@@ -285,11 +285,13 @@ type SelectOption = { value: string; label: string; hint?: string }
 
 // Замена нативного <select>: системный список вариантов не стилизуется и выбивается из интерфейса,
 // поэтому варианты открываются в той же нижней шторке, что валюта и категории.
-function Select({ label, title = label, value, options, onChange, disabled = false, searchable = options.length > 8 }: { label: string; title?: string; value: string; options: SelectOption[]; onChange: (value: string) => void; disabled?: boolean; searchable?: boolean }) {
+function Select({ label, title = label, value, options, onChange, disabled = false, searchable = options.length > 8, className = 'select-trigger', placeholder }: { label: string; title?: string; value: string; options: SelectOption[]; onChange: (value: string) => void; disabled?: boolean; searchable?: boolean; className?: string; placeholder?: string }) {
   const [open, setOpen] = useState(false)
   const current = options.find((option) => option.value === value)
+  // Чип фильтра без значения называет сам фильтр («Категория»), а не «Все категории»: так видно, что включено.
+  const text = !value && placeholder ? placeholder : current?.label ?? '—'
   return <>
-    <button type="button" className="select-trigger" aria-label={label} aria-haspopup="listbox" aria-expanded={open} disabled={disabled} onClick={() => setOpen(true)}><span>{current?.label ?? '—'}</span><ChevronIcon/></button>
+    <button type="button" className={`${className}${value && className !== 'select-trigger' ? ' active' : ''}`} aria-label={label} aria-haspopup="listbox" aria-expanded={open} disabled={disabled} onClick={() => setOpen(true)}><span>{text}</span><ChevronIcon/></button>
     {open && <SelectSheet title={title} value={value} options={options} searchable={searchable} onClose={() => setOpen(false)} onSelect={(next) => { setOpen(false); if (next !== value) onChange(next) }}/>}
   </>
 }
@@ -567,53 +569,56 @@ function DateSheet({ value, onClose, onPick }: { value: string; onClose: () => v
   </div>
 }
 
-// Календарь на месяц для фильтров истории. Нативный <input type="date"> в iOS Safari закрывался сразу после
-// открытия, поэтому дата выбирается в той же шторке, что и всё остальное.
-function CalendarSheet({ title, value, weekMode = false, onClose, onPick }: { title: string; value: string; weekMode?: boolean; onClose: () => void; onPick: (dateKey: string) => void }) {
+// Календарь для фильтра истории: первый тап — начало, второй — конец; один день — два тапа по одной дате.
+// Нативный <input type="date"> в iOS Safari закрывался сразу после открытия, поэтому даты выбираются в шите.
+function CalendarSheet({ from, to, onClose, onPick }: { from: string; to: string; onClose: () => void; onPick: (from: string, to: string) => void }) {
   const today = localDateKey(new Date())
   const dialogRef = useDialog(onClose)
-  const [month, setMonth] = useState(() => monthDateRange(/^\d{4}-\d{2}-\d{2}$/.test(value) ? value : today).from)
+  const [start, setStart] = useState<string | null>(null)
+  const [month, setMonth] = useState(() => monthDateRange(/^\d{4}-\d{2}-\d{2}$/.test(from) ? from : today).from)
   const monthLabel = new Date(`${month}T12:00:00Z`).toLocaleDateString('ru-RU', { timeZone: 'UTC', month: 'long', year: 'numeric' }).replace(' г.', '')
   const firstCell = shiftDateKey(month, -weekdayFromDateKey(month))
   const cells = Array.from({ length: 42 }, (_, index) => shiftDateKey(firstCell, index))
-  const selectedWeek = weekMode && value ? startOfWeekDateKey(value) : null
   const moveMonth = (offset: number) => { setMonth(monthDateRange(month, offset).from); tap(4) }
+  const pick = (key: string) => {
+    tap(4)
+    if (!start) { setStart(key); return }
+    onPick(key < start ? key : start, key < start ? start : key)
+  }
+  const rangeFrom = start ?? from
+  const rangeTo = start ? null : to
+  const yesterday = shiftDateKey(today, -1)
+  const lastMonth = monthDateRange(today, -1)
   return <div className="sheet-backdrop" onMouseDown={onClose}>
     <section ref={dialogRef} className="bottom-sheet calendar-sheet" role="dialog" aria-modal="true" aria-labelledby="calendar-title" onMouseDown={(event) => event.stopPropagation()}>
       <div className="sheet-handle"/>
-      <div className="sheet-title"><h2 id="calendar-title">{title}</h2><button type="button" className="icon-button" data-dialog-initial-focus onClick={onClose} aria-label="Закрыть">×</button></div>
+      <div className="sheet-title"><h2 id="calendar-title">{start ? 'По какой день' : 'С какого дня'}</h2><button type="button" className="icon-button" data-dialog-initial-focus onClick={onClose} aria-label="Закрыть">×</button></div>
       <div className="calendar-nav"><button type="button" onClick={() => moveMonth(-1)} aria-label="Предыдущий месяц">‹</button><b data-month={month}>{monthLabel}</b><button type="button" onClick={() => moveMonth(1)} aria-label="Следующий месяц">›</button></div>
       <div className="calendar-grid" role="grid" aria-label={monthLabel}>
         {['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'].map((day) => <small key={day} aria-hidden="true">{day}</small>)}
         {cells.map((key) => {
-          const inWeek = selectedWeek !== null && startOfWeekDateKey(key) === selectedWeek
-          const classes = [key.slice(0, 7) !== month.slice(0, 7) ? 'other' : '', key === today ? 'today' : '', key > today ? 'future' : '', inWeek ? 'in-week' : ''].filter(Boolean).join(' ')
-          return <button type="button" key={key} className={classes || undefined} aria-pressed={key === value} aria-label={formatHistoryDate(key)} onClick={() => { tap(4); onPick(key) }}>{Number(key.slice(8))}</button>
+          const inRange = Boolean(rangeFrom && rangeTo && key >= rangeFrom && key <= rangeTo)
+          const edge = key === rangeFrom || key === rangeTo
+          const classes = [key.slice(0, 7) !== month.slice(0, 7) ? 'other' : '', key === today ? 'today' : '', key > today ? 'future' : '', inRange && !edge ? 'in-week' : ''].filter(Boolean).join(' ')
+          return <button type="button" key={key} className={classes || undefined} aria-pressed={edge} aria-label={formatHistoryDate(key)} onClick={() => pick(key)}>{Number(key.slice(8))}</button>
         })}
       </div>
-      <div className="date-presets"><button type="button" onClick={() => { tap(4); onPick(today) }}>Сегодня</button><button type="button" onClick={() => { tap(4); onPick(shiftDateKey(today, -1)) }}>Вчера</button></div>
+      {!start && <div className="date-presets"><button type="button" onClick={() => { tap(4); onPick(yesterday, yesterday) }}>Вчера</button><button type="button" onClick={() => { tap(4); onPick(lastMonth.from, lastMonth.to) }}>Прошлый месяц</button></div>}
     </section>
   </div>
 }
 
-const HISTORY_PRESETS: HistoryPeriod[] = ['today', 'yesterday', 'this-week', 'last-week', 'this-month', 'last-month']
-const HISTORY_CUSTOM_PERIODS: Array<[HistoryPeriod, string]> = [['day', 'День'], ['week', 'Неделя'], ['range', 'Интервал']]
+const HISTORY_PERIOD_ORDER: HistoryPeriod[] = ['all', 'today', 'this-week', 'this-month', 'range']
 
-// Период истории: быстрые пресеты парами («эта / прошлая») отделены от режимов со своим выбором дат.
+// Период истории: пять вариантов в одном списке; «Выбрать даты» открывает календарь с диапазоном.
 function PeriodSheet({ value, onClose, onSelect }: { value: HistoryPeriod; onClose: () => void; onSelect: (period: HistoryPeriod) => void }) {
   const dialogRef = useDialog(onClose)
   const pick = (period: HistoryPeriod) => { tap(4); onSelect(period) }
-  const option = (period: HistoryPeriod, label: string) => <button type="button" key={period} className={value === period ? 'selected' : undefined} aria-pressed={value === period} onClick={() => pick(period)}>{label}</button>
-  // Шторка лежит внутри <label> рядом с триггером: клик гасим, иначе label «нажмёт» триггер после закрытия.
   return <div className="sheet-backdrop" onMouseDown={onClose} onClick={(event) => event.preventDefault()}>
     <section ref={dialogRef} className="bottom-sheet period-sheet" role="dialog" aria-modal="true" aria-labelledby="period-title" onMouseDown={(event) => event.stopPropagation()}>
       <div className="sheet-handle"/>
       <div className="sheet-title"><h2 id="period-title">Период</h2><button type="button" className="icon-button" data-dialog-initial-focus onClick={onClose} aria-label="Закрыть">×</button></div>
-      <div className="period-all">{option('all', HISTORY_PERIOD_LABELS.all)}</div>
-      <p className="period-section">Быстрый выбор</p>
-      <div className="period-presets">{HISTORY_PRESETS.map((period) => option(period, HISTORY_PERIOD_LABELS[period]))}</div>
-      <p className="period-section">Свой период</p>
-      <div className="period-custom">{HISTORY_CUSTOM_PERIODS.map(([period, label]) => option(period, label))}</div>
+      <div className="period-all">{HISTORY_PERIOD_ORDER.map((period) => <button type="button" key={period} className={value === period ? 'selected' : undefined} aria-pressed={value === period} onClick={() => pick(period)}>{HISTORY_PERIOD_LABELS[period]}</button>)}</div>
     </section>
   </div>
 }
@@ -1143,6 +1148,7 @@ const LONG_PRESS_MS = 450
 const ROW_DRAG_START = 8
 
 // Строка истории: тап открывает запись, долгое нажатие включает выбор нескольких, свайп влево открывает удаление.
+// Главной строкой идёт то, что человек написал сам (заметка); без заметки — категория. Теги — точками цвета.
 // Строк в истории сотни, и все они живут в дереве постоянно. Мемоизация с колбэками, принимающими запись,
 // даёт перерисовку только тех строк, чьё состояние (выбор, открытый свайп) действительно изменилось.
 const HistoryRow = memo(function HistoryRow({ expense, category, tags, currencies, checked, selecting, open, disabled, onOpen, onToggle, onEdit, onDelete, onVoided }: {
@@ -1199,18 +1205,25 @@ const HistoryRow = memo(function HistoryRow({ expense, category, tags, currencie
   }
   const translate = dragOffset ?? (open ? -ROW_ACTION_WIDTH : 0)
   const tagList = expense.tagIds?.length ? sortTags(tags.filter((tag) => expense.tagIds?.includes(tag.id))) : []
+  const categoryName = category?.name || 'Скрытая категория'
+  const title = expense.note || categoryName
+  const subtitle = expense.note ? categoryName : ''
   return <div className={`history-expense${checked ? ' selected' : ''}${open ? ' open' : ''}`} onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={(event) => finish(true, event.clientX)} onPointerCancel={() => finish(false)}>
     <div className="history-swipe" style={{ transform: translate ? `translateX(${translate}px)` : undefined, transition: dragOffset === null ? undefined : 'none', willChange: dragOffset === null ? undefined : 'transform' }}>
-      <label className="expense-check" aria-label={`Выбрать расход ${category?.name || ''}`}><input type="checkbox" tabIndex={selecting ? 0 : -1} checked={checked} onChange={() => onToggle(expense.id)}/><span/></label>
-      <button type="button" className={`history-row${tagList.length ? ' has-tags' : ''}${expense.voidedAt ? ' voided' : ''}`} aria-pressed={selecting ? checked : undefined} onClick={click}><i style={{backgroundColor:category?.color ?? '#a9afa5'}}/><span><b>{category?.name || 'Архивная категория'}</b><small>{cachedDateTimeFormat('ru-RU',{timeZone:'Europe/Belgrade',hour:'2-digit',minute:'2-digit'}).format(new Date(expense.occurredAt))}{expense.note ? ` · ${expense.note}`:''}</small>{tagList.length ? <span className="tag-chips">{tagList.map((tag) => <TagChip key={tag.id} name={tag.name} color={tag.color}/>)}</span> : null}</span><strong>{money(expense.amountMinor,expense.currency,currencies)}</strong>{expense.voidedAt ? <em className="voided-badge" aria-label="Отклонено провайдером, не учитывается">{expense.voidReason?.kind === 'reversed' ? 'Сторно' : 'Отклонено'}</em> : expense.pending && <em aria-label="Ожидает синхронизации">●</em>}</button>
+      <label className="expense-check" aria-label={`Выбрать расход ${categoryName}`}><input type="checkbox" tabIndex={selecting ? 0 : -1} checked={checked} onChange={() => onToggle(expense.id)}/><span/></label>
+      <button type="button" className={`history-row${expense.voidedAt ? ' voided' : ''}`} aria-pressed={selecting ? checked : undefined} onClick={click}><i style={{backgroundColor:category?.color ?? '#a9afa5'}}/><span><b><span>{title}</span>{tagList.length ? <span className="tag-dots" aria-label={`Теги: ${tagList.map((tag) => tag.name).join(', ')}`}>{tagList.map((tag) => <i key={tag.id} style={{ background: tag.color ?? 'var(--sage)' }}/>)}</span> : null}</b>{subtitle && <small>{subtitle}</small>}</span><strong>{money(expense.amountMinor,expense.currency,currencies)}</strong>{expense.voidedAt ? <em className="voided-badge" aria-label="Платёж не прошёл, не учитывается">{expense.voidReason?.kind === 'reversed' ? 'Возврат' : 'Не прошёл'}</em> : expense.pending && <em aria-label="Ожидает отправки">●</em>}</button>
     </div>
     <button type="button" className="history-swipe-delete" tabIndex={open ? 0 : -1} aria-hidden={!open} disabled={disabled} onClick={() => onDelete(expense)}><TrashIcon/><span>Удалить</span></button>
   </div>
 })
 
+const SearchIcon = () => <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/></svg>
+
+type HistoryInbox = { count: number; onOpen: () => void }
+
 // Вкладка не размонтируется, пока открыто пространство, поэтому она не должна перерисовываться от чужих
 // изменений состояния приложения — только от своих данных и колбэков (все они стабильны у родителя).
-export const HistoryView = memo(function HistoryView({ userId, workspaceId, bootstrap, setBootstrap, edit, createNew, refreshPending }: {
+export const HistoryView = memo(function HistoryView({ userId, workspaceId, bootstrap, setBootstrap, edit, createNew, refreshPending, inbox = null }: {
   userId: string
   workspaceId: string
   bootstrap: Bootstrap
@@ -1218,6 +1231,7 @@ export const HistoryView = memo(function HistoryView({ userId, workspaceId, boot
   edit: (id: string) => void
   createNew: () => void
   refreshPending: () => void
+  inbox?: HistoryInbox | null
 }) {
   const [filters, setFilters] = useState<HistoryPreferences>(() => parseHistoryPreferences(
     getWorkspacePreference(userId, workspaceId, 'history-filters'),
@@ -1226,8 +1240,10 @@ export const HistoryView = memo(function HistoryView({ userId, workspaceId, boot
   const [selected, setSelected] = useState<Set<string>>(() => new Set())
   const [deleting, setDeleting] = useState(false)
   const [openRow, setOpenRow] = useState<string | null>(null)
-  const [calendar, setCalendar] = useState<'date' | 'from' | 'to' | null>(null)
+  const [calendar, setCalendar] = useState(false)
   const [periodOpen, setPeriodOpen] = useState(false)
+  const [searchOpen, setSearchOpen] = useState(() => Boolean(filters.query))
+  const [showParts, setShowParts] = useState(false)
   const [voided, setVoided] = useState<Expense | null>(null)
   const [including, setIncluding] = useState(false)
   const { toast, notify, dismiss } = useToast()
@@ -1266,14 +1282,19 @@ export const HistoryView = memo(function HistoryView({ userId, workspaceId, boot
       return searchText.includes(normalizedQuery)
     })
     const grouped = expenses.reduce<Record<string, Expense[]>>((result, item) => { (result[localDateKey(item.occurredAt)] ||= []).push(item); return result }, {})
-    const groups = Object.entries(grouped)
     // Итог по показанным записям. В одной валюте — точная сумма; в нескольких — пересчёт в валюту аналитики и разбивка.
     const totalsTarget = filters.currency || getWorkspacePreference(userId, workspaceId, 'analytics-currency') || bootstrap.defaultAnalyticsCurrency || 'RSD'
-    const totals = historyTotals(expenses, bootstrap.currencies, bootstrap.rates, totalsTarget)
-    const totalLabel = !expenses.length ? null
-      : totals.byCurrency.length === 1 ? money(totals.byCurrency[0]!.amountMinor, totals.byCurrency[0]!.currency, bootstrap.currencies)
-      : totals.converted !== null ? `≈ ${formatAnalyticsAmount(totals.converted, totals.target)}` : null
-    const totalParts = totals.byCurrency.length > 1 ? totals.byCurrency.map((part) => money(part.amountMinor, part.currency, bootstrap.currencies)).join(' + ') : ''
+    const sumLabel = (items: Expense[]) => {
+      const totals = historyTotals(items, bootstrap.currencies, bootstrap.rates, totalsTarget)
+      if (!items.length) return { label: null as string | null, parts: '', totals }
+      const label = totals.byCurrency.length === 1 ? money(totals.byCurrency[0]!.amountMinor, totals.byCurrency[0]!.currency, bootstrap.currencies)
+        : totals.converted !== null ? `≈ ${formatAnalyticsAmount(totals.converted, totals.target)}` : null
+      const parts = totals.byCurrency.length > 1 ? totals.byCurrency.map((part) => money(part.amountMinor, part.currency, bootstrap.currencies)).join(' + ') : ''
+      return { label, parts, totals }
+    }
+    // Заголовок дня показывает сумму дня, а не число записей: по ней читается ритм трат.
+    const groups = Object.entries(grouped).map(([date, items]) => ({ date, items, total: sumLabel(items).label }))
+    const { label: totalLabel, parts: totalParts, totals } = sumLabel(expenses)
     return { categoryMap, tags, activeExpenses, tagOptions, categoryOptions, currencyOptions, normalizedQuery, expenses, groups, totals, totalLabel, totalParts }
   }, [bootstrap, filters, userId, workspaceId])
   const { categoryMap, tags, activeExpenses, tagOptions, categoryOptions, currencyOptions, normalizedQuery, expenses, groups, totals, totalLabel, totalParts } = derived
@@ -1294,26 +1315,9 @@ export const HistoryView = memo(function HistoryView({ userId, workspaceId, boot
   const resetFilters = () => {
     setFilters(defaultHistoryPreferences(localDateKey(new Date())))
     setSelected(new Set())
+    setSearchOpen(false)
   }
-  const exportExpenses = () => {
-    if (!expenses.length) return
-    try {
-      const blob = new Blob(['\uFEFF', buildHistoryCsv(expenses, bootstrap.categories, bootstrap.currencies, tags)], { type: 'text/csv;charset=utf-8' })
-      const url = URL.createObjectURL(blob)
-      const link = document.createElement('a')
-      link.href = url
-      link.download = `moapp-history-${localDateKey(new Date())}.csv`
-      link.hidden = true
-      document.body.append(link)
-      link.click()
-      link.remove()
-      setTimeout(() => URL.revokeObjectURL(url), 0)
-      notify(`Экспортировано расходов: ${expenses.length}`)
-    } catch {
-      notify('Не удалось подготовить файл экспорта', undefined, true)
-    }
-  }
-  // «Учитывать всё равно»: снимает пометку провайдера об отклонении. Только онлайн, как и остальные действия по Bybit.
+  // «Учитывать всё равно»: снимает пометку провайдера. Только онлайн, как и остальные действия по карте.
   const includeOne = async (expense: Expense) => {
     if (!navigator.onLine) { notify('Нужно подключение к серверу', undefined, true); return }
     setIncluding(true)
@@ -1330,7 +1334,7 @@ export const HistoryView = memo(function HistoryView({ userId, workspaceId, boot
     const reason = expense.voidReason
     const when = expense.voidedAt ? new Date(expense.voidedAt).toLocaleDateString('ru-RU') : ''
     const what = reason ? `${reason.merchantName ? `${reason.merchantName} · ` : ''}${money(reason.amountMinor, reason.currency, bootstrap.currencies)}` : ''
-    return `Bybit Card ${reason?.kind === 'reversed' ? 'сторнировал' : 'отклонил'} эту операцию${when ? ` ${when}` : ''}${what ? `: ${what}` : ''}. Расход остаётся в истории, но не учитывается в итогах и аналитике.`
+    return `${reason?.kind === 'reversed' ? 'Банк вернул этот платёж' : 'Этот платёж не прошёл'}${when ? ` ${when}` : ''}${what ? `: ${what}` : ''}. Запись остаётся в истории, но не считается в итогах и аналитике.`
   }
   // Удаление одной записи свайпом: мягкое удаление на сервере можно отменить обновлением той же записи.
   const restoreOne = async (deleted: Expense, original: Expense) => {
@@ -1405,39 +1409,45 @@ export const HistoryView = memo(function HistoryView({ userId, workspaceId, boot
   latest.current = { removeOne, edit }
   const deleteRow = useCallback((expense: Expense) => void latest.current.removeOne(expense), [])
   const editRow = useCallback((id: string) => latest.current.edit(id), [])
-  return <section className="page"><header className="page-header history-title"><div><p className="eyebrow">Все записи</p><h1>История</h1></div><button type="button" className={`icon-danger history-delete${selected.size ? '' : ' off'}`} onClick={removeSelected} disabled={deleting} tabIndex={selected.size ? 0 : -1} aria-hidden={!selected.size} aria-label={`Удалить выбранные расходы: ${selected.size}`}><TrashIcon/></button></header>
-    {activeExpenses.length > 0 && <div className="history-controls">
-      <input className="search" type="search" placeholder="Сумма, заметка, дата или категория" value={filters.query} onChange={(event) => updateFilters({ query: event.target.value })}/>
-      <div className="history-filter-grid">
-        <label>Категория<Select label="Категория истории" title="Категория" value={filters.categoryId} onChange={(value) => updateFilters({ categoryId: value })} options={[{ value: '', label: 'Все категории' }, ...categoryOptions.map((category) => ({ value: category.id, label: category.name, ...(category.archivedAt ? { hint: 'архив' } : {}) }))]}/></label>
-        <label>Валюта<Select label="Валюта истории" title="Валюта" value={filters.currency} onChange={(value) => updateFilters({ currency: value })} options={[{ value: '', label: 'Все валюты' }, ...currencyOptions.map((currency) => ({ value: currency.code, label: currency.code, hint: currency.name }))]}/></label>
+  const periodLabel = filters.period === 'all' ? 'Даты' : filters.period === 'range'
+    ? (filters.from && filters.to ? filters.from === filters.to ? formatShortDate(filters.from) : `${formatShortDate(filters.from)} – ${formatShortDate(filters.to)}` : 'Даты')
+    : HISTORY_PERIOD_LABELS[filters.period]
+  const countLabel = `${expenses.length !== activeExpenses.length ? `${expenses.length} из ${activeExpenses.length}` : expenses.length} ${pluralRu(expenses.length, ['запись', 'записи', 'записей'])}`
+  return <section className="page history-page">
+    {activeExpenses.length > 0 && <div className="history-toolbar">
+      {selected.size > 0
+        ? <div className="history-selectbar" role="toolbar" aria-label="Выбранные расходы"><span>Выбрано {selected.size}</span><button type="button" className="danger-link" onClick={removeSelected} disabled={deleting} aria-label={`Удалить выбранные расходы: ${selected.size}`}>Удалить</button><button type="button" className="text-button" onClick={() => setSelected(new Set())}>Отмена</button></div>
+        : <div className="history-chips">
+          <button type="button" className={`filter-chip${filters.period !== 'all' ? ' active' : ''}`} aria-label="Период истории" aria-haspopup="dialog" aria-expanded={periodOpen} onClick={() => setPeriodOpen(true)}><span>{periodLabel}</span><ChevronIcon/></button>
+          <Select className="filter-chip" label="Категория истории" title="Категория" placeholder="Категория" value={filters.categoryId} onChange={(value) => updateFilters({ categoryId: value })} options={[{ value: '', label: 'Все категории' }, ...categoryOptions.map((category) => ({ value: category.id, label: category.name, ...(category.archivedAt ? { hint: 'скрыта' } : {}) }))]}/>
+          {(currencyOptions.length > 1 || filters.currency) && <Select className="filter-chip" label="Валюта истории" title="Валюта" placeholder="Валюта" value={filters.currency} onChange={(value) => updateFilters({ currency: value })} options={[{ value: '', label: 'Все валюты' }, ...currencyOptions.map((currency) => ({ value: currency.code, label: currency.code, hint: currency.name }))]}/>}
+          {(tagOptions.length > 0 || filters.tagId) && <Select className="filter-chip" label="Тег истории" title="Тег" placeholder="Тег" value={filters.tagId} onChange={(value) => updateFilters({ tagId: value })} options={[{ value: '', label: 'Все теги' }, ...tagOptions.map((tag) => ({ value: tag.id, label: tag.name }))]}/>}
+          <button type="button" className={`filter-chip chip-icon${searchOpen || filters.query ? ' active' : ''}`} aria-label="Поиск" aria-pressed={searchOpen} onClick={() => { if (searchOpen) updateFilters({ query: '' }); setSearchOpen((value) => !value) }}><SearchIcon/></button>
+        </div>}
+      {(searchOpen || filters.query) && selected.size === 0 && <input className="search" type="search" placeholder="Поиск" aria-label="Поиск по истории" autoFocus value={filters.query} onChange={(event) => updateFilters({ query: event.target.value })}/>}
+      {periodOpen && <PeriodSheet value={filters.period} onClose={() => setPeriodOpen(false)} onSelect={(period) => {
+        setPeriodOpen(false)
+        // Свой период без дат бесполезен, поэтому календарь открывается сразу.
+        if (period === 'range') { setCalendar(true); return }
+        if (period !== filters.period) updateFilters({ period })
+      }}/>}
+      <div className="history-total-line">
+        {totalLabel && <button type="button" className="history-total" aria-label={`Сумма показанных расходов: ${totalLabel}`} aria-expanded={totalParts ? showParts : undefined} onClick={() => totalParts && setShowParts((value) => !value)}>{totalLabel}</button>}
+        <span>{totalLabel ? '· ' : ''}{countLabel}</span>
+        {filtersActive && <button type="button" className="history-reset" onClick={resetFilters}>Сбросить</button>}
       </div>
-      <div className="history-filter-grid">
-        <label>Тег<Select label="Тег истории" title="Тег" value={filters.tagId} onChange={(value) => updateFilters({ tagId: value })} options={[{ value: '', label: 'Все теги' }, ...tagOptions.map((tag) => ({ value: tag.id, label: tag.name }))]}/></label>
-        <label>Период<button type="button" className="select-trigger" aria-label="Период истории" aria-haspopup="dialog" aria-expanded={periodOpen} onClick={() => setPeriodOpen(true)}><span>{HISTORY_PERIOD_LABELS[filters.period]}</span><ChevronIcon/></button>{periodOpen && <PeriodSheet value={filters.period} onClose={() => setPeriodOpen(false)} onSelect={(period) => {
-          setPeriodOpen(false)
-          if (period === filters.period) return
-          updateFilters({ period })
-          // Свой период без даты бесполезен, поэтому календарь открывается сразу.
-          if (period === 'day' || period === 'week') setCalendar('date')
-          if (period === 'range') setCalendar('from')
-        }}/>}</label>
-      </div>
-      {filters.period === 'day' && <label className="history-date-filter">День<button type="button" className="select-trigger" aria-label="День" onClick={() => setCalendar('date')}><span>{filters.date ? formatHistoryDate(filters.date) : 'Выберите день'}</span><ChevronIcon/></button></label>}
-      {filters.period === 'week' && <label className="history-date-filter">Неделя<button type="button" className="select-trigger" aria-label="Неделя" onClick={() => setCalendar('date')}><span>{filters.date ? formatWeekRange(weekDateRange(filters.date).from, weekDateRange(filters.date).to) : 'Выберите неделю'}</span><ChevronIcon/></button></label>}
-      {filters.period === 'range' && <div className="history-filter-grid history-range"><label>С<button type="button" className="select-trigger" aria-label="Начало интервала" onClick={() => setCalendar('from')}><span>{filters.from ? formatShortDate(filters.from) : 'Не задано'}</span><ChevronIcon/></button></label><label>По<button type="button" className="select-trigger" aria-label="Конец интервала" onClick={() => setCalendar('to')}><span>{filters.to ? formatShortDate(filters.to) : 'Не задано'}</span><ChevronIcon/></button></label></div>}
-      <div className="history-filter-summary"><div className="history-summary"><span>Показано {expenses.length} из {activeExpenses.length}</span>{totalLabel && <b className="history-total" aria-label={`Сумма показанных расходов: ${totalLabel}`}>{totalLabel}</b>}{totalParts && <small>{totalParts}{totals.missing.length ? ` · нет курса: ${totals.missing.join(', ')}` : ''}</small>}</div><div>{filtersActive && <button type="button" onClick={resetFilters}>Сбросить</button>}<button type="button" className="history-export" disabled={!expenses.length} onClick={exportExpenses}>Экспорт CSV</button></div></div>
+      {showParts && totalParts && <p className="history-total-parts">{totalParts}{totals.missing.length ? ` · нет курса: ${totals.missing.join(', ')}` : ''}</p>}
     </div>}
-    <div className={`history-list${selected.size ? ' selecting' : ''}`}>{groups.map(([date, items]) => <div key={date} className="history-day"><div className="history-date"><span>{formatHistoryDate(date)}</span><b>{items?.length}</b></div>{items?.map((expense) => <HistoryRow key={expense.id} expense={expense} category={categoryMap.get(expense.categoryId)} tags={tags} currencies={bootstrap.currencies} checked={selected.has(expense.id)} selecting={selected.size > 0} open={openRow === expense.id} disabled={deleting} onOpen={setOpenRow} onToggle={toggle} onEdit={editRow} onDelete={deleteRow} onVoided={setVoided}/>)}</div>)}</div>
+    {inbox && inbox.count > 0 && !selected.size && <button type="button" className="history-inbox" onClick={inbox.onOpen}><span className="bybit-mark">B</span><span><b>{inbox.count} {pluralRu(inbox.count, ['операция с карты ждёт', 'операции с карты ждут', 'операций с карты ждут'])} разбора</b><small>Выбрать категории</small></span><ChevronIcon/></button>}
+    <div className={`history-list${selected.size ? ' selecting' : ''}`}>{groups.map(({ date, items, total }) => <div key={date} className="history-day"><div className="history-date"><span>{formatHistoryDate(date)}</span>{total && <b>{total}</b>}</div>{items.map((expense) => <HistoryRow key={expense.id} expense={expense} category={categoryMap.get(expense.categoryId)} tags={tags} currencies={bootstrap.currencies} checked={selected.has(expense.id)} selecting={selected.size > 0} open={openRow === expense.id} disabled={deleting} onOpen={setOpenRow} onToggle={toggle} onEdit={editRow} onDelete={deleteRow} onVoided={setVoided}/>)}</div>)}</div>
     {!groups.length && <div className="list-empty" role="status"><span>{filtersActive ? 'Ничего не найдено' : 'История пока пуста'}</span><p>{filtersActive ? 'Измените фильтры или сбросьте их.' : 'Добавьте первый расход — он сразу появится здесь.'}</p>{!filtersActive && <button type="button" className="primary history-empty-action" onClick={createNew}>Добавить первый расход</button>}</div>}
     {calendar && <CalendarSheet
-      title={calendar === 'from' ? 'С какого дня' : calendar === 'to' ? 'По какой день' : filters.period === 'week' ? 'Какая неделя' : 'Какой день'}
-      weekMode={calendar === 'date' && filters.period === 'week'}
-      value={calendar === 'date' ? filters.date : calendar === 'from' ? filters.from : filters.to}
-      onClose={() => setCalendar(null)}
-      onPick={(key) => { updateFilters(calendar === 'date' ? { date: key } : calendar === 'from' ? { from: key } : { to: key }); setCalendar(null) }}
+      from={filters.period === 'range' ? filters.from : ''}
+      to={filters.period === 'range' ? filters.to : ''}
+      onClose={() => setCalendar(false)}
+      onPick={(from, to) => { updateFilters({ period: 'range', from, to }); setCalendar(false) }}
     />}
-    {voided&&<div className="sheet-backdrop" onMouseDown={()=>{if(!including)setVoided(null)}}><div className="bottom-sheet confirm voided-sheet" role="dialog" aria-modal="true" aria-labelledby="voided-title" onMouseDown={(event)=>event.stopPropagation()}><div className="sheet-handle"/><h2 id="voided-title">{voided.voidReason?.kind==='reversed'?'Операция сторнирована':'Операция отклонена'}</h2><p>{describeVoid(voided)}</p><button type="button" className="primary" disabled={including} onClick={()=>void includeOne(voided)}>{including?'Сохраняем…':'Учитывать всё равно'}</button><button type="button" className="sheet-cancel" disabled={including} onClick={()=>{const target=voided;setVoided(null);edit(target.id)}}>Изменить</button><button type="button" className="danger-link" disabled={including} onClick={()=>{const target=voided;setVoided(null);void removeOne(target)}}>Удалить</button></div></div>}
+    {voided&&<div className="sheet-backdrop" onMouseDown={()=>{if(!including)setVoided(null)}}><div className="bottom-sheet confirm voided-sheet" role="dialog" aria-modal="true" aria-labelledby="voided-title" onMouseDown={(event)=>event.stopPropagation()}><div className="sheet-handle"/><h2 id="voided-title">{voided.voidReason?.kind==='reversed'?'Платёж возвращён':'Платёж не прошёл'}</h2><p>{describeVoid(voided)}</p><button type="button" className="primary" disabled={including} onClick={()=>void includeOne(voided)}>{including?'Сохраняем…':'Учитывать всё равно'}</button><button type="button" className="sheet-cancel" disabled={including} onClick={()=>{const target=voided;setVoided(null);edit(target.id)}}>Изменить</button><button type="button" className="danger-link" disabled={including} onClick={()=>{const target=voided;setVoided(null);void removeOne(target)}}>Удалить</button></div></div>}
     {toast&&<Toast toast={toast} onDismiss={dismiss}/>}
   </section>
 })
@@ -1937,6 +1947,22 @@ export function BybitReviewView({ workspaceId, categories, currencies, tags=[], 
   </section>{notice&&<Toast toast={notice} onDismiss={dismiss}/>} {confirmation}</>
 }
 
+// Экспорт CSV живёт в настройках: это действие раз в квартал, а не при каждом просмотре истории.
+export function exportHistoryCsv(bootstrap: Bootstrap) {
+  const expenses = bootstrap.expenses.filter((item) => !item.deletedAt).sort((left, right) => right.occurredAt.localeCompare(left.occurredAt))
+  const blob = new Blob(['﻿', buildHistoryCsv(expenses, bootstrap.categories, bootstrap.currencies, bootstrap.tags ?? [])], { type: 'text/csv;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = `moapp-history-${localDateKey(new Date())}.csv`
+  link.hidden = true
+  document.body.append(link)
+  link.click()
+  link.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 0)
+  return expenses.length
+}
+
 export function SettingsView({ user, workspace, workspaceId, bootstrap, setBootstrap, pendingCount, refreshPending, onLogout, theme, onThemeChange, onSession, onCreateWorkspace, online, bybitStatus=null, onBybitStatus=()=>{}, onBybitSynced=()=>{} }: { user: AuthenticatedSession; workspace:WorkspaceSummary; workspaceId:string; bootstrap:Bootstrap; setBootstrap:React.Dispatch<React.SetStateAction<Bootstrap>>; pendingCount:number; refreshPending:()=>void;onLogout:()=>void;theme:Theme;onThemeChange:(theme:Theme)=>void;onSession:(session:SessionState)=>Promise<void>;onCreateWorkspace:()=>void;online:boolean;bybitStatus?:BybitCardStatus|null;onBybitStatus?:(status:BybitCardStatus)=>void;onBybitSynced?:()=>void }) {
   const [section,setSection]=useState<'space'|'integrations'|'general'>('space')
   const [editing,setEditing]=useState<Category|null>(null)
@@ -2027,7 +2053,7 @@ export function SettingsView({ user, workspace, workspaceId, bootstrap, setBoots
     <nav className="settings-sections" aria-label="Разделы настроек">{sections.map((item)=><button type="button" key={item.id} aria-current={section===item.id?'page':undefined} className={section===item.id?'selected':''} onClick={()=>setSection(item.id)}><b>{item.label}</b><small>{item.caption}</small></button>)}</nav>
     {section==='space'&&<div className="settings-section-panel"><div className="settings-section-copy"><p className="eyebrow">Пространство</p><h2>Люди и доступ</h2><p>Название пространства, участники, устройства и восстановление.</p></div><AccessSettings user={user} workspace={workspace} pendingCount={pendingCount} online={online} onSession={onSession} onCreateWorkspace={onCreateWorkspace} onNotice={accessNotice} onBusyChange={setAccessBusy}/><div className="settings-group"><h2>Локальный профиль</h2><p className="page-intro device-note">Расходы и сессия сохраняются в этом браузере для работы без интернета. Не используйте эту функцию на общем устройстве.</p><button type="button" className="danger-link" disabled={accessBusy||Boolean(moving)} onClick={onLogout}>Выйти и удалить локальные данные</button></div></div>}
     {section==='integrations'&&<div className="settings-section-panel"><div className="settings-section-copy"><p className="eyebrow">Интеграции</p><h2>Подключённые сервисы</h2><p>Автоматический импорт операций из внешних источников.</p></div><BybitConnectionPanel workspace={workspace} workspaceId={workspaceId} status={bybitStatus} online={online} onStatus={onBybitStatus} onSynced={onBybitSynced}/></div>}
-    {section==='general'&&<div className="settings-section-panel"><div className="settings-section-copy"><p className="eyebrow">Общее</p><h2>Вид и категории</h2><p>Оформление этого устройства и структура быстрых кнопок расходов.</p></div><div className="settings-group"><h2>Оформление</h2><div className="theme-setting"><div><b>Тема</b><small>Сохраняется только на этом устройстве</small></div><div className="theme-toggle" role="group" aria-label="Тема оформления"><button type="button" className={theme==='light'?'selected':''} aria-pressed={theme==='light'} onClick={()=>onThemeChange('light')}>Светлая</button><button type="button" className={theme==='dark'?'selected':''} aria-pressed={theme==='dark'} onClick={()=>onThemeChange('dark')}>Тёмная</button></div></div></div><p className="page-intro">Настройте быстрые кнопки и их порядок. Категории меняются только онлайн; архивные останутся в истории.</p>
+    {section==='general'&&<div className="settings-section-panel"><div className="settings-section-copy"><p className="eyebrow">Общее</p><h2>Вид и категории</h2><p>Оформление этого устройства и структура быстрых кнопок расходов.</p></div><div className="settings-group"><h2>Оформление</h2><div className="theme-setting"><div><b>Тема</b><small>Сохраняется только на этом устройстве</small></div><div className="theme-toggle" role="group" aria-label="Тема оформления"><button type="button" className={theme==='light'?'selected':''} aria-pressed={theme==='light'} onClick={()=>onThemeChange('light')}>Светлая</button><button type="button" className={theme==='dark'?'selected':''} aria-pressed={theme==='dark'} onClick={()=>onThemeChange('dark')}>Тёмная</button></div></div><button type="button" className="sheet-cancel" onClick={()=>{try{setNotice(`Экспортировано расходов: ${exportHistoryCsv(bootstrap)}`)}catch{setNotice('Не удалось подготовить файл экспорта',undefined,true)}}}>Экспорт в CSV</button></div><p className="page-intro">Настройте быстрые кнопки и их порядок. Категории меняются только онлайн; архивные останутся в истории.</p>
       <div className="settings-group"><button type="button" className="primary" disabled={!online} onClick={()=>setAdding(true)}>Новая категория</button></div>
       {groups.map(([placement,title])=>{const items=bootstrap.categories.filter((x)=>x.placement===placement&&!x.archivedAt).sort((a,b)=>a.sortOrder-b.sortOrder);return <div className="settings-group" key={placement}><h2>{title}</h2>{items.map((category,index)=><div className="category-row" key={category.id}><i style={{background:category.color ?? '#a9afa5'}}/><button type="button" className="category-name" disabled={!online||Boolean(moving)} onClick={()=>setEditing(category)}>{category.name}</button><button type="button" disabled={!online||Boolean(moving)||index===0} onClick={()=>void move(category,-1)} aria-label={`Поднять категорию ${category.name}`}>↑</button><button type="button" disabled={!online||Boolean(moving)||index===items.length-1} onClick={()=>void move(category,1)} aria-label={`Опустить категорию ${category.name}`}>↓</button></div>)}{!items.length&&<p className="management-state" role="status">Категорий в этом разделе пока нет.</p>}</div>})}
       <div className="settings-group"><h2>Теги</h2><p className="page-intro">Короткие метки поверх категорий: любой тег можно повесить на любой расход.</p>{tags.length?tags.map((tag,index)=><div className="category-row" key={tag.id}><i style={{background:tag.color??'#a9afa5'}}/><button type="button" className="category-name" disabled={!online||Boolean(movingTag)} onClick={()=>setEditingTag(tag)}>{tag.name}</button><button type="button" disabled={!online||Boolean(movingTag)||index===0} onClick={()=>void moveTag(tag,-1)} aria-label={`Поднять тег ${tag.name}`}>↑</button><button type="button" disabled={!online||Boolean(movingTag)||index===tags.length-1} onClick={()=>void moveTag(tag,1)} aria-label={`Опустить тег ${tag.name}`}>↓</button></div>):<p className="management-state">Тегов пока нет.</p>}<button type="button" className="sheet-cancel" disabled={!online} onClick={()=>setAddingTag(true)}>Новый тег</button></div>
@@ -2054,14 +2080,12 @@ function CategoryEditor({ category, colors, onClose, onSave }:{category:Category
   return <><div className="sheet-backdrop" onMouseDown={()=>{if(!busy)onClose()}}><form ref={dialogRef as React.Ref<HTMLFormElement>} className="bottom-sheet editor" role="dialog" aria-modal="true" aria-labelledby="category-editor-title" noValidate onSubmit={(e)=>{e.preventDefault();void submit(draft)}} onMouseDown={(e)=>e.stopPropagation()}><div className="sheet-handle"/><div className="sheet-title"><h2 id="category-editor-title">{category?'Изменить':'Новая категория'}</h2><button type="button" className="icon-button" data-dialog-initial-focus disabled={busy} aria-label="Закрыть" onClick={onClose}>×</button></div><label>Название<input maxLength={40} aria-invalid={Boolean(validation)} value={draft.name} onChange={(e)=>{setValidation('');setDraft({...draft,name:e.target.value})}}/></label>{validation&&<p className="form-error" role="alert">{validation}</p>}<fieldset><legend>Цвет</legend><div className="colors">{colors.map((color,index)=><button aria-label={`Цвет: ${colorNames[index] ?? color}`} aria-pressed={draft.color===color} type="button" key={color} className={draft.color===color?'selected':''} style={{background:color}} onClick={()=>setDraft({...draft,color})}/>)}</div></fieldset><label>Размещение<Select label="Размещение" value={draft.placement} onChange={(value)=>setDraft({...draft,placement:value as Category['placement']})} options={[{value:'main',label:'Основные'},{value:'additional',label:'Дополнительные'}]}/></label><button className="primary" disabled={busy}>{busy?'Сохраняем…':'Сохранить'}</button>{category&&<button type="button" className="danger-link" disabled={busy} onClick={()=>void (async()=>{if(await confirm({title:'Архивировать категорию?',message:'Она исчезнет из выбора, но останется у старых расходов.',confirmLabel:'Архивировать',danger:true}))await submit({...draft,archivedAt:new Date().toISOString()})})()}>Архивировать</button>}</form></div>{confirmation}</>
 }
 
-const tabs:{id:Tab;label:string}[]=[{id:'entry',label:'Расход'},{id:'history',label:'История'},{id:'analytics',label:'Аналитика'},{id:'review',label:'Разбор'},{id:'settings',label:'Настройки'}]
-const tabsWithoutReview=tabs.filter((item)=>item.id!=='review')
+const tabs:{id:Tab;label:string}[]=[{id:'entry',label:'Расход'},{id:'history',label:'История'},{id:'analytics',label:'Аналитика'},{id:'settings',label:'Настройки'}]
 
 function NavIcon({ tab }: { tab: Tab }) {
   if(tab==='entry')return <svg className="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 8v8M8 12h8"/></svg>
   if(tab==='history')return <svg className="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 7.5V12l3 2"/></svg>
   if(tab==='analytics')return <svg className="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 19V13M12 19V5M19 19V9M3.5 19h17"/></svg>
-  if(tab==='review')return <svg className="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4h10v16H7zM9.5 8h5M9.5 12h5M9.5 16h3"/><path d="m4 8-2 2 2 2M20 12l2 2-2 2"/></svg>
   return <svg className="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h10M18 6h2M4 12h2M10 12h10M4 18h7M15 18h5"/><circle cx="16" cy="6" r="2"/><circle cx="8" cy="12" r="2"/><circle cx="13" cy="18" r="2"/></svg>
 }
 
@@ -2171,6 +2195,15 @@ export function CreateWorkspaceSheet({ existing, onClose, onCreate }: { existing
   const dialogRef=useDialog(onClose,!busy)
   const submit=()=>{if(!name.trim()||!existing&&!displayName.trim()){setValidation(!existing&&!displayName.trim()?'Введите ваше имя.':'Введите название пространства.');return}setValidation('');setBusy(true);void onCreate(stableId.current,name.trim(),existing?undefined:displayName.trim()).finally(()=>setBusy(false))}
   return <div className="sheet-backdrop" onMouseDown={()=>{if(!busy)onClose()}}><form ref={dialogRef as React.Ref<HTMLFormElement>} className="bottom-sheet editor" role="dialog" aria-modal="true" aria-labelledby="create-workspace-title" noValidate onMouseDown={(event)=>event.stopPropagation()} onSubmit={(event)=>{event.preventDefault();submit()}}><div className="sheet-handle"/><div className="sheet-title"><h2 id="create-workspace-title">Создать пространство</h2><button type="button" className="icon-button" data-dialog-initial-focus disabled={busy} aria-label="Закрыть" onClick={onClose}>×</button></div>{!existing&&<label>Как вас называть<input maxLength={80} aria-invalid={Boolean(validation&&!displayName.trim())} value={displayName} onChange={(event)=>{setValidation('');setDisplayName(event.target.value)}}/></label>}<label>Название пространства<input maxLength={80} aria-invalid={Boolean(validation&&!name.trim())} value={name} onChange={(event)=>{setValidation('');setName(event.target.value)}}/></label>{validation&&<p className="form-error" role="alert">{validation}</p>}<button className="primary" disabled={busy}>{busy?'Создаём…':'Создать пространство'}</button><button type="button" className="sheet-cancel" disabled={busy} onClick={onClose}>Отмена</button></form></div>
+}
+
+// Очередь операций с карты открывается поверх истории и закрывается обратно в неё: это входящие, а не вкладка.
+function ReviewOverlay({ onClose, children }: { onClose: () => void; children: React.ReactNode }) {
+  const dialogRef = useDialog(onClose)
+  return <div ref={dialogRef as React.Ref<HTMLDivElement>} className="review-overlay" role="dialog" aria-modal="true" aria-labelledby="review-overlay-title">
+    <header className="review-overlay-head"><button type="button" className="icon-button" data-dialog-initial-focus onClick={onClose} aria-label="Закрыть">×</button><h2 id="review-overlay-title">Операции с карты</h2><span/></header>
+    {children}
+  </div>
 }
 
 export function WorkspaceSwitcher({ items, active, runtimes, online = navigator.onLine, onSelect, onCreate }: { items: WorkspaceSummary[]; active: string; runtimes: Record<string, import('./types').WorkspaceRuntime>; online?: boolean; onSelect: (id: string) => void; onCreate: () => void }) {
@@ -2339,6 +2372,7 @@ export default function App({ capability = null }: { capability?: CapabilityInte
   const [createOpen,setCreateOpen]=useState(false)
   const [switchOpen,setSwitchOpen]=useState(false)
   const [issuesOpen,setIssuesOpen]=useState(false)
+  const [reviewOpen,setReviewOpen]=useState(false)
   const [bybitRuntime,setBybitRuntime]=useState<{workspaceId:string;status:BybitCardStatus}|null>(null)
   const [initialRecovery,setInitialRecovery]=useState<RecoveryPrepareResponse|null>(null)
   const [error,setError]=useState('')
@@ -2353,7 +2387,7 @@ export default function App({ capability = null }: { capability?: CapabilityInte
   const tab=pagerState.workspaceId===state.activeWorkspaceId?pagerState.tab:'entry'
   const mountedTabs=pagerState.workspaceId===state.activeWorkspaceId?pagerState.mounted:['entry']
   const reviewConnected=bybitRuntime?.workspaceId===state.activeWorkspaceId&&bybitRuntime.status.connected
-  const navigationTabs=reviewConnected?tabs:tabsWithoutReview
+  const navigationTabs=tabs
   const setTab=useCallback((next:Tab)=>{
     const workspaceId=stateRef.current.activeWorkspaceId
     // Сначала срочно меняем вкладку (лента поехала), а тяжёлые страницы монтируем в transition — нажатие не ждёт их рендера.
@@ -2533,7 +2567,11 @@ export default function App({ capability = null }: { capability?: CapabilityInte
     }).catch(()=>{/* Bybit status is supplemental and must not block the workspace. */})
     return()=>controller.abort()
   },[auth?.currentSessionId,auth?.user.id,online,workspaceId])
-  useEffect(()=>{if(tab==='review'&&!reviewConnected)setTab('settings')},[reviewConnected,setTab,tab])
+  useEffect(()=>{if(!reviewConnected)setReviewOpen(false)},[reviewConnected])
+  // История мемоизирована: карточка очереди отдаётся ей стабильным объектом, чтобы не перерисовывать список на каждый рендер приложения.
+  const openReview=useCallback(()=>setReviewOpen(true),[])
+  const reviewCount=reviewConnected?bybitStatus?.pendingCount??0:0
+  const historyInbox=useMemo(()=>reviewCount?{count:reviewCount,onOpen:openReview}:null,[reviewCount,openReview])
 
   // A Bybit sync can change expenses server-side (declined operations void their expense); pull the
   // workspace again without the loading state so history and analytics reflect it immediately.
@@ -2712,7 +2750,7 @@ export default function App({ capability = null }: { capability?: CapabilityInte
   const createNewExpense=useCallback(()=>void openExpenseRef.current(null),[])
   const switchWorkspace=async(id:string)=>{
     if(id!==stateRef.current.activeWorkspaceId&&!await confirmDraftDiscard())return
-    if(id!==stateRef.current.activeWorkspaceId){updateState((value)=>setActiveWorkspace(value,id));setCurrentId(null);setDraftDirty(false);setTab('entry')}
+    if(id!==stateRef.current.activeWorkspaceId){updateState((value)=>setActiveWorkspace(value,id));setCurrentId(null);setDraftDirty(false);setReviewOpen(false);setTab('entry')}
     setSwitchOpen(false)
   }
   const retryIssue=async(operationId:string):Promise<string|null>=>{
@@ -2778,12 +2816,12 @@ if(Math.abs(node.scrollLeft-pagerTarget.current)>1)node.scrollLeft=pagerTarget.c
     {!serverAvailable&&<div className="offline-banner" role="status" aria-live="polite"><span><b>Офлайн</b>{queuedCount?` · ${queuedCount} ${pluralRu(queuedCount,['изменение','изменения','изменений'])} ${queuedCount===1?'ждёт':'ждут'} отправки`:' · изменения сохраняются на устройстве и отправятся при подключении'}</span><button type="button" onClick={()=>{void probeServer();setWorkspaceReloadEpoch((value)=>value+1)}}>Повторить</button></div>}
     <main className="pager" ref={pager} onScroll={onPagerScroll} onPointerDown={()=>{stopPagerAnimation();pagerTarget.current=null}} onTouchStart={()=>{stopPagerAnimation();pagerTarget.current=null}}>
       <div className="page-slot" inert={tab!=='entry'} aria-hidden={tab!=='entry'}>{mountedTabs.includes('entry')&&<EntryView userId={auth.user.id} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} currentId={currentId} setCurrentId={setCurrentId} refreshPending={refreshPending} onDraftDirtyChange={setDraftDirty} active={tab==='entry'}/>}</div>
-      <div className="page-slot" inert={tab!=='history'} aria-hidden={tab!=='history'}>{mountedTabs.includes('history')&&<HistoryView userId={auth.user.id} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} edit={editExpense} createNew={createNewExpense} refreshPending={refreshPending}/>}</div>
+      <div className="page-slot" inert={tab!=='history'} aria-hidden={tab!=='history'}>{mountedTabs.includes('history')&&<HistoryView userId={auth.user.id} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} edit={editExpense} createNew={createNewExpense} refreshPending={refreshPending} inbox={historyInbox}/>}</div>
       <div className="page-slot" inert={tab!=='analytics'} aria-hidden={tab!=='analytics'}>{mountedTabs.includes('analytics')&&<AnalyticsView userId={auth.user.id} workspaceId={workspaceId} bootstrap={bootstrap} theme={theme} online={serverAvailable}/>}</div>
-      {reviewConnected&&<div className="page-slot review-page-slot" inert={tab!=='review'} aria-hidden={tab!=='review'}>{mountedTabs.includes('review')&&<BybitReviewView workspaceId={workspaceId} categories={bootstrap.categories} currencies={bootstrap.currencies} tags={bootstrap.tags??[]} onTag={(tag)=>setWorkspaceData((data)=>({...data,tags:[tag,...(data.tags??[]).filter((item)=>item.id!==tag.id)]}))} online={serverAvailable} onStatus={updateBybitStatus} pendingCount={bybitStatus?.pendingCount??0} active={tab==='review'} onExpense={(expense)=>setWorkspaceData((data)=>({...data,expenses:[expense,...data.expenses.filter((item)=>item.id!==expense.id)]}))} onExpenseUndo={(expenseId)=>setWorkspaceData((data)=>({...data,expenses:data.expenses.filter((item)=>item.id!==expenseId)}))}/>}</div>}
       <div className="page-slot" inert={tab!=='settings'} aria-hidden={tab!=='settings'}>{mountedTabs.includes('settings')&&<SettingsView user={auth} workspace={workspace} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} pendingCount={stats.total} refreshPending={refreshPending} onLogout={()=>void logoutCurrent()} theme={theme} onThemeChange={setTheme} onSession={(next)=>hydrate(next,false,settingsIdentityEpoch)} onCreateWorkspace={()=>void openCreate()} online={serverAvailable} bybitStatus={bybitStatus} onBybitStatus={(status)=>updateBybitStatus(status)} onBybitSynced={reloadWorkspaceData}/>}</div>
     </main>
-    <nav className="bottom-nav" aria-label="Основная навигация">{navigationTabs.map((item)=><button type="button" key={item.id} aria-current={tab===item.id?'page':undefined} aria-label={item.id==='review'&&bybitStatus?.pendingCount?`Разбор: ${bybitStatus.pendingCount}`:item.label} className={tab===item.id?'active':''} onClick={()=>{if(tab!==item.id)tap(4);setTab(item.id)}}><span><NavIcon tab={item.id}/>{item.id==='review'&&Boolean(bybitStatus?.pendingCount)&&<b className="nav-badge">{bybitStatus!.pendingCount>99?'99+':bybitStatus!.pendingCount}</b>}</span><small>{item.label}</small></button>)}</nav>
+    <nav className="bottom-nav" aria-label="Основная навигация">{navigationTabs.map((item)=><button type="button" key={item.id} aria-current={tab===item.id?'page':undefined} aria-label={item.id==='history'&&reviewCount?`История: ${reviewCount} операций с карты ждут разбора`:item.label} className={tab===item.id?'active':''} onClick={()=>{if(tab!==item.id)tap(4);setTab(item.id)}}><span><NavIcon tab={item.id}/>{item.id==='history'&&reviewCount>0&&<b className="nav-badge">{reviewCount>99?'99+':reviewCount}</b>}</span><small>{item.label}</small></button>)}</nav>
+    {reviewOpen&&reviewConnected&&<ReviewOverlay onClose={()=>setReviewOpen(false)}><BybitReviewView workspaceId={workspaceId} categories={bootstrap.categories} currencies={bootstrap.currencies} tags={bootstrap.tags??[]} onTag={(tag)=>setWorkspaceData((data)=>({...data,tags:[tag,...(data.tags??[]).filter((item)=>item.id!==tag.id)]}))} online={serverAvailable} onStatus={updateBybitStatus} pendingCount={bybitStatus?.pendingCount??0} active onExpense={(expense)=>setWorkspaceData((data)=>({...data,expenses:[expense,...data.expenses.filter((item)=>item.id!==expense.id)]}))} onExpenseUndo={(expenseId)=>setWorkspaceData((data)=>({...data,expenses:data.expenses.filter((item)=>item.id!==expenseId)}))}/></ReviewOverlay>}
     {switchOpen&&<WorkspaceSwitcher items={auth.workspaces} active={workspaceId} runtimes={state.runtimes} online={serverAvailable} onSelect={(id)=>void switchWorkspace(id)} onCreate={()=>void openCreate()}/>} {createOpen&&<CreateWorkspaceSheet existing onClose={()=>setCreateOpen(false)} onCreate={create}/>} {issuesOpen&&<SyncIssuesSheet userId={auth.user.id} workspaceId={workspaceId} bootstrap={bootstrap} online={serverAvailable} onClose={()=>setIssuesOpen(false)} onRetry={retryIssue} onDiscard={discardIssues}/>} {initialRecovery&&<RecoverySave key={initialRecovery.completionToken} prepared={initialRecovery} mode="initial" close={()=>setInitialRecovery(null)} complete={async()=>{
       const outcome=await completeRotationSafely({prepared:initialRecovery,targetUserId:auth.user.id})
       if(outcome.status!=='completed')throw new Error(outcome.status==='rotation-stale'?'Параллельно была завершена другая настройка восстановления.':'Не удалось подтвердить настройку. Повторите из настроек.')
