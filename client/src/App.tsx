@@ -261,7 +261,6 @@ type CardFace = { title: string; date: string; amount: string; currency: string 
 
 function EntryCard({ face, onDate, onCurrency, disabled = false, limitHit = 0 }: { face: CardFace; onDate?: () => void; onCurrency?: () => void; disabled?: boolean; limitHit?: number }) {
   const inert = onCurrency ? undefined : -1
-  const amountSize = face.amount.replace(/\D/g, '').length > 10 ? 'long' : face.amount.replace(/\D/g, '').length > 7 ? 'medium' : 'normal'
   return <>
     <header className="topline">
       <div>
@@ -270,7 +269,7 @@ function EntryCard({ face, onDate, onCurrency, disabled = false, limitHit = 0 }:
       </div>
     </header>
     <div className="amount-row">
-      <output key={limitHit} className={`amount-value${face.amount ? '' : ' empty'}${limitHit ? ' limit' : ''}`} data-size={amountSize} aria-label="Сумма">{face.amount || '0'}</output>
+      <output key={limitHit} className={`amount-value${face.amount ? '' : ' empty'}${limitHit ? ' limit' : ''}`} data-size={amountSize(face.amount)} aria-label="Сумма">{face.amount || '0'}</output>
       <button type="button" onClick={onCurrency} tabIndex={inert} disabled={disabled}>{face.currency}<ChevronIcon/></button>
     </div>
   </>
@@ -476,6 +475,13 @@ function Toast({ toast, onDismiss }: { toast: ToastState; onDismiss: () => void 
   const leaving = toast.leaving ? ' leaving' : ''
   if (!action) return <div className={`toast toast-message${leaving}`} role={toast.urgent ? 'alert' : 'status'} aria-live={toast.urgent ? 'assertive' : 'polite'}><span>{toast.text}</span><button type="button" onClick={onDismiss} aria-label="Закрыть уведомление">×</button></div>
   return <div className={`toast toast-undo${leaving}`} role="status" aria-live="polite"><span>{toast.text}</span><button type="button" onClick={() => { onDismiss(); action.run() }}>{action.label}</button></div>
+}
+
+// Крупные суммы иначе упираются в многоточие: шрифт ступенчато уменьшается по числу цифр.
+// Общая функция для карточки расхода и для строки суммы разбора — пороги должны совпадать.
+export function amountSize(amount: string) {
+  const digits = amount.replace(/\D/g, '').length
+  return digits > 10 ? 'long' : digits > 7 ? 'medium' : 'normal'
 }
 
 function money(amountMinor: number, currency: string, currencies: Currency[]) {
@@ -1839,6 +1845,7 @@ export function BybitReviewView({ workspaceId, categories, currencies, tags=[], 
   const [deferred,setDeferred]=useState<BybitCardTransaction[]>([])
   const [comment,setComment]=useState('')
   const [selectedCategoryId,setSelectedCategoryId]=useState<string|null>(null)
+  const [categorySheet,setCategorySheet]=useState(false)
   const [selectedTagIds,setSelectedTagIds]=useState<string[]>([])
   const [loading,setLoading]=useState(true)
   const [busy,setBusy]=useState(false)
@@ -1846,7 +1853,12 @@ export function BybitReviewView({ workspaceId, categories, currencies, tags=[], 
   const {toast:notice,notify,dismiss}=useToast()
   const {confirm,confirmation}=useConfirm()
   const current=items[0]
-  const activeCategories=categories.filter((item)=>!item.archivedAt).sort((a,b)=>(a.placement==='main'?0:1)-(b.placement==='main'?0:1)||a.sortOrder-b.sortOrder)
+  // Ряд категорий повторяет расход: основные плитками, остальные — в шите за «Другое».
+  const main=categories.filter((item)=>!item.archivedAt&&item.placement==='main').sort((a,b)=>a.sortOrder-b.sortOrder)
+  const additional=categories.filter((item)=>!item.archivedAt&&item.placement==='additional').sort((a,b)=>a.sortOrder-b.sortOrder)
+  const selectedCategory=selectedCategoryId?categories.find((item)=>item.id===selectedCategoryId):undefined
+  // Выбранная дополнительная категория показывается на самой плитке «Другое», а не добавляется в сетку.
+  const otherFace=selectedCategory&&!main.some((item)=>item.id===selectedCategory.id)?selectedCategory:null
   useEffect(()=>{const controller=new AbortController();setLoading(true);setDeferred([]);listBybitCardTransactions(workspaceId,controller.signal).then((result)=>{setItems(result.transactions);onStatus({pendingCount:result.pendingCount})}).catch((reason)=>{if(!controller.signal.aborted)setError(reason instanceof ApiError?reason.message:'Не удалось загрузить операции')}).finally(()=>{if(!controller.signal.aborted)setLoading(false)});return()=>controller.abort()},[workspaceId]) // eslint-disable-line react-hooks/exhaustive-deps
   // A sync elsewhere (Settings, the server scheduler) can add or settle items while this view is mounted.
   // Re-read the queue when the tab is opened or the known count outgrows what is loaded, merging so the
@@ -1864,7 +1876,7 @@ export function BybitReviewView({ workspaceId, categories, currencies, tags=[], 
     }).catch(()=>{/* the queue already on screen stays usable; the next trigger retries */}).finally(()=>{refreshing.current=false})
     return()=>{controller.abort();refreshing.current=false}
   },[active,pendingCount,workspaceId]) // eslint-disable-line react-hooks/exhaustive-deps
-  const removeCurrent=(transaction:BybitCardTransaction,pendingCount:number)=>{setItems((value)=>value.filter((item)=>item.id!==transaction.id));setComment('');setSelectedCategoryId(null);setSelectedTagIds([]);onStatus({pendingCount})}
+  const removeCurrent=(transaction:BybitCardTransaction,pendingCount:number)=>{setItems((value)=>value.filter((item)=>item.id!==transaction.id));setComment('');setSelectedCategoryId(null);setSelectedTagIds([]);setCategorySheet(false);onStatus({pendingCount})}
   const undo=async(action:ReviewAction)=>{
     if(busy||!online)return;setBusy(true);setError('')
     try{const result=await undoBybitCardTransaction(workspaceId,action.transaction.id,action.expense);if(result.undoneExpenseId)onExpenseUndo(result.undoneExpenseId);setItems((value)=>[result.transaction,...value.filter((item)=>item.id!==result.transaction.id)]);setDeferred((value)=>value.filter((item)=>item.id!==result.transaction.id));setComment(action.comment);setSelectedCategoryId(action.categoryId??null);setSelectedTagIds(action.tagIds);onStatus({pendingCount:result.pendingCount});tap(6)}
@@ -1881,23 +1893,31 @@ export function BybitReviewView({ workspaceId, categories, currencies, tags=[], 
     if(!current||busy||!online||!await confirm({title:'Не учитывать операцию?',message:'Она исчезнет из очереди и не станет расходом. Это действие можно отменить до выхода из разбора.',confirmLabel:'Не учитывать',danger:true}))return
     const transaction=current;const action:ReviewAction={transaction,comment,categoryId:selectedCategoryId??undefined,tagIds:selectedTagIds};setBusy(true);setError('');try{const result=await ignoreBybitCardTransaction(workspaceId,transaction.id);removeCurrent(transaction,result.pendingCount);notify('Операция не учтена',{label:'Отменить',run:()=>void undo(action)})}catch(reason){setError(reason instanceof ApiError?reason.message:'Не удалось пропустить операцию')}finally{setBusy(false)}
   }
-  const skip=()=>{if(!current||busy)return;setItems((value)=>value.slice(1));setDeferred((value)=>[...value,current]);setComment('');setSelectedCategoryId(null);setSelectedTagIds([]);tap(5)}
+  const skip=()=>{if(!current||busy)return;setItems((value)=>value.slice(1));setDeferred((value)=>[...value,current]);setComment('');setSelectedCategoryId(null);setSelectedTagIds([]);setCategorySheet(false);tap(5)}
   const restoreDeferred=()=>{setItems(deferred);setDeferred([]);setComment('');setSelectedCategoryId(null);setSelectedTagIds([])}
   return <><section className="page bybit-review-page" aria-labelledby="bybit-review-title">
     <h1 className="sr-only" id="bybit-review-title">Разбор операций Bybit Card</h1>
-    {loading?<p className="management-state" role="status">Загружаем операции…</p>:current?<>
+    {loading?<p className="management-state" role="status">Загружаем операции…</p>:current?(()=>{const amountText=amountNumber(current.amountMinor,current.currency,currencies);return <>
       <header className="topline review-topline"><div><p className="eyebrow">Bybit Card · к разбору {items.length}</p><p className="review-date">{new Date(current.occurredAt).toLocaleString('ru-RU',{weekday:'short',day:'numeric',month:'long',hour:'2-digit',minute:'2-digit'})}</p></div>{deferred.length>0&&<span className="review-deferred">Отложено · {deferred.length}</span>}</header>
-      <div className="amount-row review-amount-row"><output className="amount-value" aria-label="Сумма">{amountNumber(current.amountMinor,current.currency,currencies)}</output><span className="review-currency">{current.currency}</span></div>
-      <article className="review-merchant">
-        <span className="bybit-mark">B</span><div><h3>{current.merchantName||'Без названия продавца'}</h3><p>{current.type==='atm'?'Снятие наличных':current.merchantCategory||'Покупка'}{current.merchantCity?` · ${[current.merchantCity,current.merchantCountry].filter(Boolean).join(', ')}`:''}{current.mccCode?` · MCC ${current.mccCode}`:''}</p>{!current.settled&&<p className="review-pending-note">Ожидает списания · сумма может уточниться после расчёта</p>}</div>
-      </article>
-      <p className="review-hint">Выберите категорию, при желании теги и комментарий, затем сохраните</p>
-      <div className="review-categories">{activeCategories.map((category)=><button type="button" key={category.id} className={selectedCategoryId===category.id?'selected':''} aria-pressed={selectedCategoryId===category.id} disabled={busy} onClick={()=>setSelectedCategoryId((value)=>value===category.id?null:category.id)}><i style={{background:category.color??'#a9afa5'}}/><span>{category.name}</span></button>)}</div>
+      <div className="amount-row"><output className="amount-value" data-size={amountSize(amountText)} aria-label="Сумма">{amountText}</output><span className="review-currency">{current.currency}</span></div>
+      <div className="review-scroll">
+      {/* Мерчант и предупреждение делят слот постоянной высоты: очередь разбирают пачкой, и
+          «Сохранить расход» не должен ездить от операции к операции. */}
+      <div className="review-operation">
+        <article className="review-merchant">
+          <span className="bybit-mark">B</span><div><h3>{current.merchantName||'Без названия продавца'}</h3><p>{current.type==='atm'?'Снятие наличных':current.merchantCategory||'Покупка'}{current.merchantCity?` · ${[current.merchantCity,current.merchantCountry].filter(Boolean).join(', ')}`:''}{current.mccCode?` · MCC ${current.mccCode}`:''}</p></div>
+        </article>
+        {!current.settled&&<p className="review-pending-note">Ожидает списания · сумма может уточниться после расчёта</p>}
+      </div>
+      <div className={`categories${selectedCategoryId?' unsaved':''}`}><p>{selectedCategoryId?'Категория выбрана · сохраните расход':'Выберите категорию расхода'}</p><div className="main-categories">{main.map((category)=><button type="button" key={category.id} className={selectedCategoryId===category.id?'selected':undefined} aria-pressed={selectedCategoryId===category.id} disabled={busy} onClick={()=>setSelectedCategoryId((value)=>value===category.id?null:category.id)}><i style={{backgroundColor:category.color??'#a9afa5'}}/><span>{category.name}</span></button>)}<button type="button" disabled={busy} aria-pressed={Boolean(otherFace)} className={otherFace?'selected':undefined} onClick={()=>setCategorySheet(true)}>{otherFace?<i style={{backgroundColor:otherFace.color??'#a9afa5'}}/>:<i className="dots">•••</i>}<span>{otherFace?otherFace.name:'Другое'}</span></button></div></div>
       <div className="review-tags"><span>Теги</span><TagStrip tags={tags} selected={selectedTagIds} disabled={busy} online={online} onChange={setSelectedTagIds} onCreate={(name)=>createTagOrReuse(workspaceId,name,TAG_COLORS[tags.length%TAG_COLORS.length]??null,onTag)}/></div>
       <label className="review-comment">Комментарий <span>необязательно</span><input maxLength={300} disabled={busy} placeholder="Добавить заметку к расходу" value={comment} onChange={(event)=>setComment(event.target.value)}/></label>
+      </div>
       <button type="button" className="primary review-save" disabled={busy||!online||!selectedCategoryId} onClick={()=>{if(selectedCategoryId)void classify(selectedCategoryId)}}>{busy?'Сохраняем…':'Сохранить расход'}</button>
       <div className="review-secondary"><button type="button" disabled={busy} onClick={skip}>Пропустить пока</button><button type="button" disabled={busy||!online} onClick={()=>void ignore()}>Не учитывать</button></div>
-    </>:<div className="review-done"><span>{deferred.length?'↪':'✓'}</span><h3>{deferred.length?'На сейчас всё':'Всё разобрано'}</h3><p>{deferred.length?`${deferred.length} ${deferred.length===1?'операция отложена':'операции отложены'} только в этой сессии разбора.`:'Новые операции появятся после следующей синхронизации.'}</p>{deferred.length>0&&<button type="button" className="primary" onClick={restoreDeferred}>Вернуться к отложенным · {deferred.length}</button>}</div>}
+      {/* В расходе выбор в шите сразу сохраняет запись; здесь он только выделяет категорию — сохраняет кнопка. */}
+      {categorySheet&&<CategorySheet categories={additional} selectedId={selectedCategoryId??undefined} onClose={()=>setCategorySheet(false)} onPick={(category)=>{setSelectedCategoryId(category.id);setCategorySheet(false)}}/>}
+    </>})():<div className="review-done"><span>{deferred.length?'↪':'✓'}</span><h3>{deferred.length?'На сейчас всё':'Всё разобрано'}</h3><p>{deferred.length?`${deferred.length} ${deferred.length===1?'операция отложена':'операции отложены'} только в этой сессии разбора.`:'Новые операции появятся после следующей синхронизации.'}</p>{deferred.length>0&&<button type="button" className="primary" onClick={restoreDeferred}>Вернуться к отложенным · {deferred.length}</button>}</div>}
     {!online&&<p className="management-state" role="status">Без сети можно просматривать и временно откладывать операции. Категория и отмена сохранятся после подключения.</p>}
     {error&&<p className="form-error" role="alert">{error}</p>}
   </section>{notice&&<Toast toast={notice} onDismiss={dismiss}/>} {confirmation}</>
