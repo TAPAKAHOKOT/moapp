@@ -1,12 +1,11 @@
 import type { Category, Currency, Expense, RateSnapshot, Tag } from './types'
-import { convertExpense, localDateKey, monthDateRange, shiftDateKey, weekDateRange } from './utils'
+import { convertExpense, localDateKey, monthDateRange, weekDateRange } from './utils'
 
 // Относительные пресеты считаются от сегодняшнего дня при каждом применении, поэтому сохранённый фильтр не устаревает.
-export const HISTORY_PERIODS = ['all', 'today', 'yesterday', 'this-week', 'last-week', 'this-month', 'last-month', 'day', 'week', 'range'] as const
+export const HISTORY_PERIODS = ['all', 'today', 'this-week', 'this-month', 'range'] as const
 export type HistoryPeriod = typeof HISTORY_PERIODS[number]
 export const HISTORY_PERIOD_LABELS: Record<HistoryPeriod, string> = {
-  all: 'Все даты', today: 'Сегодня', yesterday: 'Вчера', 'this-week': 'Эта неделя', 'last-week': 'Прошлая неделя',
-  'this-month': 'Этот месяц', 'last-month': 'Прошлый месяц', day: 'Выбрать день', week: 'Выбрать неделю', range: 'Интервал',
+  all: 'Все даты', today: 'Сегодня', 'this-week': 'Эта неделя', 'this-month': 'Этот месяц', range: 'Выбрать даты',
 }
 
 export type HistoryFilters = {
@@ -14,7 +13,6 @@ export type HistoryFilters = {
   tagId: string
   currency: string
   period: HistoryPeriod
-  date: string
   from: string
   to: string
 }
@@ -22,7 +20,7 @@ export type HistoryFilters = {
 export type HistoryPreferences = HistoryFilters & { query: string }
 
 export function defaultHistoryPreferences(today: string): HistoryPreferences {
-  return { query: '', categoryId: '', tagId: '', currency: '', period: 'all', date: today, from: `${today.slice(0, 8)}01`, to: today }
+  return { query: '', categoryId: '', tagId: '', currency: '', period: 'all', from: `${today.slice(0, 8)}01`, to: today }
 }
 
 export function parseHistoryPreferences(raw: string | null, today: string): HistoryPreferences {
@@ -38,7 +36,6 @@ export function parseHistoryPreferences(raw: string | null, today: string): Hist
       tagId: typeof saved.tagId === 'string' ? saved.tagId.slice(0, 100) : defaults.tagId,
       currency: typeof saved.currency === 'string' && /^[A-Z]{3}$/.test(saved.currency) ? saved.currency : defaults.currency,
       period,
-      date: date(saved.date, defaults.date),
       from: date(saved.from, defaults.from),
       to: date(saved.to, defaults.to),
     }
@@ -49,13 +46,8 @@ export function parseHistoryPreferences(raw: string | null, today: string): Hist
 
 export function historyDateRange(filters: HistoryFilters, today = localDateKey(new Date())): { from?: string; to?: string } {
   if (filters.period === 'today') return { from: today, to: today }
-  if (filters.period === 'yesterday') { const yesterday = shiftDateKey(today, -1); return { from: yesterday, to: yesterday } }
   if (filters.period === 'this-week') return weekDateRange(today)
-  if (filters.period === 'last-week') return weekDateRange(today, -1)
   if (filters.period === 'this-month') return monthDateRange(today)
-  if (filters.period === 'last-month') return monthDateRange(today, -1)
-  if (filters.period === 'day') return filters.date ? { from: filters.date, to: filters.date } : {}
-  if (filters.period === 'week') return filters.date ? weekDateRange(filters.date) : {}
   if (filters.period !== 'range') return {}
   if (filters.from && filters.to && filters.from > filters.to) return { from: filters.to, to: filters.from }
   return { from: filters.from || undefined, to: filters.to || undefined }

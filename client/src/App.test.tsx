@@ -92,7 +92,7 @@ describe('pager lazy mounting', () => {
   it('keeps entry alive and prepares only the pages touching the current swipe position', () => {
     expect(pagerTabsAt(0, 390)).toEqual(['entry'])
     expect(pagerTabsAt(390 * 1.25, 390)).toEqual(['entry', 'history', 'analytics'])
-    expect(pagerTabsAt(390 * 3, 390)).toEqual(['entry', 'review'])
+    expect(pagerTabsAt(390 * 3, 390)).toEqual(['entry', 'settings'])
     expect(pagerTabsAt(390 * 4, 390)).toEqual(['entry', 'settings'])
     expect(pagerTabsAt(390, 0)).toEqual(['entry'])
   })
@@ -241,6 +241,9 @@ describe('history discovery', () => {
   it('searches expenses by note, amount and weekday-aware date', () => {
     const bootstrap = expenseBootstrap({ expenses: [{ id: 'expense-a', amountMinor: 12_345, currency: 'RSD', categoryId: 'products', note: 'IKEA полка', occurredAt: '2026-08-30T09:37:00.000Z', createdAt: '2026-08-30T09:37:00.000Z', updatedAt: '2026-08-30T09:37:00.000Z', version: 1, deletedAt: null }] })
     render(<HistoryView userId="user-a" workspaceId="workspace-a" bootstrap={bootstrap} setBootstrap={vi.fn()} edit={vi.fn()} createNew={vi.fn()} refreshPending={vi.fn()}/>)
+    // Поле поиска скрыто за иконкой: экран начинается с записей, а не с фильтров.
+    expect(screen.queryByRole('searchbox')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Поиск' }))
     const search = screen.getByRole('searchbox')
     fireEvent.change(search, { target: { value: 'полка' } })
     expect(screen.getByRole('button', { name: /Продукты/ })).not.toBeNull()
@@ -265,8 +268,10 @@ describe('history discovery', () => {
     expect(screen.queryByRole('button', { name: /Продукты/ })).toBeNull()
     expect(screen.getByRole('button', { name: /Транспорт/ })).not.toBeNull()
 
-    choosePeriod('День')
-    pickDay('День', '2026-08-30')
+    // Один день — два тапа по одной дате в календаре диапазона.
+    choosePeriod('Выбрать даты')
+    pickDay('Период истории', '2026-08-30')
+    pickDay('Период истории', '2026-08-30')
     expect(screen.getByText('Ничего не найдено')).not.toBeNull()
   })
 
@@ -285,54 +290,21 @@ describe('history discovery', () => {
     render(<HistoryView {...props}/>)
 
     chooseOption('Валюта истории', 'EUR')
-    choosePeriod('День')
-    pickDay('День', '2026-08-30')
+    choosePeriod('Выбрать даты')
+    pickDay('Период истории', '2026-08-30')
+    pickDay('Период истории', '2026-08-30')
+    fireEvent.click(screen.getByRole('button', { name: 'Поиск' }))
     fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'кофе' } })
     expect(screen.getAllByRole('button', { name: /Продукты/ })).toHaveLength(1)
 
     cleanup()
     render(<HistoryView {...props}/>)
 
+    // Чипы показывают само значение, а не «Все …»: так видно, что включено.
     expect(screen.getByLabelText('Валюта истории').textContent).toBe('EUR')
-    expect(screen.getByLabelText('Период истории').textContent).toBe('Выбрать день')
-    expect(screen.getByLabelText('День').textContent).toContain('30 августа 2026')
+    expect(screen.getByLabelText('Период истории').textContent).toContain('30 авг')
     expect((screen.getByRole('searchbox') as HTMLInputElement).value).toBe('кофе')
     expect(screen.getAllByRole('button', { name: /Продукты/ })).toHaveLength(1)
-  })
-
-  it('exports only the currently visible expenses to a UTF-8 CSV file', () => {
-    const bootstrap = expenseBootstrap({
-      currencies: [
-        { code: 'RSD', name: 'Сербский динар', symbol: 'дин.', decimals: 2 },
-        { code: 'EUR', name: 'Евро', symbol: '€', decimals: 2 },
-      ],
-      expenses: [
-        { id: 'rsd-row', amountMinor: 1_000, currency: 'RSD', categoryId: 'products', note: null, occurredAt: '2026-08-31T09:37:00.000Z', createdAt: '2026-08-31T09:37:00.000Z', updatedAt: '2026-08-31T09:37:00.000Z', version: 1, deletedAt: null },
-        { id: 'eur-row', amountMinor: 2_000, currency: 'EUR', categoryId: 'products', note: 'кофе', occurredAt: '2026-08-30T09:37:00.000Z', createdAt: '2026-08-30T09:37:00.000Z', updatedAt: '2026-08-30T09:37:00.000Z', version: 1, deletedAt: null },
-      ],
-    })
-    const originalBlob = Blob
-    const createdParts: BlobPart[][] = []
-    vi.stubGlobal('Blob', class extends originalBlob {
-      constructor(parts: BlobPart[] = [], options?: BlobPropertyBag) {
-        super(parts, options)
-        createdParts.push(parts)
-      }
-    })
-    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: vi.fn(() => 'blob:history') })
-    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: vi.fn() })
-    let download = ''
-    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) { download = this.download })
-    render(<HistoryView userId="user-a" workspaceId="workspace-a" bootstrap={bootstrap} setBootstrap={vi.fn()} edit={vi.fn()} createNew={vi.fn()} refreshPending={vi.fn()}/>)
-
-    chooseOption('Валюта истории', 'EUR')
-    fireEvent.click(screen.getByRole('button', { name: 'Экспорт CSV' }))
-
-    expect(createdParts[0]?.[0]).toBe('\uFEFF')
-    expect(String(createdParts[0]?.[1])).toContain('eur-row')
-    expect(String(createdParts[0]?.[1])).not.toContain('rsd-row')
-    expect(download).toMatch(/^moapp-history-\d{4}-\d{2}-\d{2}\.csv$/)
-    expect(screen.getByText('Экспортировано расходов: 1')).not.toBeNull()
   })
 })
 
@@ -344,6 +316,7 @@ describe('history totals', () => {
     ] })
     render(<HistoryView userId="user-a" workspaceId="workspace-a" bootstrap={bootstrap} setBootstrap={vi.fn()} edit={vi.fn()} createNew={vi.fn()} refreshPending={vi.fn()}/>)
     expect(screen.getByLabelText(/Сумма показанных расходов/).textContent).toMatch(/30,00\s*RSD/)
+    fireEvent.click(screen.getByRole('button', { name: 'Поиск' }))
     fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'кофе' } })
     expect(screen.getByLabelText(/Сумма показанных расходов/).textContent).toMatch(/20,00\s*RSD/)
   })
@@ -659,6 +632,48 @@ describe('settings identity transitions', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Отключить' }))
     expect(await screen.findByRole('alertdialog', { name: 'Отключить устройство?' })).not.toBeNull()
     expect(revokeDevice).not.toHaveBeenCalled()
+  })
+
+  it('exports every expense to a UTF-8 CSV file from settings', () => {
+    const bootstrap = expenseBootstrap({
+      currencies: [
+        { code: 'RSD', name: 'Сербский динар', symbol: 'дин.', decimals: 2 },
+        { code: 'EUR', name: 'Евро', symbol: '€', decimals: 2 },
+      ],
+      expenses: [
+        { id: 'rsd-row', amountMinor: 1_000, currency: 'RSD', categoryId: 'products', note: null, occurredAt: '2026-08-31T09:37:00.000Z', createdAt: '2026-08-31T09:37:00.000Z', updatedAt: '2026-08-31T09:37:00.000Z', version: 1, deletedAt: null },
+        { id: 'eur-row', amountMinor: 2_000, currency: 'EUR', categoryId: 'products', note: 'кофе', occurredAt: '2026-08-30T09:37:00.000Z', createdAt: '2026-08-30T09:37:00.000Z', updatedAt: '2026-08-30T09:37:00.000Z', version: 1, deletedAt: null },
+        { id: 'gone', amountMinor: 500, currency: 'RSD', categoryId: 'products', note: null, occurredAt: '2026-08-29T09:37:00.000Z', createdAt: '2026-08-29T09:37:00.000Z', updatedAt: '2026-08-29T09:37:00.000Z', version: 2, deletedAt: '2026-08-30T00:00:00.000Z' },
+      ],
+    })
+    const originalBlob = Blob
+    const createdParts: BlobPart[][] = []
+    vi.stubGlobal('Blob', class extends originalBlob {
+      constructor(parts: BlobPart[] = [], options?: BlobPropertyBag) {
+        super(parts, options)
+        createdParts.push(parts)
+      }
+    })
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: vi.fn(() => 'blob:history') })
+    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: vi.fn() })
+    let download = ''
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) { download = this.download })
+    vi.spyOn(workspaceApi, 'listMembers').mockResolvedValue({ members: [] })
+    vi.spyOn(workspaceApi, 'listSessions').mockResolvedValue({ sessions: [] })
+    vi.spyOn(workspaceApi, 'listInvitations').mockResolvedValue({ invitations: [] })
+    const workspace = bootstrap.workspace
+    const user: AuthenticatedSession = { authenticated: true, user: { id: 'user-a', displayName: 'Аня', recoveryConfigured: true, recoveryGeneration: 1 }, currentSessionId: 'session-a', currentSessionExpiresAt: '2030-01-01T00:00:00.000Z', serverTime: '2026-08-10T14:00:00.000Z', restrictedToRecovery: false, workspaces: [workspace], legacyWorkspaceId: null }
+    render(<SettingsView user={user} workspace={workspace} workspaceId={workspace.id} bootstrap={bootstrap} setBootstrap={vi.fn()} pendingCount={0} refreshPending={vi.fn()} onLogout={vi.fn()} theme="light" onThemeChange={vi.fn()} onSession={vi.fn()} onCreateWorkspace={vi.fn()} online/>)
+
+    fireEvent.click(screen.getByRole('button', { name: /Общее/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Экспорт в CSV' }))
+
+    expect(createdParts[0]?.[0]).toBe('﻿')
+    expect(String(createdParts[0]?.[1])).toContain('eur-row')
+    expect(String(createdParts[0]?.[1])).toContain('rsd-row')
+    expect(String(createdParts[0]?.[1])).not.toContain('gone')
+    expect(download).toMatch(/^moapp-history-\d{4}-\d{2}-\d{2}\.csv$/)
+    expect(screen.getByText('Экспортировано расходов: 2')).not.toBeNull()
   })
 
   it('rolls a display name back when saving on blur fails', async () => {
