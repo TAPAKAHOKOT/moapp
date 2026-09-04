@@ -170,7 +170,7 @@ html {
   box-shadow: 0 0 0 4px color-mix(in srgb, var(--paper) 72%, transparent);
 }
 
-:where(.search, .note-block input, .edit-fields input, .editor input, .editor select, .pin-form input, .analytics-category select, .empty-state input, .settings-group > label > input, .settings-group > label > select) {
+:where(.search, .note-block input, .edit-fields input, .editor input, .editor select, .pin-form input, .empty-state input, .settings-group > label > input, .settings-group > label > select) {
   border-color: var(--control-line);
 }
 
@@ -259,8 +259,7 @@ html {
 .date-presets button,
 .currency-pins button,
 .currency-choice,
-.add-button,
-.analytics-category select {
+.add-button {
   height: 44px;
 }
 
@@ -1618,3 +1617,11 @@ html {
 .review-overlay-head h2 { margin: 0; font-size: 14px; text-align: center; }
 .review-overlay .bybit-review-page { flex: 1 1 auto; height: auto; min-height: 0; padding-bottom: calc(12px + env(safe-area-inset-bottom)); }
 @media (min-width: 700px) { .review-overlay { border-inline: 1px solid var(--line); } }
+
+/* Аналитика: число без кода валюты (он в кнопке рядом), ⓘ о пересчёте только когда пересчёт был. */
+.rate-info { display: inline-grid; place-items: center; width: 22px; height: 22px; border: 1px solid var(--control-line); border-radius: 50%; background: transparent; color: var(--muted); font-size: 12px; font-weight: 700; font-style: italic; letter-spacing: 0; }
+.rate-info[aria-expanded="true"] { border-color: var(--sage); color: var(--sage); }
+.analytics .rate-caption[role="note"] { margin-top: -2px; }
+/* Легенда: строка в фокусе показывает × вместо стрелки, а внизу — путь обратно ко всем категориям. */
+.legend-close { width: 12px; color: var(--text-tertiary); font-size: 14px; line-height: 1; text-align: center; }
+.legend-all { justify-self: start; min-height: 40px; margin-top: 4px; padding: 0; border: 0; background: transparent; color: var(--sage); font-size: 11px; font-weight: 700; }
