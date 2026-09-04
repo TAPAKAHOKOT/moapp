@@ -140,7 +140,9 @@ describe('expense card swipe', () => {
     expect(setCurrentId).not.toHaveBeenCalled()
   })
 
-  it('opens a new expense directly from an old expense', () => {
+  // Отдельной кнопки «новый расход» нет: пустая карточка лежит справа от самой свежей записи.
+  it('swipes from the newest expense to a blank card', () => {
+    vi.useFakeTimers()
     const setCurrentId = vi.fn()
     const bootstrap: WorkspaceBootstrap = {
       workspaceId: 'workspace-a',
@@ -154,10 +156,13 @@ describe('expense card swipe', () => {
     }
     render(<EntryView userId="user-a" workspaceId="workspace-a" bootstrap={bootstrap} setBootstrap={vi.fn()} currentId="old" setCurrentId={setCurrentId} refreshPending={vi.fn()} onDraftDirtyChange={vi.fn()} active/>)
 
-    fireEvent.click(screen.getByRole('button', { name: 'Новый расход' }))
+    const entry = screen.getByRole('region', { name: 'Ввод суммы' })
+    fireEvent.pointerDown(entry, { pointerType: 'mouse', button: 0, clientX: 300, clientY: 20 })
+    fireEvent.pointerMove(entry, { pointerType: 'mouse', clientX: 150, clientY: 20 })
+    fireEvent.pointerUp(entry, { pointerType: 'mouse', clientX: 150, clientY: 20 })
+    act(() => vi.runAllTimers())
 
     expect(setCurrentId).toHaveBeenCalledWith(null)
-    expect(screen.getByRole('region', { name: 'Ввод суммы' }).querySelector('.entry-card:not(.aside) output')?.textContent).toBe('0')
   })
 
   it('asks before a swipe discards changes to the current expense', async () => {
@@ -189,10 +194,10 @@ describe('expense editing and saving', () => {
     const expense = { id: 'old', amountMinor: 1_000, currency: 'RSD', categoryId: archived.id, note: null, occurredAt: '2026-08-09T13:00:00.000Z', createdAt: '2026-08-09T13:00:00.000Z', updatedAt: '2026-08-09T13:00:00.000Z', version: 1, deletedAt: null }
     render(<EntryView userId="user-a" workspaceId="workspace-a" bootstrap={expenseBootstrap({ categories: [archived], expenses: [expense] })} setBootstrap={vi.fn()} currentId="old" setCurrentId={vi.fn()} refreshPending={vi.fn()} onDraftDirtyChange={vi.fn()} active/>)
 
-    expect(screen.getByRole('region', { name: 'Ввод суммы' }).querySelector('.edit-actions:not(.empty)')).not.toBeNull()
+    expect(screen.getByRole('region', { name: 'Ввод суммы' }).querySelector('.entry-save')).not.toBeNull()
     fireEvent.click(screen.getByRole('button', { name: '1' }))
     expect(submit).not.toHaveBeenCalled()
-    fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }))
+    fireEvent.click(screen.getByRole('button', { name: /^Сохранить/ }))
 
     await waitFor(() => expect(submit).toHaveBeenCalled())
     expect(submit.mock.calls[0]?.[3]).toEqual(expect.objectContaining({ categoryId: archived.id }))
@@ -202,14 +207,18 @@ describe('expense editing and saving', () => {
     vi.spyOn(workspaceApi, 'submitExpenseOperation').mockImplementation(() => new Promise(() => {}))
     render(<EntryView userId="user-a" workspaceId="workspace-a" bootstrap={expenseBootstrap()} setBootstrap={vi.fn()} currentId={null} setCurrentId={vi.fn()} refreshPending={vi.fn()} onDraftDirtyChange={vi.fn()} active/>)
 
-    expect(screen.queryByRole('button', { name: 'Новый расход' })).toBeNull()
-    expect(screen.getByRole('region', { name: 'Ввод суммы' }).querySelector('.edit-actions.empty')).not.toBeNull()
+    expect(screen.queryByRole('button', { name: 'Удалить расход' })).toBeNull()
+    // Плитка категории только выбирает; сохраняет одна кнопка, и до выбора она сообщает, чего не хватает.
+    expect(screen.getByRole('button', { name: 'Введите сумму' })).not.toBeNull()
     fireEvent.click(screen.getByRole('button', { name: '1' }))
+    expect(screen.getByRole('button', { name: 'Выберите категорию' })).not.toBeNull()
     fireEvent.click(screen.getByRole('button', { name: 'Продукты' }))
+    expect(workspaceApi.submitExpenseOperation).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Сохранить 1 RSD' }))
 
     await waitFor(() => expect((screen.getByRole('button', { name: '1' }) as HTMLButtonElement).disabled).toBe(true))
-    expect((screen.getByRole('button', { name: /RSD/ }) as HTMLButtonElement).disabled).toBe(true)
-    expect((screen.getByRole('button', { name: /Добавить заметку/ }) as HTMLButtonElement).disabled).toBe(true)
+    expect((screen.getByRole('button', { name: 'RSD' }) as HTMLButtonElement).disabled).toBe(true)
+    expect((screen.getByRole('button', { name: 'Добавить заметку' }) as HTMLButtonElement).disabled).toBe(true)
   })
 })
 
@@ -434,17 +443,20 @@ describe('Bybit transaction review', () => {
     expect(screen.getByLabelText('Сумма').textContent).toBe('12,50')
     expect(screen.getByText('RSD', { exact: true })).not.toBeNull()
     expect(screen.queryByText(/Свайп/)).toBeNull()
-    fireEvent.change(screen.getByLabelText(/Комментарий/), { target: { value: 'Встреча с Димой' } })
+    // Заметка — тот же ряд «Дополнительно», что на расходе, и тот же шит.
+    fireEvent.click(screen.getByRole('button', { name: 'Добавить заметку' }))
+    fireEvent.change(screen.getByRole('textbox', { name: 'Заметка' }), { target: { value: 'Встреча с Димой' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Готово' }))
     fireEvent.click(screen.getByRole('button', { name: 'Продукты' }))
     expect(workspaceApi.classifyBybitCardTransaction).not.toHaveBeenCalled()
-    fireEvent.click(screen.getByRole('button', { name: 'Сохранить расход' }))
+    fireEvent.click(screen.getByRole('button', { name: /^Сохранить/ }))
     await screen.findByText('Расход добавлен')
     expect(workspaceApi.classifyBybitCardTransaction).toHaveBeenCalledWith('workspace-a', transaction.id, 'products', 'Встреча с Димой', [])
 
     fireEvent.click(screen.getByRole('button', { name: 'Отменить' }))
     await screen.findByText('Coffee Corner')
     await waitFor(() => expect(onExpenseUndo).toHaveBeenCalledWith(expense.id))
-    expect((screen.getByLabelText(/Комментарий/) as HTMLInputElement).value).toBe('Встреча с Димой')
+    expect(screen.getByRole('button', { name: 'Заметка: Встреча с Димой' })).not.toBeNull()
     expect(screen.getByRole('button', { name: 'Продукты' }).getAttribute('aria-pressed')).toBe('true')
   })
 
@@ -463,24 +475,26 @@ describe('Bybit transaction review', () => {
 
     const view = render(<BybitReviewView {...props} pendingCount={1}/>)
     await screen.findByText('VERO 3')
-    fireEvent.change(screen.getByLabelText(/Комментарий/), { target: { value: 'черновик' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Добавить заметку' }))
+    fireEvent.change(screen.getByRole('textbox', { name: 'Заметка' }), { target: { value: 'черновик' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Готово' }))
     await waitFor(() => expect(list).toHaveBeenCalledTimes(1))
 
-    // Settings → "Синхронизировать сейчас" reports a higher pendingCount through the shared status.
+    // Settings → "Обновить" reports a higher pendingCount through the shared status.
     view.rerender(<BybitReviewView {...props} pendingCount={2}/>)
     await waitFor(() => expect(list).toHaveBeenCalledTimes(2))
-    await screen.findByText(/к разбору 2/)
+    await screen.findByText(/Операции с карты · 2/)
     expect(screen.getByText('VERO 3')).not.toBeNull()
-    expect((screen.getByLabelText(/Комментарий/) as HTMLInputElement).value).toBe('черновик')
+    expect(screen.getByRole('button', { name: 'Заметка: черновик' })).not.toBeNull()
     expect(onStatus).toHaveBeenLastCalledWith({ pendingCount: 2 })
 
-    fireEvent.click(screen.getByRole('button', { name: 'Пропустить пока' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Пропустить' }))
     await screen.findByText('Silver Dreams')
     expect(screen.getByText(/Ожидает списания/)).not.toBeNull()
   })
 
-  // Разбор берёт ряд категорий у расхода: плитками только «Основные», остальные — за «Другое».
-  it('shows only main categories with an "other" tile, and picking from the sheet selects without saving', async () => {
+  // Разбор берёт ряд категорий у расхода: плитками только основные, остальные — за «Ещё N».
+  it('shows only main categories with a "more" tile, and picking from the sheet selects without saving', async () => {
     const transaction = {
       id: 'card-transaction-b', txnId: 'bybit-b', orderNo: null, type: 'purchase' as const, settled: true,
       amountMinor: 4_200, currency: 'RSD', merchantName: 'Maxi', merchantCountry: 'RS', merchantCity: 'Beograd',
@@ -498,20 +512,20 @@ describe('Bybit transaction review', () => {
     await screen.findByText('Maxi')
 
     const tiles = [...container.querySelectorAll('.main-categories button')].map((node) => node.textContent)
-    expect(tiles).toEqual(['Продукты', '•••Другое'])
+    expect(tiles).toEqual(['Продукты', 'Ещё 2'])
     expect(screen.queryByRole('button', { name: 'Развлечения' })).toBeNull()
 
-    fireEvent.click(screen.getByRole('button', { name: '•••Другое' }))
-    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Развлечения' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Ещё 2' }))
+    fireEvent.click(within(screen.getByRole('dialog', { name: 'Все категории' })).getByRole('button', { name: 'Развлечения' }))
 
-    // В расходе выбор в шите сразу сохраняет запись; в разборе он только выделяет категорию.
+    // Выбор в шите, как и плитка, только выделяет категорию; сохраняет кнопка.
     expect(classify).not.toHaveBeenCalled()
     expect(screen.queryByRole('dialog')).toBeNull()
     const other = container.querySelector('.main-categories button:last-child')
     expect(other?.textContent).toBe('Развлечения')
     expect(other?.getAttribute('aria-pressed')).toBe('true')
 
-    fireEvent.click(screen.getByRole('button', { name: 'Сохранить расход' }))
+    fireEvent.click(screen.getByRole('button', { name: /^Сохранить/ }))
     await waitFor(() => expect(classify).toHaveBeenCalledWith('workspace-a', transaction.id, 'fun', '', []))
   })
 

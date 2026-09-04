@@ -1227,12 +1227,12 @@ html {
     min-height: 52px;
   }
 
-  .entry-view .edit-actions,
+  .entry-view .entry-save,
   .entry-view .note-block {
     grid-column: 1;
   }
 
-  .entry-view .edit-actions {
+  .entry-view .entry-save {
     grid-row: 3;
     padding-top: 4px;
   }
@@ -1611,8 +1611,8 @@ html {
   .tag-strip { padding-top: 2px; }
   .note-block { height: 44px; padding: 2px 16px; }
   .note-block:focus-within { height: 72px; }
-  .edit-actions { flex-basis: 50px; min-height: 50px; padding: 2px 16px 6px; }
-  .edit-actions .primary, .edit-actions .sheet-cancel { min-height: 40px; }
+  .entry-save { flex-basis: 50px; min-height: 50px; padding: 2px 16px 6px; }
+  .entry-save .primary, .entry-save .sheet-cancel { min-height: 40px; }
   .page.bybit-review-page { padding: 6px 12px 4px; }
   /* Полоса забирает всю свободную высоту, поэтому «Сохранить расход» стоит на одном месте
      и с закрытой операцией, и с открытой авторизацией, которой нужна лишняя строка. */
@@ -1624,3 +1624,26 @@ html {
   .bybit-review-page .review-save { min-height: 44px; margin-top: 4px; }
   .bybit-review-page .review-secondary button { min-height: 36px; }
 }
+
+/* Одна кнопка сохранения на расходе и в разборе: выключенная выглядит выключенной, а не «второй тёмной». */
+.primary:disabled { opacity: 1; background: var(--soft); color: var(--muted); box-shadow: none; }
+:root[data-theme="dark"] .primary:disabled { background: #242525; color: var(--text-tertiary); }
+.entry-save .sheet-cancel { color: var(--muted); }
+.categories { padding-top: 10px; }
+
+/* Ряд «Дополнительно»: выбранные теги, «＋ Тег», «＋ Заметка» одним стилем; полный список тегов — в шите. */
+.extras-row { padding-top: 10px; gap: 6px; }
+.extras-label { font-size: 9px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--text-tertiary); padding-right: 2px; }
+.tag-strip .extra-add { width: auto; min-height: 30px; padding: 0 11px; border-radius: 999px; font-size: 11px; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tag-strip .extra-add.filled { border-style: solid; border-color: var(--line); color: var(--ink); background: var(--card); }
+.review-scroll .extras-row { margin: 0 -1px; }
+
+/* Плитка «Ещё N» читается как вход в список, а не как ещё одна категория. */
+.main-categories .grid-icon { width: 16px; height: 16px; border-radius: 0; background: none; display: grid; place-items: center; color: var(--muted); }
+.main-categories .grid-icon svg { display: block; }
+.main-categories button.selected .grid-icon { color: var(--sage); }
+
+/* Валюты: сначала знакомые, остальные за одной строкой. */
+.currency-more { margin-top: 10px; border: 1px solid var(--line); border-radius: 13px; color: var(--ink); }
+.currency-list button svg { color: var(--sage); }
+.note-sheet label { display: block; margin: 8px 0 13px; }
