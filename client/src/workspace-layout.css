@@ -7,139 +7,6 @@
   padding-top: env(safe-area-inset-top);
 }
 
-/* Keep the account and workspace controls readable on a narrow screen.
- * Only direct form controls are laid out here: category rows keep their
- * compact, divider-based list layout. */
-
-.settings-group > h2 {
-  margin: 0 0 12px;
-}
-
-.settings-group > label {
-  display: grid;
-  gap: 7px;
-  color: var(--muted);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: .04em;
-  margin: 0 0 12px;
-}
-
-.settings-group > label > input,
-.settings-group > label > select {
-  appearance: none;
-  width: 100%;
-  min-height: 44px;
-  margin: 0;
-  border: 1px solid var(--line);
-  border-radius: 13px;
-  outline: none;
-  background: var(--card);
-  color: var(--ink);
-  box-shadow: 0 1px 2px rgb(32 37 31 / 4%);
-  padding: 10px 12px;
-  font-size: 16px;
-  font-weight: 500;
-  letter-spacing: 0;
-  line-height: 1.35;
-  transition: border-color .16s ease, box-shadow .16s ease, background-color .16s ease;
-}
-
-.settings-group > label > select {
-  padding-right: 40px;
-  background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%), linear-gradient(135deg, var(--muted) 50%, transparent 50%);
-  background-position: calc(100% - 18px) calc(50% - 2px), calc(100% - 13px) calc(50% - 2px);
-  background-size: 5px 5px, 5px 5px;
-  background-repeat: no-repeat;
-}
-
-.settings-group > label > input::placeholder {
-  color: var(--muted);
-  opacity: .72;
-}
-
-.settings-group > label > input:focus-visible,
-.settings-group > label > select:focus-visible,
-.settings-group button:focus-visible {
-  border-color: var(--sage);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--sage) 28%, transparent);
-}
-
-.settings-group > label > input:disabled,
-.settings-group > label > select:disabled {
-  cursor: not-allowed;
-  background: var(--soft);
-  border-color: transparent;
-  box-shadow: none;
-  color: var(--muted);
-  opacity: 1;
-}
-
-.settings-group > label + small {
-  display: block;
-  margin: -6px 4px 12px;
-  color: var(--muted);
-  font-size: 10px;
-  line-height: 1.45;
-}
-
-.settings-group > .sheet-cancel {
-  min-height: 44px;
-  margin: 8px 0 12px;
-  border: 1px solid var(--line);
-  border-radius: 13px;
-  background: transparent;
-  color: var(--ink);
-  font-size: 12px;
-  transition: border-color .16s ease, background-color .16s ease, box-shadow .16s ease;
-}
-
-.settings-group > .sheet-cancel:active:not(:disabled) {
-  background: var(--soft);
-}
-
-.settings-group > .primary {
-  min-height: 48px;
-  margin-top: 8px;
-}
-
-.settings-group .management-row {
-  min-height: 56px;
-  padding: 8px 4px;
-}
-
-.settings-group .management-row > span:first-child {
-  min-width: 0;
-  font-size: 13px;
-  font-weight: 600;
-}
-
-.settings-group .management-row button {
-  min-height: 44px;
-}
-
-.settings-group .theme-setting {
-  min-height: 56px;
-  padding: 6px 4px 14px;
-}
-
-.settings-group .theme-toggle button {
-  min-height: 44px;
-}
-
-@media (hover: hover) {
-  .settings-group > .sheet-cancel:hover:not(:disabled) {
-    border-color: var(--sage);
-  }
-}
-
-@media (max-width: 360px) {
-  .settings-group .theme-setting {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-}
-
 /* Blurring the whole page behind a fixed bar is noticeably expensive while
  * scrolling on iOS. A solid surface gives the same visual separation here. */
 @media (max-width: 599px) {
@@ -170,7 +37,7 @@ html {
   box-shadow: 0 0 0 4px color-mix(in srgb, var(--paper) 72%, transparent);
 }
 
-:where(.search, .note-block input, .edit-fields input, .editor input, .editor select, .pin-form input, .empty-state input, .settings-group > label > input, .settings-group > label > select) {
+:where(.search, .note-block input, .edit-fields input, .editor input, .editor select, .pin-form input, .empty-state input) {
   border-color: var(--control-line);
 }
 
@@ -188,7 +55,6 @@ html {
 .add-button,
 .analytics-period button,
 .week-navigator button,
-.category-row button,
 .colors button,
 .management-row button {
   min-height: 44px;
@@ -271,10 +137,6 @@ html {
 .colors button {
   width: 44px;
   height: 44px;
-}
-
-.category-row {
-  grid-template-columns: 16px minmax(0, 1fr) 44px 44px;
 }
 
 .bottom-nav button {
@@ -1449,90 +1311,6 @@ html {
   margin-top: 12px;
 }
 
-.settings-sections {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 4px;
-  margin: 4px 16px 18px;
-  padding: 4px;
-  border: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
-  border-radius: 18px;
-  background: var(--soft);
-}
-
-.settings-sections button {
-  min-width: 0;
-  min-height: 58px;
-  border: 0;
-  border-radius: 14px;
-  background: transparent;
-  color: var(--muted);
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  justify-content: center;
-  gap: 3px;
-  padding: 8px 10px;
-  text-align: left;
-}
-
-.settings-sections b {
-  max-width: 100%;
-  overflow: hidden;
-  color: inherit;
-  font-size: 10px;
-  text-overflow: ellipsis;
-}
-
-.settings-sections small {
-  max-width: 100%;
-  overflow: hidden;
-  font-size: 9px;
-  line-height: 1.25;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.settings-sections button.selected {
-  background: var(--card);
-  color: var(--ink);
-  box-shadow: 0 2px 8px rgb(32 37 31 / 8%);
-}
-
-.settings-section-panel {
-  animation: settings-section-in .16s ease-out;
-}
-
-.settings-section-copy {
-  margin: 0 20px 14px;
-  padding-bottom: 14px;
-  border-bottom: 1px solid var(--line);
-}
-
-.settings-section-copy h2 {
-  margin: 0 0 5px;
-  font-size: 22px;
-  letter-spacing: -.025em;
-}
-
-.settings-section-copy > p:last-child {
-  margin: 0;
-  color: var(--muted);
-  font-size: 10px;
-  line-height: 1.5;
-}
-
-.settings-section-panel > .settings-group:first-of-type {
-  margin-top: 14px;
-}
-
-@keyframes settings-section-in {
-  from {
-    opacity: .45;
-    transform: translateY(3px);
-  }
-}
-
 /* Совсем низкий экран (iPhone SE в браузере с панелями): всё ужимается ещё сильнее, но остаётся без прокрутки. */
 @media (max-height: 600px) {
   .swipe-area { min-height: 84px; }
@@ -1625,3 +1403,54 @@ html {
 /* Легенда: строка в фокусе показывает × вместо стрелки, а внизу — путь обратно ко всем категориям. */
 .legend-close { width: 12px; color: var(--text-tertiary); font-size: 14px; line-height: 1; text-align: center; }
 .legend-all { justify-self: start; min-height: 40px; margin-top: 4px; padding: 0; border: 0; background: transparent; color: var(--sage); font-size: 11px; font-weight: 700; }
+
+/* Настройки — плоский список: группа = подпись и карточка со строками «понятие · значение ›». */
+.settings-page { padding: 0 0 28px; }
+.settings-list { margin: 12px 16px 0; }
+.settings-list h2 { margin: 0 0 5px; padding: 0 6px; color: var(--text-tertiary); font-size: 10px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; }
+.settings-rows { overflow: hidden; border: 1px solid var(--line); border-radius: 17px; background: var(--card); }
+.settings-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; min-height: 48px; padding: 0 12px 0 14px; border: 0; border-bottom: 1px solid var(--line); background: transparent; color: var(--ink); font-size: 13px; font-weight: 600; text-align: left; transition: background-color .15s ease; }
+.settings-row:last-child { border-bottom: 0; }
+.settings-row > span:first-child { min-width: 0; }
+.settings-row-value { display: inline-flex; flex: 0 1 auto; align-items: center; gap: 4px; min-width: 0; max-width: 58%; color: var(--muted); font-size: 12px; font-weight: 500; }
+.settings-row-value > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.settings-row-value .chevron { flex: 0 0 auto; width: 13px; height: 13px; color: var(--text-tertiary); transform: rotate(-90deg); }
+.settings-row.warn .settings-row-value { color: var(--pending); font-weight: 600; }
+.settings-row.danger { justify-content: center; color: var(--danger); }
+button.settings-row:active:not(:disabled) { background: var(--soft); }
+button.settings-row:disabled { opacity: 1; color: var(--text-tertiary); }
+button.settings-row:disabled .settings-row-value { color: var(--text-disabled); }
+@media (hover: hover) { button.settings-row:hover:not(:disabled) { background: color-mix(in srgb, var(--soft) 55%, transparent); } }
+
+/* Шиты списков и пояснения в них. */
+.list-sheet { max-height: calc(100dvh - max(8px, env(safe-area-inset-top))); }
+.list-sheet h3 { margin: 12px 4px 4px; color: var(--text-tertiary); font-size: 10px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; }
+.sheet-copy { margin: 4px 0 12px; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.sheet-copy.centered { text-align: center; }
+.sheet-action { margin-top: 12px; }
+.danger-link.sheet-action { margin-top: 14px; }
+.list-sheet .management-row { min-height: 56px; padding: 8px 4px; }
+.list-sheet .management-row > span:first-child { min-width: 0; font-size: 13px; font-weight: 600; }
+.list-sheet .management-row button { min-height: 40px; }
+.list-sheet .integration-title { margin: 4px 0 8px; }
+
+/* Перетаскивание за ручку ≡: поднятая строка едет за пальцем, остальные расступаются. */
+.drag-list { position: relative; }
+.drag-row { display: grid; grid-template-columns: 16px minmax(0, 1fr) 44px; align-items: center; gap: 7px; min-height: 52px; border-bottom: 1px solid var(--line); background: var(--paper); }
+.drag-row > i { width: 12px; height: 34px; border-radius: 6px; }
+.drag-row .category-name { min-height: 44px; padding: 0; border: 0; background: none; color: var(--ink); font-size: 13px; font-weight: 600; text-align: left; }
+.drag-row.lifted { position: relative; z-index: 2; border-radius: 12px; border-bottom-color: transparent; background: var(--card); box-shadow: 0 6px 18px rgb(0 0 0 / 16%); }
+.drag-handle { display: grid; place-items: center; width: 44px; height: 44px; color: var(--text-tertiary); font-size: 20px; line-height: 1; cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none; }
+.drag-handle[aria-disabled="true"] { opacity: .4; cursor: default; }
+.drag-row.lifted .drag-handle { cursor: grabbing; }
+:root[data-theme="dark"] .drag-row { background: #181919; }
+:root[data-theme="dark"] .drag-row.lifted { background: #242525; }
+
+/* Переключатель в редакторе категории. */
+.editor .switch-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 8px 0 14px; color: var(--ink); }
+.editor .switch-row > span { display: flex; flex-direction: column; gap: 2px; min-width: 0; font-size: 13px; }
+.editor .switch-row small { color: var(--muted); font-size: 11px; line-height: 1.35; }
+.editor .switch-row input { position: relative; display: inline-block; flex: 0 0 auto; width: 46px; height: 28px; margin: 0; padding: 0; border: 0; border-radius: 999px; background: var(--line); appearance: none; -webkit-appearance: none; cursor: pointer; transition: background-color .2s ease; }
+.editor .switch-row input::after { content: ""; position: absolute; top: 3px; left: 3px; width: 22px; height: 22px; border-radius: 50%; background: var(--card); box-shadow: 0 1px 3px rgb(0 0 0 / 25%); transition: transform .2s ease; }
+.editor .switch-row input:checked { background: var(--sage); }
+.editor .switch-row input:checked::after { transform: translateX(18px); }

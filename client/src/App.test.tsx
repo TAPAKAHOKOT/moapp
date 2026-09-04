@@ -565,24 +565,25 @@ describe('Bybit transaction review', () => {
 })
 
 describe('settings identity transitions', () => {
-  it('separates workspace, integrations, and general settings', async () => {
+  it('lists settings as plain rows and opens categories in a sheet', async () => {
     vi.spyOn(workspaceApi, 'listMembers').mockResolvedValue({ members: [] })
     vi.spyOn(workspaceApi, 'listSessions').mockResolvedValue({ sessions: [] })
     vi.spyOn(workspaceApi, 'listInvitations').mockResolvedValue({ invitations: [] })
     const workspace = expenseBootstrap().workspace
     const user: AuthenticatedSession = { authenticated: true, user: { id: 'user-a', displayName: 'Аня', recoveryConfigured: true, recoveryGeneration: 1 }, currentSessionId: 'session-a', currentSessionExpiresAt: '2030-01-01T00:00:00.000Z', serverTime: '2026-08-10T14:00:00.000Z', restrictedToRecovery: false, workspaces: [workspace], legacyWorkspaceId: null }
-    render(<SettingsView user={user} workspace={workspace} workspaceId={workspace.id} bootstrap={expenseBootstrap()} setBootstrap={vi.fn()} pendingCount={0} refreshPending={vi.fn()} onLogout={vi.fn()} theme="light" onThemeChange={vi.fn()} onSession={vi.fn()} onCreateWorkspace={vi.fn()} online bybitStatus={{connected:true,canManage:true,pendingCount:3,enabledAt:'2026-08-10T12:00:00.000Z',status:'active'}}/>)
+    render(<SettingsView user={user} workspace={workspace} workspaceId={workspace.id} bootstrap={expenseBootstrap()} setBootstrap={vi.fn()} pendingCount={0} refreshPending={vi.fn()} onLogout={vi.fn()} theme="system" onThemeChange={vi.fn()} onSession={vi.fn()} online bybitStatus={{connected:true,canManage:true,pendingCount:3,enabledAt:'2026-08-10T12:00:00.000Z',status:'active'}}/>)
 
-    expect(screen.getByText('Люди и доступ')).not.toBeNull()
+    // Ни сегментов, ни заголовков-эйбрау: сразу строки с понятиями и значениями.
+    expect(screen.queryByText('Люди и доступ')).toBeNull()
+    expect(screen.queryByRole('heading', { name: 'Настройки' })).toBeNull()
+    expect(screen.getByRole('button', { name: /Название пространства/ }).textContent).toContain('Дом')
+    expect(screen.getByRole('button', { name: /Карта Bybit/ }).textContent).toContain('подключена')
+    expect(screen.getByRole('button', { name: /^Тема/ }).textContent).toContain('Как в системе')
     expect(screen.queryByRole('button', { name: 'Новая категория' })).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: /Общее/ }))
-    expect(screen.getByText('Вид и категории')).not.toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: /^Категории/ }))
+    expect(screen.getByRole('dialog', { name: 'Категории' })).not.toBeNull()
     expect(screen.getByRole('button', { name: 'Новая категория' })).not.toBeNull()
-    expect(screen.queryByLabelText('Ваше имя')).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: /Интеграции/ }))
-    expect(screen.getByText('Подключённые сервисы')).not.toBeNull()
-    expect(screen.getAllByText('Bybit Card').length).toBeGreaterThan(0)
-    expect(screen.queryByRole('button', { name: /Разобрать операции/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: /Поднять категорию/ })).toBeNull()
   })
 
   it('prevents logout while a settings mutation can still return a session', async () => {
@@ -607,12 +608,14 @@ describe('settings identity transitions', () => {
     render(<SettingsView
       user={user} workspace={workspace} workspaceId={workspace.id} bootstrap={bootstrap} setBootstrap={vi.fn()}
       pendingCount={0} refreshPending={vi.fn()} onLogout={logout} theme="light" onThemeChange={vi.fn()}
-      onSession={vi.fn().mockResolvedValue(undefined)} onCreateWorkspace={vi.fn()} online
+      onSession={vi.fn().mockResolvedValue(undefined)} online
     />)
 
-    fireEvent.click(screen.getByRole('button', { name: 'Пригласить человека' }))
+    fireEvent.click(screen.getByRole('button', { name: /^Участники/ }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Пригласить человека' }))
 
-    const logoutButton = screen.getByRole('button', { name: 'Выйти и удалить локальные данные' }) as HTMLButtonElement
+    // Пока шит занят запросом, фон под ним скрыт от читалок, но строка «Выйти» уже должна быть выключена.
+    const logoutButton = screen.getByRole('button', { name: 'Выйти', hidden: true }) as HTMLButtonElement
     await waitFor(() => expect(logoutButton.disabled).toBe(true))
     fireEvent.click(logoutButton)
     expect(logout).not.toHaveBeenCalled()
@@ -627,14 +630,17 @@ describe('settings identity transitions', () => {
     const revokeDevice = vi.spyOn(workspaceApi, 'revokeSession').mockResolvedValue(undefined)
     const workspace = expenseBootstrap().workspace
     const user: AuthenticatedSession = { authenticated: true, user: { id: 'user-a', displayName: 'Аня', recoveryConfigured: true, recoveryGeneration: 1 }, currentSessionId: 'session-a', currentSessionExpiresAt: '2030-01-01T00:00:00.000Z', serverTime: '2026-08-10T14:00:00.000Z', restrictedToRecovery: false, workspaces: [workspace], legacyWorkspaceId: null }
-    render(<SettingsView user={user} workspace={workspace} workspaceId={workspace.id} bootstrap={expenseBootstrap()} setBootstrap={vi.fn()} pendingCount={0} refreshPending={vi.fn()} onLogout={vi.fn()} theme="light" onThemeChange={vi.fn()} onSession={vi.fn()} onCreateWorkspace={vi.fn()} online/>)
+    render(<SettingsView user={user} workspace={workspace} workspaceId={workspace.id} bootstrap={expenseBootstrap()} setBootstrap={vi.fn()} pendingCount={0} refreshPending={vi.fn()} onLogout={vi.fn()} theme="light" onThemeChange={vi.fn()} onSession={vi.fn()} online/>)
 
+    fireEvent.click(screen.getByRole('button', { name: /^Участники/ }))
     fireEvent.click(await screen.findByRole('button', { name: 'Отозвать' }))
     expect(await screen.findByRole('alertdialog', { name: 'Отозвать приглашение?' })).not.toBeNull()
     expect(revokeInvite).not.toHaveBeenCalled()
     fireEvent.click(screen.getByRole('button', { name: 'Отмена' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Закрыть' }))
 
-    fireEvent.click(screen.getByRole('button', { name: 'Отключить' }))
+    fireEvent.click(screen.getByRole('button', { name: /Другие устройства/ }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Отключить' }))
     expect(await screen.findByRole('alertdialog', { name: 'Отключить устройство?' })).not.toBeNull()
     expect(revokeDevice).not.toHaveBeenCalled()
   })
@@ -668,9 +674,8 @@ describe('settings identity transitions', () => {
     vi.spyOn(workspaceApi, 'listInvitations').mockResolvedValue({ invitations: [] })
     const workspace = bootstrap.workspace
     const user: AuthenticatedSession = { authenticated: true, user: { id: 'user-a', displayName: 'Аня', recoveryConfigured: true, recoveryGeneration: 1 }, currentSessionId: 'session-a', currentSessionExpiresAt: '2030-01-01T00:00:00.000Z', serverTime: '2026-08-10T14:00:00.000Z', restrictedToRecovery: false, workspaces: [workspace], legacyWorkspaceId: null }
-    render(<SettingsView user={user} workspace={workspace} workspaceId={workspace.id} bootstrap={bootstrap} setBootstrap={vi.fn()} pendingCount={0} refreshPending={vi.fn()} onLogout={vi.fn()} theme="light" onThemeChange={vi.fn()} onSession={vi.fn()} onCreateWorkspace={vi.fn()} online/>)
+    render(<SettingsView user={user} workspace={workspace} workspaceId={workspace.id} bootstrap={bootstrap} setBootstrap={vi.fn()} pendingCount={0} refreshPending={vi.fn()} onLogout={vi.fn()} theme="light" onThemeChange={vi.fn()} onSession={vi.fn()} online/>)
 
-    fireEvent.click(screen.getByRole('button', { name: /Общее/ }))
     fireEvent.click(screen.getByRole('button', { name: 'Экспорт в CSV' }))
 
     expect(createdParts[0]?.[0]).toBe('﻿')
@@ -681,20 +686,22 @@ describe('settings identity transitions', () => {
     expect(screen.getByText('Экспортировано расходов: 2')).not.toBeNull()
   })
 
-  it('rolls a display name back when saving on blur fails', async () => {
+  it('keeps the old name and explains why when saving a new one fails', async () => {
     vi.spyOn(workspaceApi, 'listMembers').mockResolvedValue({ members: [] })
     vi.spyOn(workspaceApi, 'listSessions').mockResolvedValue({ sessions: [] })
     vi.spyOn(workspaceApi, 'listInvitations').mockResolvedValue({ invitations: [] })
     vi.spyOn(workspaceApi, 'updateProfile').mockRejectedValue(new Error('Нет связи'))
     const workspace = expenseBootstrap().workspace
     const user: AuthenticatedSession = { authenticated: true, user: { id: 'user-a', displayName: 'Аня', recoveryConfigured: true, recoveryGeneration: 1 }, currentSessionId: 'session-a', currentSessionExpiresAt: '2030-01-01T00:00:00.000Z', serverTime: '2026-08-10T14:00:00.000Z', restrictedToRecovery: false, workspaces: [workspace], legacyWorkspaceId: null }
-    render(<SettingsView user={user} workspace={workspace} workspaceId={workspace.id} bootstrap={expenseBootstrap()} setBootstrap={vi.fn()} pendingCount={0} refreshPending={vi.fn()} onLogout={vi.fn()} theme="light" onThemeChange={vi.fn()} onSession={vi.fn()} onCreateWorkspace={vi.fn()} online/>)
-    const input = screen.getByLabelText('Ваше имя') as HTMLInputElement
+    render(<SettingsView user={user} workspace={workspace} workspaceId={workspace.id} bootstrap={expenseBootstrap()} setBootstrap={vi.fn()} pendingCount={0} refreshPending={vi.fn()} onLogout={vi.fn()} theme="light" onThemeChange={vi.fn()} onSession={vi.fn()} online/>)
+    fireEvent.click(screen.getByRole('button', { name: /Ваше имя/ }))
+    const input = screen.getByRole('textbox', { name: 'Ваше имя' }) as HTMLInputElement
     fireEvent.change(input, { target: { value: 'Новое имя' } })
-    fireEvent.blur(input)
+    fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }))
 
-    await waitFor(() => expect(input.value).toBe('Аня'))
-    expect(screen.getByText('Не удалось сохранить — возвращено прежнее имя')).not.toBeNull()
+    expect((await screen.findByRole('alert')).textContent).toBe('Нет связи')
+    expect(screen.getByRole('dialog', { name: 'Ваше имя' })).not.toBeNull()
+    expect(screen.getByRole('button', { name: /Ваше имя/, hidden: true }).textContent).toContain('Аня')
   })
 })
 

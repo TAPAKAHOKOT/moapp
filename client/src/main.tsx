@@ -21,7 +21,9 @@ function currentTheme(): Theme {
   return document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light'
 }
 
-document.documentElement.dataset.theme = localStorage.getItem('moapp:theme') === 'dark' ? 'dark' : 'light'
+// Без явного выбора тема повторяет системную — телефон уже решил это за человека.
+const savedTheme = localStorage.getItem('moapp:theme')
+document.documentElement.dataset.theme = savedTheme === 'dark' || savedTheme === 'light' ? savedTheme : window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
 syncThemeColor(currentTheme())
 
 // App owns the theme preference. Keep the browser/PWA chrome in sync whenever
