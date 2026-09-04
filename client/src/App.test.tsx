@@ -339,19 +339,24 @@ describe('analytics legend', () => {
     const expenses = categories.map((category, index) => ({ id: `exp-${index}`, amountMinor: (index + 1) * 1_000, currency: 'RSD', categoryId: category.id, note: index === 5 ? 'зонтик' : null, occurredAt: now, createdAt: now, updatedAt: now, version: 1, deletedAt: null }))
     render(<AnalyticsView userId="analytics-user" workspaceId="analytics-workspace" bootstrap={expenseBootstrap({ categories, expenses })} theme="light" online={false}/>)
     expect(screen.queryByText('Остальные')).toBeNull()
-    const rows = screen.getAllByRole('button', { expanded: false }).filter((node) => node.classList.contains('legend-row'))
-    expect(rows).toHaveLength(6)
+    const legendRows = () => screen.getAllByRole('button').filter((node) => node.classList.contains('legend-row'))
+    expect(legendRows()).toHaveLength(6)
+    // Тап по строке легенды — фокус: всё выше считается по этой категории, а её записи раскрываются.
     fireEvent.click(screen.getByRole('button', { name: /Прочее/ }))
     expect(screen.getByText(/зонтик/)).not.toBeNull()
     expect(screen.getByRole('button', { name: /Прочее/ }).getAttribute('aria-expanded')).toBe('true')
+    expect(legendRows()).toHaveLength(1)
+    fireEvent.click(screen.getByRole('button', { name: 'Все категории' }))
+    expect(legendRows()).toHaveLength(6)
   })
 })
 
 describe('analytics filters and fallback', () => {
-  it('starts with all categories and labels cached data with its timestamp', () => {
+  it('starts without a category filter and labels cached data with its timestamp', () => {
     const bootstrap = expenseBootstrap()
     render(<AnalyticsView userId="analytics-user" workspaceId="analytics-workspace" bootstrap={bootstrap} theme="light" online={false}/>)
-    expect(screen.getByLabelText('Категория расходов').textContent).toBe('Все категории')
+    // Отдельного селекта категории нет: легенда и есть список категорий.
+    expect(screen.queryByLabelText('Категория расходов')).toBeNull()
     expect(screen.getByRole('status').textContent).toContain('Показаны сохранённые данные на')
   })
 })
