@@ -302,7 +302,7 @@ describe('history discovery', () => {
 
     // Чипы показывают само значение, а не «Все …»: так видно, что включено.
     expect(screen.getByLabelText('Валюта истории').textContent).toBe('EUR')
-    expect(screen.getByLabelText('Период истории').textContent).toContain('30 авг')
+    expect(screen.getByLabelText('Период истории').textContent).toBe('30 авг. 2026')
     expect((screen.getByRole('searchbox') as HTMLInputElement).value).toBe('кофе')
     expect(screen.getAllByRole('button', { name: /Продукты/ })).toHaveLength(1)
   })
@@ -456,7 +456,7 @@ describe('Bybit transaction review', () => {
     // Settings → "Обновить" reports a higher pendingCount through the shared status.
     view.rerender(<BybitReviewView {...props} pendingCount={2}/>)
     await waitFor(() => expect(list).toHaveBeenCalledTimes(2))
-    await screen.findByText(/Операции с карты · 2/)
+    await screen.findByText(/В очереди · 2/)
     expect(screen.getByText('VERO 3')).not.toBeNull()
     expect(screen.getByRole('button', { name: 'Заметка: черновик' })).not.toBeNull()
     expect(onStatus).toHaveBeenLastCalledWith({ pendingCount: 2 })

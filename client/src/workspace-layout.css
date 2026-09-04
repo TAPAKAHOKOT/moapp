@@ -1582,15 +1582,16 @@ html {
 
 /* История начинается с содержимого: строка чипов вместо четырёх селектов, поиск по иконке, итог одной строкой. */
 .history-toolbar { display: flex; flex-direction: column; gap: 10px; padding: 14px 16px 0; }
-.history-chips { display: flex; align-items: center; gap: 6px; overflow-x: auto; scrollbar-width: none; padding-bottom: 2px; }
-.history-chips::-webkit-scrollbar { display: none; }
+.history-chips { display: flex; align-items: center; gap: 6px; }
+.history-chip-strip { display: flex; flex: 1 1 auto; align-items: center; gap: 6px; min-width: 0; overflow-x: auto; scrollbar-width: none; padding-bottom: 2px; }
+.history-chip-strip::-webkit-scrollbar { display: none; }
 .filter-chip { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 4px; min-height: 36px; padding: 0 12px; border: 1px solid var(--control-line); border-radius: 999px; background: var(--card); color: var(--ink); font-size: 12px; font-weight: 600; max-width: 190px; text-align: left; }
 .filter-chip > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .filter-chip .chevron { width: 12px; height: 12px; color: var(--muted); }
 .filter-chip.active { background: var(--sage); border-color: var(--sage); color: var(--on-ink); }
 .filter-chip.active .chevron, .filter-chip.active svg { color: inherit; }
 .filter-chip[aria-expanded="true"] { border-color: var(--sage); }
-.filter-chip.chip-icon { width: 36px; padding: 0; justify-content: center; margin-left: auto; }
+.filter-chip.chip-icon { width: 36px; padding: 0; justify-content: center; }
 .history-toolbar > .search { width: 100%; margin: 0; }
 .history-total-line { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-height: 24px; color: var(--muted); font-size: 11px; }
 .history-total-line .history-total { border: 0; background: none; padding: 0; color: var(--ink); font-size: 15px; font-weight: 750; letter-spacing: -.01em; }
