@@ -23,7 +23,9 @@ export type Tab = 'entry' | 'history' | 'analytics' | 'review' | 'settings'
 type Theme = 'light' | 'dark'
 type AnalyticsPeriod = 'week' | 'month'
 const CHART_COLOR = '#758d69'
-const EMPTY_FORM = { amount: '', currency: 'RSD', note: '', occurredAt: '', tagIds: [] as string[] }
+const EMPTY_FORM = { amount: '', currency: 'RSD', note: '', occurredAt: '', tagIds: [] as string[], categoryId: '' }
+// Черновик считается непустым, если в нём есть что угодно, а не только сумма: категория и теги теперь тоже выбираются до сохранения.
+const formHasContent = (form: typeof EMPTY_FORM) => Boolean(form.amount || form.note || form.occurredAt || form.tagIds.length || form.categoryId)
 
 const SWIPE_START = 14
 const SWIPE_COMMIT = 64
@@ -330,12 +332,13 @@ function tagStyle(tag: Pick<Tag, 'color'>) {
   return tag.color ? { '--tag': tag.color } as React.CSSProperties : undefined
 }
 
-// Одна горизонтальная полоса со всеми тегами: тег включается одним касанием, «+» открывает поиск и создание.
-function TagStrip({ tags, selected, onChange, onCreate, disabled = false, online = true }: { tags: Tag[]; selected: string[]; onChange: (ids: string[]) => void; onCreate?: (name: string) => Promise<Tag | null>; disabled?: boolean; online?: boolean }) {
+// Ряд «Дополнительно»: выбранные теги, «＋ Тег» и «＋ Заметка» одним стилем. Полный список тегов — в шите.
+function ExtrasRow({ tags, selected, note, onChange, onNote, onCreate, disabled = false, online = true, inert = false }: { tags: Tag[]; selected: string[]; note: string; onChange: (ids: string[]) => void; onNote: () => void; onCreate?: (name: string) => Promise<Tag | null>; disabled?: boolean; online?: boolean; inert?: boolean }) {
   const [open, setOpen] = useState(false)
   const stripRef = useRef<HTMLDivElement>(null)
-  const ordered = sortTags(tags)
-  // Полоса — единственное место экрана ввода, где разрешён горизонтальный пан. Пока тегам хватает ширины, ей нечего
+  const chosen = sortTags(tags.filter((tag) => selected.includes(tag.id)))
+  const tabIndex = inert ? -1 : undefined
+  // Ряд — единственное место экрана ввода, где разрешён горизонтальный пан. Пока чипам хватает ширины, ему нечего
   // листать, и браузер отдавал жест пейджеру вкладок: страница отъезжала и возвращалась. Без переполнения пан запрещён.
   useLayoutEffect(() => {
     const node = stripRef.current
@@ -347,20 +350,33 @@ function TagStrip({ tags, selected, onChange, onCreate, disabled = false, online
     observer.observe(node)
     return () => observer.disconnect()
   })
-  const toggle = (id: string) => {
-    tap(4)
-    if (selected.includes(id)) onChange(selected.filter((item) => item !== id))
-    else if (selected.length < MAX_EXPENSE_TAGS) onChange([...selected, id])
-  }
-  // Шторка рендерится рядом с полосой, а не внутри неё: iOS Safari удерживает position:fixed внутри прокручиваемого
+  const remove = (id: string) => { tap(4); onChange(selected.filter((item) => item !== id)) }
+  // Шторка рендерится рядом с рядом, а не внутри него: iOS Safari удерживает position:fixed внутри прокручиваемого
   // контейнера, и подложка оказывалась обрезанной полосой и под футером.
   return <>
-    <div className="tag-strip" role="group" aria-label="Теги" ref={stripRef}>
-    <button type="button" className={`tag-add${ordered.length ? '' : ' tag-add-wide'}`} disabled={disabled} onClick={() => setOpen(true)} aria-label={ordered.length ? 'Найти или создать тег' : 'Добавить тег'}>{ordered.length ? '+' : '＋ Тег'}</button>
-    {ordered.map((tag) => <TagChip key={tag.id} name={tag.name} color={tag.color} selected={selected.includes(tag.id)} disabled={disabled} onToggle={() => toggle(tag.id)}/>)}
+    <div className="tag-strip extras-row" role="group" aria-label="Дополнительно" ref={stripRef}>
+      <span className="extras-label" aria-hidden="true">Дополнительно</span>
+      {chosen.map((tag) => <TagChip key={tag.id} name={tag.name} color={tag.color} selected disabled={disabled || inert} onToggle={() => remove(tag.id)}/>)}
+      <button type="button" className="tag-add extra-add" disabled={disabled} tabIndex={tabIndex} onClick={() => setOpen(true)} aria-label={chosen.length ? 'Добавить или создать тег' : 'Добавить тег'}>＋ Тег</button>
+      <button type="button" className={`tag-add extra-add${note ? ' filled' : ''}`} disabled={disabled} tabIndex={tabIndex} onClick={onNote} aria-label={note ? `Заметка: ${note}` : 'Добавить заметку'}>{note ? `✎ ${note}` : '＋ Заметка'}</button>
     </div>
     {open && <TagSheet tags={tags} selected={selected} online={online} onClose={() => setOpen(false)} onChange={onChange} onCreate={onCreate}/>}
   </>
+}
+
+// Заметка правится в шите: поле на самом экране меняло высоту и уводило раскладку под клавиатуру.
+function NoteSheet({ value, onClose, onSave }: { value: string; onClose: () => void; onSave: (note: string) => void }) {
+  const [draft, setDraft] = useState(value)
+  const dialogRef = useDialog(onClose)
+  return <div className="sheet-backdrop" onMouseDown={onClose}>
+    <form ref={dialogRef as React.Ref<HTMLFormElement>} className="bottom-sheet editor note-sheet" role="dialog" aria-modal="true" aria-labelledby="note-title" noValidate onSubmit={(event) => { event.preventDefault(); onSave(draft.trim()) }} onMouseDown={(event) => event.stopPropagation()}>
+      <div className="sheet-handle"/>
+      <div className="sheet-title"><h2 id="note-title">Заметка</h2><button type="button" className="icon-button" onClick={onClose} aria-label="Закрыть">×</button></div>
+      <label>Заметка<input data-dialog-initial-focus maxLength={200} placeholder="Например, IKEA" value={draft} onChange={(event) => setDraft(event.target.value)}/></label>
+      <button className="primary">Готово</button>
+      {value && <button type="button" className="danger-link" onClick={() => onSave('')}>Убрать заметку</button>}
+    </form>
+  </div>
 }
 
 function TagSheet({ tags, selected, online, onClose, onChange, onCreate }: { tags: Tag[]; selected: string[]; online: boolean; onClose: () => void; onChange: (ids: string[]) => void; onCreate?: (name: string) => Promise<Tag | null> }) {
@@ -437,7 +453,6 @@ async function createTagOrReuse(workspaceId: string, name: string, color: string
 }
 
 const TrashIcon = () => <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"/></svg>
-const PlusIcon = () => <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
 
 // Блок действий над расходом («новый» и «удалить») проявляется и гаснет вместе с карточкой, а не скачком при подмене.
 const ENTRY_ACTIONS_HIDDEN: React.CSSProperties = { opacity: 0, transform: 'scale(.82)' }
@@ -503,21 +518,26 @@ function inputFromExpense(expense: Expense, currencies: Currency[]) {
     note: expense.note || '',
     occurredAt: isoToLocalInput(expense.occurredAt),
     tagIds: [...(expense.tagIds ?? [])].sort(),
+    categoryId: expense.categoryId,
   }
 }
 
-function CurrencySheet({ currencies, selected, onClose, onSelect }: { currencies: Currency[]; selected: string; onClose: () => void; onSelect: (code: string) => void }) {
+function CurrencySheet({ currencies, used = [], selected, onClose, onSelect }: { currencies: Currency[]; used?: string[]; selected: string; onClose: () => void; onSelect: (code: string) => void }) {
   const [query, setQuery] = useState('')
+  const [all, setAll] = useState(false)
   const dialogRef = useDialog(onClose)
-  const pinned = ['RSD', 'EUR', 'USD', 'RUB']
+  // Первыми стоят валюты, которые в пространстве уже встречались, и текущая: обычно это и есть весь список.
+  const familiar = [...new Set([selected, ...used])].map((code) => currencies.find((currency) => currency.code === code)).filter((currency): currency is Currency => Boolean(currency))
   const filtered = currencies.filter((currency) => `${currency.code} ${currency.name}`.toLowerCase().includes(query.toLowerCase()))
+  const showAll = all || familiar.length === 0
+  const row = (currency: Currency) => <button type="button" key={currency.code} aria-pressed={selected === currency.code} onClick={() => onSelect(currency.code)}><span><b>{currency.code}</b><small>{currency.name}</small></span><span>{selected === currency.code ? <CheckIcon/> : currency.symbol}</span></button>
   return <div className="sheet-backdrop" onMouseDown={onClose}>
-    <section ref={dialogRef} className="bottom-sheet tall" role="dialog" aria-modal="true" aria-labelledby="currency-title" onMouseDown={(e) => e.stopPropagation()}>
+    <section ref={dialogRef} className={`bottom-sheet${showAll ? ' tall' : ''}`} role="dialog" aria-modal="true" aria-labelledby="currency-title" onMouseDown={(e) => e.stopPropagation()}>
       <div className="sheet-handle"/><div className="sheet-title"><h2 id="currency-title">Валюта</h2><button type="button" className="icon-button" data-dialog-initial-focus onClick={onClose} aria-label="Закрыть">×</button></div>
-      <input className="search" type="search" placeholder="Код или название" aria-label="Поиск валюты" value={query} onChange={(e) => setQuery(e.target.value)} />
-      {!query && <div className="currency-pins">{pinned.filter((code) => currencies.some((c) => c.code === code)).map((code) => <button type="button" key={code} aria-pressed={selected === code} className={selected === code ? 'selected' : ''} onClick={() => onSelect(code)}>{code}</button>)}</div>}
-      <div className="currency-list">{filtered.map((currency) => <button type="button" key={currency.code} aria-pressed={selected === currency.code} onClick={() => onSelect(currency.code)}><span><b>{currency.code}</b><small>{currency.name}</small></span><span>{currency.symbol}</span></button>)}</div>
-      {!filtered.length && <p className="sheet-empty" role="status">По запросу «{query}» валют не найдено.</p>}
+      {showAll && <input className="search" type="search" placeholder="Код или название" aria-label="Поиск валюты" value={query} onChange={(e) => setQuery(e.target.value)} />}
+      <div className="currency-list">{(showAll ? filtered : familiar).map(row)}</div>
+      {!showAll && <button type="button" className="sheet-cancel currency-more" onClick={() => setAll(true)}>Другая валюта…</button>}
+      {showAll && !filtered.length && <p className="sheet-empty" role="status">По запросу «{query}» валют не найдено.</p>}
     </section>
   </div>
 }
@@ -534,28 +554,12 @@ function DateSheet({ value, onClose, onPick }: { value: string; onClose: () => v
     setDraft(isoToLocalInput(date.toISOString()))
   }
   const valid = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(draft)
-  // Сдвиг относительно уже выбранного момента: «час назад» или «вчера в это же время» одним касанием.
-  const nudge = (hours: number) => {
-    const base = valid ? new Date(localInputToIso(draft)) : new Date()
-    setValidation('')
-    setDraft(isoToLocalInput(new Date(base.getTime() + hours * 3_600_000).toISOString()))
-    tap(4)
-  }
-  const setTime = (hour: number) => {
-    setValidation('')
-    setDraft(`${(valid ? draft : now()).slice(0, 10)}T${String(hour).padStart(2, '0')}:00`)
-    tap(4)
-  }
-  // Две строки по четыре: минусы над такими же плюсами, шаг растёт слева направо.
-  const nudges: Array<[number, string]> = [[-1, '−1ч'], [-3, '−3ч'], [-8, '−8ч'], [-24, '−1д'], [1, '+1ч'], [3, '+3ч'], [8, '+8ч'], [24, '+1д']]
   return <div className="sheet-backdrop" onMouseDown={onClose}>
     <form ref={dialogRef as React.Ref<HTMLFormElement>} className="bottom-sheet editor" role="dialog" aria-modal="true" aria-labelledby="date-title" noValidate onSubmit={(event) => { event.preventDefault(); if (!draft) { setValidation('Выберите дату и время.'); return } onPick(draft) }} onMouseDown={(event) => event.stopPropagation()}>
       <div className="sheet-handle"/>
       <div className="sheet-title"><h2 id="date-title">Когда</h2><button type="button" className="icon-button" data-dialog-initial-focus onClick={onClose} aria-label="Закрыть">×</button></div>
       <p className="date-preview" aria-live="polite">{valid ? formatEntryDate(draft) : 'Дата не выбрана'}</p>
       <div className="date-presets"><button type="button" onClick={() => shift(0)}>Сейчас</button><button type="button" onClick={() => shift(1)}>Вчера</button><button type="button" onClick={() => shift(2)}>Позавчера</button></div>
-      <div className="date-nudges" role="group" aria-label="Сдвинуть дату и время">{nudges.map(([hours, label]) => <button type="button" key={label} onClick={() => nudge(hours)}>{label}</button>)}</div>
-      <div className="date-presets date-times" role="group" aria-label="Время дня"><button type="button" onClick={() => setTime(9)}>Утро · 9:00</button><button type="button" onClick={() => setTime(13)}>День · 13:00</button><button type="button" onClick={() => setTime(19)}>Вечер · 19:00</button></div>
       <label className="date-field">Дата и время <b className="weekday-badge">{formatShortWeekday(draft)}</b><input type="datetime-local" aria-invalid={Boolean(validation)} value={draft} onChange={(event) => { setValidation(''); setDraft(event.target.value) }}/></label>
       {validation && <p className="form-error" role="alert">{validation}</p>}
       <button className="primary">Готово</button>
@@ -631,23 +635,44 @@ const Keypad = memo(function Keypad({ onKey, disabled = false }: { onKey: (key: 
 function CategorySheet({ categories, selectedId, onClose, onPick }: { categories: Category[]; selectedId?: string; onClose: () => void; onPick: (category: Category) => void }) {
   const dialogRef = useDialog(onClose)
   return <div className="sheet-backdrop" onMouseDown={onClose}><section ref={dialogRef} className="bottom-sheet" role="dialog" aria-modal="true" aria-labelledby="category-sheet-title" onMouseDown={(e) => e.stopPropagation()}>
-    <div className="sheet-handle"/><div className="sheet-title"><h2 id="category-sheet-title">Другое</h2><button type="button" className="icon-button" data-dialog-initial-focus onClick={onClose} aria-label="Закрыть">×</button></div>
+    <div className="sheet-handle"/><div className="sheet-title"><h2 id="category-sheet-title">Все категории</h2><button type="button" className="icon-button" data-dialog-initial-focus onClick={onClose} aria-label="Закрыть">×</button></div>
     <div className="category-grid">{categories.map((category) => <button type="button" key={category.id} aria-pressed={category.id === selectedId} className={category.id === selectedId ? 'selected' : undefined} onClick={() => onPick(category)}><i style={{ backgroundColor: category.color ?? '#a9afa5' }}/><span>{category.name}</span></button>)}</div>
-    {!categories.length && <p className="sheet-empty" role="status">Дополнительных категорий пока нет. Их можно добавить в настройках.</p>}
+    {!categories.length && <p className="sheet-empty" role="status">Других категорий пока нет. Их можно добавить в настройках.</p>}
   </section></div>
 }
 
 // Нижняя часть экрана ввода для соседней записи: во время свайпа она проявляется поверх живой, чтобы категория,
-// теги и заметка менялись вместе с движением пальца, а не скачком при подмене. Слой чисто декоративный.
+// теги, заметка и кнопка сохранения менялись вместе с движением пальца, а не скачком при подмене. Слой чисто декоративный.
 const SETTLE_MS = 80
-type LowerPreviewState = { key: string; category?: Category; tagIds: string[]; note: string; ready: boolean; hint: string }
+type LowerPreviewState = { key: string; categoryId: string | null; tagIds: string[]; note: string; saveLabel: string; canSave: boolean }
 
-function EntryLowerPreview({ main, category, tags, tagIds, note, ready, hint }: { main: Category[]; category?: Category; tags: Tag[]; tagIds: string[]; note: string; ready: boolean; hint: string }) {
-  const other = category && !main.some((item) => item.id === category.id) ? category : null
+// Подпись кнопки сохранения сама сообщает, чего не хватает: суммы, категории или изменений.
+function saveButtonLabel({ amount, currency, categoryId, editing, dirty, currencies }: { amount: string; currency: string; categoryId: string | null; editing: boolean; dirty: boolean; currencies: Currency[] }) {
+  const ready = Boolean(amount) && Number(amount) > 0
+  if (!ready) return { label: 'Введите сумму', canSave: false }
+  if (!categoryId) return { label: 'Выберите категорию', canSave: false }
+  if (editing && !dirty) return { label: 'Сохранить', canSave: false }
+  const decimals = currencies.find((item) => item.code === currency)?.decimals ?? 2
+  return { label: `Сохранить ${cachedNumberFormat('ru-RU', { maximumFractionDigits: decimals }).format(Number(amount))} ${currency}`, canSave: true }
+}
+
+const GridIcon = () => <i className="grid-icon" aria-hidden="true"><svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor"><rect x="1.5" y="1.5" width="5" height="5" rx="1.5"/><rect x="9.5" y="1.5" width="5" height="5" rx="1.5"/><rect x="1.5" y="9.5" width="5" height="5" rx="1.5"/><rect x="9.5" y="9.5" width="5" height="5" rx="1.5"/></svg></i>
+
+// Ряд плиток категорий: основные — плитками, остальные — за плиткой «Ещё N», которая показывает выбранную из них.
+function CategoryTiles({ main, additional, selectedId, disabled = false, inert = false, onPick, onMore }: { main: Category[]; additional: Category[]; selectedId: string | null; disabled?: boolean; inert?: boolean; onPick?: (category: Category) => void; onMore?: () => void }) {
+  const other = selectedId && !main.some((item) => item.id === selectedId) ? additional.find((item) => item.id === selectedId) ?? null : null
+  const tabIndex = inert ? -1 : undefined
+  return <div className="categories"><div className="main-categories">
+    {main.map((category) => <button type="button" key={category.id} disabled={disabled} tabIndex={tabIndex} aria-pressed={category.id === selectedId} className={category.id === selectedId ? 'selected' : undefined} onClick={() => onPick?.(category)}><i style={{ backgroundColor: category.color ?? '#a9afa5' }}/><span>{category.name}</span></button>)}
+    {additional.length > 0 && <button type="button" disabled={disabled} tabIndex={tabIndex} aria-pressed={Boolean(other)} className={other ? 'selected' : undefined} onClick={onMore}>{other ? <i style={{ backgroundColor: other.color ?? '#a9afa5' }}/> : <GridIcon/>}<span>{other ? other.name : `Ещё ${additional.length}`}</span></button>}
+  </div></div>
+}
+
+function EntryLowerPreview({ main, additional, tags, state }: { main: Category[]; additional: Category[]; tags: Tag[]; state: LowerPreviewState }) {
   return <>
-    <div className={`categories${ready ? '' : ' locked'}`}><p>{hint}</p><div className="main-categories">{main.map((item) => <button type="button" key={item.id} disabled={!ready} tabIndex={-1} className={item.id === category?.id ? 'selected' : undefined}><i style={{backgroundColor:item.color ?? '#a9afa5'}}/><span>{item.name}</span></button>)}<button type="button" disabled={!ready} tabIndex={-1} className={other ? 'selected' : undefined}>{other ? <i style={{backgroundColor:other.color ?? '#a9afa5'}}/> : <i className="dots">•••</i>}<span>{other ? other.name : 'Другое'}</span></button></div></div>
-    <div className="tag-strip"><button type="button" className={`tag-add${tags.length ? '' : ' tag-add-wide'}`} tabIndex={-1}>{tags.length ? '+' : '＋ Тег'}</button>{sortTags(tags).map((tag) => <TagChip key={tag.id} name={tag.name} color={tag.color} selected={tagIds.includes(tag.id)} onToggle={() => {}}/>)}</div>
-    <div className="note-block"><button type="button" className="text-button note-toggle" tabIndex={-1}>{note ? `✎ ${note}` : '＋ Добавить заметку'}</button></div>
+    <CategoryTiles main={main} additional={additional} selectedId={state.categoryId} inert/>
+    <ExtrasRow tags={tags} selected={state.tagIds} note={state.note} inert onChange={() => {}} onNote={() => {}}/>
+    <div className="entry-save"><button type="button" className="primary" tabIndex={-1} disabled={!state.canSave}>{state.saveLabel}</button></div>
   </>
 }
 
@@ -663,9 +688,8 @@ export function EntryView({ userId, workspaceId, bootstrap, setBootstrap, curren
   const [categorySheet, setCategorySheet] = useState(false)
   const [currencySheet, setCurrencySheet] = useState(false)
   const [dateSheet, setDateSheet] = useState(false)
-  const [showNote, setShowNote] = useState(false)
+  const [noteSheet, setNoteSheet] = useState(false)
   const [saving, setSaving] = useState(false)
-  const [editCategoryId, setEditCategoryId] = useState<string | null>(null)
   const { toast, notify, dismiss } = useToast()
   const { confirm, confirmation } = useConfirm()
   const swipe = useRef<{ x: number; y: number; lastX: number; active: boolean; touchId: number | null } | null>(null)
@@ -673,7 +697,6 @@ export function EntryView({ userId, workspaceId, bootstrap, setBootstrap, curren
   const entryRef = useRef<HTMLElement>(null)
   const trackRef = useRef<HTMLDivElement>(null)
   const actionsRef = useRef<HTMLDivElement>(null)
-  const editActionsRef = useRef<HTMLDivElement>(null)
   const lowerLiveRef = useRef<HTMLDivElement>(null)
   const lowerPreviewRef = useRef<HTMLDivElement>(null)
   // Содержимое превью замораживается на момент жеста: после подмены соседи меняются, а слой должен ещё
@@ -696,16 +719,13 @@ export function EntryView({ userId, workspaceId, bootstrap, setBootstrap, curren
     const node = lowerPreviewRef.current
     if (node && swipePreview) { node.style.transition = 'none'; node.style.opacity = String(lastFade.current) }
   }, [swipePreview])
-  // Всё, что существует только у сохранённой записи (значки сверху и «Сохранить / Отменить»), проявляется одним движением.
-  const setActionsPresence = (presence: number, duration: number) => {
-    styleEntryActions(actionsRef.current, presence, duration)
-    styleEntryActions(editActionsRef.current, presence, duration)
-  }
+  // Единственное, что существует только у сохранённой записи, — кнопка удаления сверху; она проявляется одним движением.
+  const setActionsPresence = (presence: number, duration: number) => styleEntryActions(actionsRef.current, presence, duration)
   const offset = useRef(0)
   const swapped = useRef(false)
   const committing = useRef(false)
   const swapTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
-  // Черновик несохранённого нового расхода, чтобы свайп по истории не стирал набранную сумму.
+  // Черновик несохранённого нового расхода, чтобы свайп по истории не стирал набранное.
   const draft = useRef(EMPTY_FORM)
   const synced = useRef<{ id: string; form: typeof EMPTY_FORM }>({ id: '', form: EMPTY_FORM })
   const formRef = useRef(form)
@@ -722,7 +742,7 @@ export function EntryView({ userId, workspaceId, bootstrap, setBootstrap, curren
       const node = trackRef.current
       if (node) { node.style.transition = 'none'; node.style.transform = ''; offset.current = 0 }
     }
-    // При свайпе новое состояние уже достигнуто анимацией; при удалении и открытии из истории блок мягко гаснет или проявляется сам.
+    // При свайпе новое состояние уже достигнуто анимацией; при удалении и открытии из истории кнопка мягко гаснет или проявляется сама.
     setActionsPresence(currentId ? 1 : 0, didSwap ? 0 : 180)
     clearTimeout(previewTimer.current)
     if (didSwap) {
@@ -737,16 +757,14 @@ export function EntryView({ userId, workspaceId, bootstrap, setBootstrap, curren
     }
   }, [currentId])
 
+  const blankForm = () => ({ ...EMPTY_FORM, currency: getWorkspacePreference(userId, workspaceId, 'last-currency') || 'RSD' })
   useLayoutEffect(() => {
-    const base = current ? inputFromExpense(current, bootstrap.currencies) : draft.current.amount ? draft.current : { ...EMPTY_FORM, currency: getWorkspacePreference(userId, workspaceId, 'last-currency') || 'RSD' }
+    const base = current ? inputFromExpense(current, bootstrap.currencies) : formHasContent(draft.current) ? draft.current : blankForm()
     // Свежую версию записи подхватываем, только пока пользователь не начал править её сам.
     const sameRecord = synced.current.id === (currentId || '')
     if (sameRecord && JSON.stringify(form) !== JSON.stringify(synced.current.form)) return
     synced.current = { id: currentId || '', form: base }
     setForm(base)
-    setEditCategoryId(current?.categoryId ?? null)
-    // Заметка всегда свёрнута в одну строку: развёрнутое поле у одних расходов и свёрнутое у других меняло высоту при листании.
-    setShowNote(false)
   }, [currentId, current?.version]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const [limitHit, setLimitHit] = useState(0)
@@ -761,28 +779,29 @@ export function EntryView({ userId, workspaceId, bootstrap, setBootstrap, curren
     setForm((previous) => ({ ...previous, amount: applyKeypad(previous.amount, value, decimalsFor(previous.currency)) }))
   }, [bootstrap.currencies])
 
-  const buildExpense = (categoryId: string, submittedForm = form, submittedCurrent = current): Expense => {
+  const buildExpense = (submittedForm = form, submittedCurrent = current): Expense => {
     const now = new Date().toISOString()
     return {
       id: submittedCurrent?.id || crypto.randomUUID(), amountMinor: amountToMinor(submittedForm.amount, submittedForm.currency, bootstrap.currencies), currency: submittedForm.currency,
-      categoryId, note: submittedForm.note.trim() || null, occurredAt: submittedForm.occurredAt ? localInputToIso(submittedForm.occurredAt) : now, tagIds: [...submittedForm.tagIds].sort(),
+      categoryId: submittedForm.categoryId, note: submittedForm.note.trim() || null, occurredAt: submittedForm.occurredAt ? localInputToIso(submittedForm.occurredAt) : now, tagIds: [...submittedForm.tagIds].sort(),
       createdAt: submittedCurrent?.createdAt || now, updatedAt: now, version: submittedCurrent ? submittedCurrent.version + 1 : 1, deletedAt: null, pending: !navigator.onLine,
     }
   }
 
-  const submitExpense = async (categoryId: string) => {
+  const submitExpense = async () => {
     const submittedForm = { ...form }
     const submittedCurrent = current
     if (!submittedForm.amount || Number(submittedForm.amount) <= 0) { notify('Сначала введите сумму'); return }
+    if (!submittedForm.categoryId) { notify('Выберите категорию'); return }
     setSaving(true); setCategorySheet(false)
-    const expense = buildExpense(categoryId, submittedForm, submittedCurrent)
+    const expense = buildExpense(submittedForm, submittedCurrent)
     const previousExpense = bootstrap.expenses.find((item) => item.id === expense.id)
     setBootstrap((data) => ({ ...data, expenses: [expense, ...data.expenses.filter((item) => item.id !== expense.id)] }))
     try {
       const result = await submitExpenseOperation(userId, workspaceId, submittedCurrent ? 'updateExpense' : 'createExpense', expense)
       if (result?.expense) setBootstrap((data) => ({ ...data, expenses: data.expenses.map((item) => item.id === expense.id ? result.expense! : item) }))
       else if (!result) setBootstrap((data) => ({ ...data, expenses: data.expenses.map((item) => item.id === expense.id ? { ...item, pending:true } : item) }))
-      notify(result?.status === 'conflict' ? 'Изменение конфликтует с сервером. Откройте «Не сохранено» вверху.' : submittedCurrent ? 'Изменения сохранены' : 'Расход добавлен')
+      notify(result?.status === 'conflict' ? 'Изменение конфликтует с сервером. Откройте «Не отправлено» вверху.' : submittedCurrent ? 'Изменения сохранены' : 'Расход добавлен')
       if (!submittedCurrent && !currentId && JSON.stringify(formRef.current) === JSON.stringify(submittedForm)) {
         const next = { ...EMPTY_FORM, currency: submittedForm.currency }
         draft.current = next
@@ -805,15 +824,11 @@ export function EntryView({ userId, workspaceId, bootstrap, setBootstrap, curren
     finally { setSaving(false) }
   }
 
+  // Плитка категории только выбирает — и для нового расхода, и для правки. Сохраняет одна кнопка внизу.
   const chooseCategory = (category: Category) => {
-    if (!form.amount || Number(form.amount) <= 0) { notify('Сначала введите сумму'); return }
     tap(6)
-    if (current) {
-      setEditCategoryId(category.id)
-      setCategorySheet(false)
-      return
-    }
-    void submitExpense(category.id)
+    setForm((value) => ({ ...value, categoryId: category.id }))
+    setCategorySheet(false)
   }
 
   const restore = async (deleted: Expense) => {
@@ -823,7 +838,7 @@ export function EntryView({ userId, workspaceId, bootstrap, setBootstrap, curren
     try {
       const result = await submitExpenseOperation(userId, workspaceId, 'updateExpense', restored)
       if (result?.expense) setBootstrap((data) => ({ ...data, expenses: data.expenses.map((item) => item.id === restored.id ? result.expense! : item) }))
-      notify(result?.status === 'conflict' ? 'Возврат конфликтует с сервером. Откройте «Не сохранено» вверху.' : 'Расход возвращён')
+      notify(result?.status === 'conflict' ? 'Возврат конфликтует с сервером. Откройте «Не отправлено» вверху.' : 'Расход возвращён')
     } catch (error) {
       setBootstrap((data) => ({ ...data, expenses: data.expenses.map((item) => item.id === deleted.id && item.version === restored.version && item.updatedAt === restored.updatedAt ? deleted : item) }))
       notify(error instanceof ApiError ? error.message : 'Не удалось вернуть расход', undefined, true)
@@ -842,7 +857,7 @@ export function EntryView({ userId, workspaceId, bootstrap, setBootstrap, curren
       // Версию после удаления сервер поднимает на единицу — без неё возврат ушёл бы в конфликт.
       const stored: Expense = result?.expense ?? { ...target, deletedAt, version: target.version + 1, pending: true }
       setBootstrap((data) => ({ ...data, expenses: data.expenses.map((item) => item.id === target.id ? stored : item) }))
-      if (result?.status === 'conflict') notify('Удаление конфликтует с сервером. Откройте «Не сохранено» вверху.')
+      if (result?.status === 'conflict') notify('Удаление конфликтует с сервером. Откройте «Не отправлено» вверху.')
       else notify('Расход удалён', { label: 'Вернуть', run: () => void restore(stored) })
     } catch (error) {
       setBootstrap((data) => ({ ...data, expenses: data.expenses.map((item) => item.id === target.id && item.version === target.version && item.deletedAt === deletedAt ? target : item) }))
@@ -899,7 +914,7 @@ export function EntryView({ userId, workspaceId, bootstrap, setBootstrap, curren
     if (!current && !discarded) draft.current = form
     const span = (trackRef.current?.clientWidth ?? 320) + CARD_GAP
     const destination = direction === 'older' ? span : -span
-    const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    const reduced = prefersReducedMotion()
     // Чем ближе карточка уже подтянута пальцем, тем короче доводка — быстрый флик не должен ощущаться вязким.
     const duration = reduced ? 0 : Math.min(300, Math.max(150, Math.abs(destination - offset.current) * 0.55))
     committing.current = true
@@ -912,7 +927,7 @@ export function EntryView({ userId, workspaceId, bootstrap, setBootstrap, curren
 
   const swipeStartAt = (clientX: number, clientY: number, touchId: number | null = null) => {
     // Пока лента доезжает до соседа, новый жест перехватывать нельзя: подмена карточки дёрнет её из-под пальца.
-    if (committing.current || saving || categorySheet || currencySheet || dateSheet) return false
+    if (committing.current || saving || categorySheet || currencySheet || dateSheet || noteSheet) return false
     swipe.current = { x: clientX, y: clientY, lastX: clientX, active: false, touchId }
     return true
   }
@@ -955,7 +970,7 @@ export function EntryView({ userId, workspaceId, bootstrap, setBootstrap, curren
 
   const usesNativeTouch = () => 'ontouchstart' in window
 
-  // Полоса тегов листается сама по горизонтали: жест внутри неё не должен переключать расходы.
+  // Ряд «Дополнительно» листается сам по горизонтали: жест внутри него не должен переключать расходы.
   const insideTagStrip = (target: EventTarget | null) => target instanceof Element && Boolean(target.closest('.tag-strip'))
   const swipeStart = (event: React.PointerEvent) => {
     if (event.pointerType === 'touch' && usesNativeTouch()) return
@@ -1047,50 +1062,26 @@ export function EntryView({ userId, workspaceId, bootstrap, setBootstrap, curren
     : null
   const main = bootstrap.categories.filter((item) => !item.archivedAt && item.placement === 'main').sort((a,b) => a.sortOrder-b.sortOrder)
   const additional = bootstrap.categories.filter((item) => !item.archivedAt && item.placement === 'additional').sort((a,b) => a.sortOrder-b.sortOrder)
-  const ready = Boolean(form.amount) && Number(form.amount) > 0
-  const selectedCategoryId = current ? editCategoryId ?? current.categoryId : null
-  const currentCategory = selectedCategoryId ? bootstrap.categories.find((item) => item.id === selectedCategoryId) : undefined
-  // Категорию из «Другого» показываем на самой кнопке «Другое»: добавлять её в сетку нельзя — та переносится на вторую строку и дёргает раскладку.
-  const otherFace = currentCategory && !main.some((item) => item.id === currentCategory.id) ? currentCategory : null
-  const dirty = current ? JSON.stringify(form) !== JSON.stringify(inputFromExpense(current, bootstrap.currencies)) || selectedCategoryId !== current.categoryId : Boolean(form.amount || form.note || form.occurredAt)
+  const selectedCategoryId = form.categoryId || null
+  const dirty = current ? JSON.stringify(form) !== JSON.stringify(inputFromExpense(current, bootstrap.currencies)) : formHasContent(form)
+  const save = saveButtonLabel({ amount: form.amount, currency: form.currency, categoryId: selectedCategoryId, editing: Boolean(current), dirty, currencies: bootstrap.currencies })
+  const usedCurrencies = useMemo(() => [...new Set(['RSD', ...bootstrap.expenses.filter((item) => !item.deletedAt).map((item) => item.currency)])], [bootstrap.expenses])
   const cancelEdit = () => {
     if (!current || saving) return
     const original = inputFromExpense(current, bootstrap.currencies)
     synced.current = { id: current.id, form: original }
     setForm(original)
-    setEditCategoryId(current.categoryId)
-    setShowNote(false)
-  }
-  const startNew = async () => {
-    if (dirty && !await confirm({
-      title: 'Начать новый расход?',
-      message: 'Несохранённые изменения текущего расхода будут потеряны.',
-      confirmLabel: 'Начать новый',
-      danger: true,
-    })) return
-    const next = { ...EMPTY_FORM, currency: getWorkspacePreference(userId, workspaceId, 'last-currency') || 'RSD' }
-    draft.current = next
-    synced.current = { id: '', form: next }
-    setCurrentId(null)
-    setForm(next)
-    setEditCategoryId(null)
-    setShowNote(false)
-    setCategorySheet(false)
-    setCurrencySheet(false)
-    setDateSheet(false)
-    tap(6)
   }
   useEffect(() => { onDraftDirtyChange(dirty) }, [dirty, onDraftDirtyChange])
   useEffect(() => () => onDraftDirtyChange(false), [onDraftDirtyChange])
   const previewFor = (direction: 'older' | 'newer'): LowerPreviewState | null => {
     const neighbour = direction === 'older' ? olderNeighbour : newerNeighbour
     if (direction === 'older' && !neighbour) return null
-    if (neighbour) return { key: neighbour.id, category: bootstrap.categories.find((item) => item.id === neighbour.categoryId), tagIds: neighbour.tagIds ?? [], note: neighbour.note ?? '', ready: true, hint: 'Категория расхода' }
+    if (neighbour) return { key: neighbour.id, categoryId: neighbour.categoryId, tagIds: neighbour.tagIds ?? [], note: neighbour.note ?? '', saveLabel: 'Сохранить', canSave: false }
     const blank = draft.current
-    const blankReady = Boolean(blank.amount) && Number(blank.amount) > 0
-    return { key: 'blank', category: undefined, tagIds: blank.tagIds, note: blank.note, ready: blankReady, hint: blankReady ? 'Выберите категорию, чтобы сохранить' : 'Сначала введите сумму' }
+    const blankSave = saveButtonLabel({ amount: blank.amount, currency: blank.currency, categoryId: blank.categoryId || null, editing: false, dirty: true, currencies: bootstrap.currencies })
+    return { key: 'blank', categoryId: blank.categoryId || null, tagIds: blank.tagIds, note: blank.note, saveLabel: blankSave.label, canSave: blankSave.canSave }
   }
-  const categoryHint = !ready ? 'Сначала введите сумму' : current ? dirty ? 'Проверьте изменения и сохраните' : 'Категория расхода' : 'Выберите категорию, чтобы сохранить'
   const physicalKey = (event: KeyboardEvent) => {
     if (saving) return
     if(event.metaKey||event.ctrlKey||event.altKey)return
@@ -1107,6 +1098,7 @@ export function EntryView({ userId, workspaceId, bootstrap, setBootstrap, curren
     window.addEventListener('keydown',handle)
     return()=>window.removeEventListener('keydown',handle)
   },[active,physicalKey])
+  const publishTag = (tag: Tag) => setBootstrap((data) => ({ ...data, tags: [tag, ...(data.tags ?? []).filter((item) => item.id !== tag.id)] }))
   return <section ref={entryRef} className={`entry-view${current ? ' editing' : ''}${saving ? ' saving' : ''}`} aria-label="Ввод суммы" onPointerDown={swipeStart} onPointerMove={swipeMove} onPointerUpCapture={swipeEnd} onPointerCancel={swipeCancel}>
     <div className="swipe-area">
       <div className="entry-track" ref={trackRef}>
@@ -1116,23 +1108,23 @@ export function EntryView({ userId, workspaceId, bootstrap, setBootstrap, curren
       </div>
     </div>
     <div ref={actionsRef} className="entry-actions" style={ENTRY_ACTIONS_HIDDEN} inert={!current} aria-hidden={!current}>
-      <button type="button" className="icon-add" disabled={saving || !current} onClick={() => void startNew()} aria-label="Новый расход"><PlusIcon/></button>
       <button type="button" className="icon-danger entry-delete" disabled={saving || !current} onClick={() => void remove()} aria-label="Удалить расход"><TrashIcon/></button>
     </div>
     <Keypad onKey={key} disabled={saving}/>
     <div className="entry-lower">
     <div ref={lowerLiveRef} className="entry-lower-live">
-    <div className={`categories${ready ? '' : ' locked'}${dirty ? ' unsaved' : ''}`}><p>{categoryHint}</p><div className="main-categories">{main.map((category) => <button type="button" disabled={!ready || saving} aria-pressed={category.id === selectedCategoryId} key={category.id} className={category.id === selectedCategoryId ? 'selected' : undefined} onClick={() => chooseCategory(category)}><i style={{backgroundColor:category.color ?? '#a9afa5'}}/><span>{category.name}</span></button>)}<button type="button" disabled={!ready || saving} aria-pressed={Boolean(otherFace)} className={otherFace ? 'selected' : undefined} onClick={() => setCategorySheet(true)}>{otherFace ? <i style={{backgroundColor:otherFace.color ?? '#a9afa5'}}/> : <i className="dots">•••</i>}<span>{otherFace ? otherFace.name : 'Другое'}</span></button></div></div>
-    <TagStrip tags={bootstrap.tags ?? []} selected={form.tagIds} disabled={saving} online={navigator.onLine} onChange={(tagIds) => setForm((value) => ({ ...value, tagIds }))} onCreate={(name) => createTagOrReuse(workspaceId, name, TAG_COLORS[(bootstrap.tags ?? []).length % TAG_COLORS.length] ?? null, (tag) => setBootstrap((data) => ({ ...data, tags: [tag, ...(data.tags ?? []).filter((item) => item.id !== tag.id)] })))}/>
-    <div className="note-block">{!showNote ? <button key={form.note || 'empty'} type="button" className="text-button note-toggle" disabled={saving} onClick={() => setShowNote(true)}>{form.note ? `✎ ${form.note}` : '＋ Добавить заметку'}</button> : <label>Заметка <span>необязательно</span><input autoFocus maxLength={200} disabled={saving} placeholder="Например, IKEA" value={form.note} onFocus={(event) => { const node = event.currentTarget; requestAnimationFrame(() => node.scrollIntoView({ block: 'center' })) }} onChange={(e) => setForm({...form,note:e.target.value})}/></label>}</div>
+    <CategoryTiles main={main} additional={additional} selectedId={selectedCategoryId} disabled={saving} onPick={chooseCategory} onMore={() => setCategorySheet(true)}/>
+    <ExtrasRow tags={bootstrap.tags ?? []} selected={form.tagIds} note={form.note} disabled={saving} online={navigator.onLine} onChange={(tagIds) => setForm((value) => ({ ...value, tagIds }))} onNote={() => setNoteSheet(true)} onCreate={(name) => createTagOrReuse(workspaceId, name, TAG_COLORS[(bootstrap.tags ?? []).length % TAG_COLORS.length] ?? null, publishTag)}/>
+    <div className="entry-save"><button type="button" className="primary" disabled={!save.canSave || saving} onClick={() => void submitExpense()}>{saving ? 'Сохраняем…' : save.label}</button>{current && dirty && !saving && <button type="button" className="sheet-cancel" onClick={cancelEdit}>Отменить</button>}</div>
     </div>
-    {swipePreview && <div ref={lowerPreviewRef} className="entry-lower-preview" aria-hidden="true" inert><EntryLowerPreview main={main} tags={bootstrap.tags ?? []} category={swipePreview.category} tagIds={swipePreview.tagIds} note={swipePreview.note} ready={swipePreview.ready} hint={swipePreview.hint}/></div>}
+    {swipePreview && <div ref={lowerPreviewRef} className="entry-lower-preview" aria-hidden="true" inert><EntryLowerPreview main={main} additional={additional} tags={bootstrap.tags ?? []} state={swipePreview}/></div>}
     </div>
-    <div ref={editActionsRef} className={`edit-actions${current ? '' : ' empty'}`} style={ENTRY_ACTIONS_HIDDEN} inert={!current} aria-hidden={!current}><button type="button" className="primary" disabled={!current || !ready || !dirty || saving || !selectedCategoryId} onClick={() => selectedCategoryId && void submitExpense(selectedCategoryId)}>{saving ? 'Сохраняем…' : 'Сохранить'}</button><button type="button" className="sheet-cancel" disabled={!current || !dirty || saving} onClick={cancelEdit}>Отменить</button></div>
     {dateSheet && <DateSheet value={form.occurredAt} onClose={() => setDateSheet(false)} onPick={(value) => { setForm({ ...form, occurredAt: value }); setDateSheet(false) }}/>}
     {categorySheet && <CategorySheet categories={additional} selectedId={selectedCategoryId ?? undefined} onClose={() => setCategorySheet(false)} onPick={chooseCategory}/>}
+    {noteSheet && <NoteSheet value={form.note} onClose={() => setNoteSheet(false)} onSave={(note) => { setForm({ ...form, note }); setNoteSheet(false) }}/>}
     {currencySheet && <CurrencySheet
       currencies={bootstrap.currencies}
+      used={usedCurrencies}
       selected={form.currency}
       onClose={() => setCurrencySheet(false)}
       onSelect={(currency) => {
@@ -1867,8 +1859,8 @@ type ReviewAction={transaction:BybitCardTransaction;expense?:Expense;categoryId?
 
 export function BybitReviewView({ workspaceId, categories, currencies, tags=[], onTag=()=>{}, online, onExpense, onExpenseUndo, onStatus, pendingCount=0, active=true }: {workspaceId:string;categories:Category[];currencies:Currency[];tags?:Tag[];onTag?:(tag:Tag)=>void;online:boolean;onExpense:(expense:Expense)=>void;onExpenseUndo:(expenseId:string)=>void;onStatus:(status:Partial<BybitCardStatus>&Pick<BybitCardStatus,'pendingCount'>)=>void;pendingCount?:number;active?:boolean}) {
   const [items,setItems]=useState<BybitCardTransaction[]>([])
-  const [deferred,setDeferred]=useState<BybitCardTransaction[]>([])
   const [comment,setComment]=useState('')
+  const [noteSheet,setNoteSheet]=useState(false)
   const [selectedCategoryId,setSelectedCategoryId]=useState<string|null>(null)
   const [categorySheet,setCategorySheet]=useState(false)
   const [selectedTagIds,setSelectedTagIds]=useState<string[]>([])
@@ -1878,16 +1870,13 @@ export function BybitReviewView({ workspaceId, categories, currencies, tags=[], 
   const {toast:notice,notify,dismiss}=useToast()
   const {confirm,confirmation}=useConfirm()
   const current=items[0]
-  // Ряд категорий повторяет расход: основные плитками, остальные — в шите за «Другое».
+  // Ряд категорий повторяет расход: основные плитками, остальные — в шите за «Ещё N».
   const main=categories.filter((item)=>!item.archivedAt&&item.placement==='main').sort((a,b)=>a.sortOrder-b.sortOrder)
   const additional=categories.filter((item)=>!item.archivedAt&&item.placement==='additional').sort((a,b)=>a.sortOrder-b.sortOrder)
-  const selectedCategory=selectedCategoryId?categories.find((item)=>item.id===selectedCategoryId):undefined
-  // Выбранная дополнительная категория показывается на самой плитке «Другое», а не добавляется в сетку.
-  const otherFace=selectedCategory&&!main.some((item)=>item.id===selectedCategory.id)?selectedCategory:null
-  useEffect(()=>{const controller=new AbortController();setLoading(true);setDeferred([]);listBybitCardTransactions(workspaceId,controller.signal).then((result)=>{setItems(result.transactions);onStatus({pendingCount:result.pendingCount})}).catch((reason)=>{if(!controller.signal.aborted)setError(reason instanceof ApiError?reason.message:'Не удалось загрузить операции')}).finally(()=>{if(!controller.signal.aborted)setLoading(false)});return()=>controller.abort()},[workspaceId]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(()=>{const controller=new AbortController();setLoading(true);listBybitCardTransactions(workspaceId,controller.signal).then((result)=>{setItems(result.transactions);onStatus({pendingCount:result.pendingCount})}).catch((reason)=>{if(!controller.signal.aborted)setError(reason instanceof ApiError?reason.message:'Не удалось загрузить операции')}).finally(()=>{if(!controller.signal.aborted)setLoading(false)});return()=>controller.abort()},[workspaceId]) // eslint-disable-line react-hooks/exhaustive-deps
   // A sync elsewhere (Settings, the server scheduler) can add or settle items while this view is mounted.
   // Re-read the queue when the tab is opened or the known count outgrows what is loaded, merging so the
-  // item under review, the deferred pile and the draft comment survive; only the server's newest state wins per item.
+  // item under review, the local order and the draft note survive; only the server's newest state wins per item.
   const refreshing=useRef(false)
   useEffect(()=>{
     if(loading||busy||!online||!active||refreshing.current)return
@@ -1895,55 +1884,55 @@ export function BybitReviewView({ workspaceId, categories, currencies, tags=[], 
     listBybitCardTransactions(workspaceId,controller.signal).then((result)=>{
       if(controller.signal.aborted)return
       const fresh=new Map(result.transactions.map((item)=>[item.id,item]))
-      setDeferred((value)=>value.filter((item)=>fresh.has(item.id)).map((item)=>fresh.get(item.id)!))
-      setItems((value)=>{const kept=value.filter((item)=>fresh.has(item.id)).map((item)=>fresh.get(item.id)!);const seen=new Set([...kept,...deferred].map((item)=>item.id));return [...kept,...result.transactions.filter((item)=>!seen.has(item.id))]})
+      setItems((value)=>{const kept=value.filter((item)=>fresh.has(item.id)).map((item)=>fresh.get(item.id)!);const seen=new Set(kept.map((item)=>item.id));return [...kept,...result.transactions.filter((item)=>!seen.has(item.id))]})
       onStatus({pendingCount:result.pendingCount})
     }).catch(()=>{/* the queue already on screen stays usable; the next trigger retries */}).finally(()=>{refreshing.current=false})
     return()=>{controller.abort();refreshing.current=false}
   },[active,pendingCount,workspaceId]) // eslint-disable-line react-hooks/exhaustive-deps
-  const removeCurrent=(transaction:BybitCardTransaction,pendingCount:number)=>{setItems((value)=>value.filter((item)=>item.id!==transaction.id));setComment('');setSelectedCategoryId(null);setSelectedTagIds([]);setCategorySheet(false);onStatus({pendingCount})}
+  const resetDraft=()=>{setComment('');setSelectedCategoryId(null);setSelectedTagIds([]);setCategorySheet(false);setNoteSheet(false)}
+  const removeCurrent=(transaction:BybitCardTransaction,pendingCount:number)=>{setItems((value)=>value.filter((item)=>item.id!==transaction.id));resetDraft();onStatus({pendingCount})}
   const undo=async(action:ReviewAction)=>{
     if(busy||!online)return;setBusy(true);setError('')
-    try{const result=await undoBybitCardTransaction(workspaceId,action.transaction.id,action.expense);if(result.undoneExpenseId)onExpenseUndo(result.undoneExpenseId);setItems((value)=>[result.transaction,...value.filter((item)=>item.id!==result.transaction.id)]);setDeferred((value)=>value.filter((item)=>item.id!==result.transaction.id));setComment(action.comment);setSelectedCategoryId(action.categoryId??null);setSelectedTagIds(action.tagIds);onStatus({pendingCount:result.pendingCount});tap(6)}
+    try{const result=await undoBybitCardTransaction(workspaceId,action.transaction.id,action.expense);if(result.undoneExpenseId)onExpenseUndo(result.undoneExpenseId);setItems((value)=>[result.transaction,...value.filter((item)=>item.id!==result.transaction.id)]);setComment(action.comment);setSelectedCategoryId(action.categoryId??null);setSelectedTagIds(action.tagIds);onStatus({pendingCount:result.pendingCount});tap(6)}
     catch(reason){setError(reason instanceof ApiError?reason.message:'Не удалось отменить последнее действие')}
     finally{setBusy(false)}
   }
   const classify=async(categoryId:string)=>{
     if(!current||busy||!online)return;const transaction=current;const action:ReviewAction={transaction,categoryId,comment,tagIds:selectedTagIds};setSelectedCategoryId(categoryId);setBusy(true);setError('')
     try{const result=await classifyBybitCardTransaction(workspaceId,transaction.id,categoryId,comment,selectedTagIds);action.expense=result.expense;onExpense(result.expense);removeCurrent(transaction,result.pendingCount);notify('Расход добавлен',{label:'Отменить',run:()=>void undo(action)});tap(8)}
-    catch(reason){setError(reason instanceof ApiError?reason.message:'Не удалось классифицировать операцию')}
+    catch(reason){setError(reason instanceof ApiError?reason.message:'Не удалось сохранить расход')}
     finally{setBusy(false)}
   }
   const ignore=async()=>{
-    if(!current||busy||!online||!await confirm({title:'Не учитывать операцию?',message:'Она исчезнет из очереди и не станет расходом. Это действие можно отменить до выхода из разбора.',confirmLabel:'Не учитывать',danger:true}))return
-    const transaction=current;const action:ReviewAction={transaction,comment,categoryId:selectedCategoryId??undefined,tagIds:selectedTagIds};setBusy(true);setError('');try{const result=await ignoreBybitCardTransaction(workspaceId,transaction.id);removeCurrent(transaction,result.pendingCount);notify('Операция не учтена',{label:'Отменить',run:()=>void undo(action)})}catch(reason){setError(reason instanceof ApiError?reason.message:'Не удалось пропустить операцию')}finally{setBusy(false)}
+    if(!current||busy||!online||!await confirm({title:'Это не расход?',message:'Операция исчезнет из очереди и не попадёт в историю. Сразу после этого её можно вернуть.',confirmLabel:'Это не расход',danger:true}))return
+    const transaction=current;const action:ReviewAction={transaction,comment,categoryId:selectedCategoryId??undefined,tagIds:selectedTagIds};setBusy(true);setError('');try{const result=await ignoreBybitCardTransaction(workspaceId,transaction.id);removeCurrent(transaction,result.pendingCount);notify('Операция не записана как расход',{label:'Вернуть',run:()=>void undo(action)})}catch(reason){setError(reason instanceof ApiError?reason.message:'Не удалось пропустить операцию')}finally{setBusy(false)}
   }
-  const skip=()=>{if(!current||busy)return;setItems((value)=>value.slice(1));setDeferred((value)=>[...value,current]);setComment('');setSelectedCategoryId(null);setSelectedTagIds([]);setCategorySheet(false);tap(5)}
-  const restoreDeferred=()=>{setItems(deferred);setDeferred([]);setComment('');setSelectedCategoryId(null);setSelectedTagIds([])}
+  // «Пропустить» просто ставит операцию в конец очереди: отдельного понятия «отложено» нет.
+  const skip=()=>{if(!current||busy||items.length<2)return;setItems((value)=>[...value.slice(1),value[0]!]);resetDraft();tap(5)}
+  const save=current?saveButtonLabel({amount:String(current.amountMinor/10**(currencies.find((item)=>item.code===current.currency)?.decimals??2)),currency:current.currency,categoryId:selectedCategoryId,editing:false,dirty:true,currencies}):null
   return <><section className="page bybit-review-page" aria-labelledby="bybit-review-title">
-    <h1 className="sr-only" id="bybit-review-title">Разбор операций Bybit Card</h1>
+    <h1 className="sr-only" id="bybit-review-title">Операции с карты Bybit</h1>
     {loading?<p className="management-state" role="status">Загружаем операции…</p>:current?(()=>{const amountText=amountNumber(current.amountMinor,current.currency,currencies);return <>
-      <header className="topline review-topline"><div><p className="eyebrow">Bybit Card · к разбору {items.length}</p><p className="review-date">{new Date(current.occurredAt).toLocaleString('ru-RU',{weekday:'short',day:'numeric',month:'long',hour:'2-digit',minute:'2-digit'})}</p></div>{deferred.length>0&&<span className="review-deferred">Отложено · {deferred.length}</span>}</header>
+      <header className="topline review-topline"><div><p className="eyebrow">Операции с карты · {items.length}</p><p className="review-date">{new Date(current.occurredAt).toLocaleString('ru-RU',{weekday:'short',day:'numeric',month:'long',hour:'2-digit',minute:'2-digit'})}</p></div></header>
       <div className="amount-row"><output className="amount-value" data-size={amountSize(amountText)} aria-label="Сумма">{amountText}</output><span className="review-currency">{current.currency}</span></div>
       <div className="review-scroll">
       {/* Мерчант и предупреждение делят слот постоянной высоты: очередь разбирают пачкой, и
-          «Сохранить расход» не должен ездить от операции к операции. */}
+          кнопка сохранения не должна ездить от операции к операции. */}
       <div className="review-operation">
         <article className="review-merchant">
-          <span className="bybit-mark">B</span><div><h3>{current.merchantName||'Без названия продавца'}</h3><p>{current.type==='atm'?'Снятие наличных':current.merchantCategory||'Покупка'}{current.merchantCity?` · ${[current.merchantCity,current.merchantCountry].filter(Boolean).join(', ')}`:''}{current.mccCode?` · MCC ${current.mccCode}`:''}</p></div>
+          <span className="bybit-mark">B</span><div><h3>{current.merchantName||'Без названия продавца'}</h3><p>{current.type==='atm'?'Снятие наличных':current.merchantCategory||'Покупка'}{current.merchantCity?` · ${[current.merchantCity,current.merchantCountry].filter(Boolean).join(', ')}`:''}</p></div>
         </article>
         {!current.settled&&<p className="review-pending-note">Ожидает списания · сумма может уточниться после расчёта</p>}
       </div>
-      <div className={`categories${selectedCategoryId?' unsaved':''}`}><p>{selectedCategoryId?'Категория выбрана · сохраните расход':'Выберите категорию расхода'}</p><div className="main-categories">{main.map((category)=><button type="button" key={category.id} className={selectedCategoryId===category.id?'selected':undefined} aria-pressed={selectedCategoryId===category.id} disabled={busy} onClick={()=>setSelectedCategoryId((value)=>value===category.id?null:category.id)}><i style={{backgroundColor:category.color??'#a9afa5'}}/><span>{category.name}</span></button>)}<button type="button" disabled={busy} aria-pressed={Boolean(otherFace)} className={otherFace?'selected':undefined} onClick={()=>setCategorySheet(true)}>{otherFace?<i style={{backgroundColor:otherFace.color??'#a9afa5'}}/>:<i className="dots">•••</i>}<span>{otherFace?otherFace.name:'Другое'}</span></button></div></div>
-      <div className="review-tags"><span>Теги</span><TagStrip tags={tags} selected={selectedTagIds} disabled={busy} online={online} onChange={setSelectedTagIds} onCreate={(name)=>createTagOrReuse(workspaceId,name,TAG_COLORS[tags.length%TAG_COLORS.length]??null,onTag)}/></div>
-      <label className="review-comment">Комментарий <span>необязательно</span><input maxLength={300} disabled={busy} placeholder="Добавить заметку к расходу" value={comment} onChange={(event)=>setComment(event.target.value)}/></label>
+      <CategoryTiles main={main} additional={additional} selectedId={selectedCategoryId} disabled={busy} onPick={(category)=>{tap(6);setSelectedCategoryId(category.id);setCategorySheet(false)}} onMore={()=>setCategorySheet(true)}/>
+      <ExtrasRow tags={tags} selected={selectedTagIds} note={comment} disabled={busy} online={online} onChange={setSelectedTagIds} onNote={()=>setNoteSheet(true)} onCreate={(name)=>createTagOrReuse(workspaceId,name,TAG_COLORS[tags.length%TAG_COLORS.length]??null,onTag)}/>
       </div>
-      <button type="button" className="primary review-save" disabled={busy||!online||!selectedCategoryId} onClick={()=>{if(selectedCategoryId)void classify(selectedCategoryId)}}>{busy?'Сохраняем…':'Сохранить расход'}</button>
-      <div className="review-secondary"><button type="button" disabled={busy} onClick={skip}>Пропустить пока</button><button type="button" disabled={busy||!online} onClick={()=>void ignore()}>Не учитывать</button></div>
-      {/* В расходе выбор в шите сразу сохраняет запись; здесь он только выделяет категорию — сохраняет кнопка. */}
+      <button type="button" className="primary review-save" disabled={busy||!online||!save?.canSave} onClick={()=>{if(selectedCategoryId)void classify(selectedCategoryId)}}>{busy?'Сохраняем…':save?.label}</button>
+      <div className="review-secondary"><button type="button" disabled={busy||items.length<2} onClick={skip}>Пропустить</button><button type="button" disabled={busy||!online} onClick={()=>void ignore()}>Это не расход</button></div>
       {categorySheet&&<CategorySheet categories={additional} selectedId={selectedCategoryId??undefined} onClose={()=>setCategorySheet(false)} onPick={(category)=>{setSelectedCategoryId(category.id);setCategorySheet(false)}}/>}
-    </>})():<div className="review-done"><span>{deferred.length?'↪':'✓'}</span><h3>{deferred.length?'На сейчас всё':'Всё разобрано'}</h3><p>{deferred.length?`${deferred.length} ${deferred.length===1?'операция отложена':'операции отложены'} только в этой сессии разбора.`:'Новые операции появятся после следующей синхронизации.'}</p>{deferred.length>0&&<button type="button" className="primary" onClick={restoreDeferred}>Вернуться к отложенным · {deferred.length}</button>}</div>}
-    {!online&&<p className="management-state" role="status">Без сети можно просматривать и временно откладывать операции. Категория и отмена сохранятся после подключения.</p>}
+      {noteSheet&&<NoteSheet value={comment} onClose={()=>setNoteSheet(false)} onSave={(note)=>{setComment(note);setNoteSheet(false)}}/>}
+    </>})():<div className="review-done"><span>✓</span><h3>Всё разобрано</h3><p>Новые операции появятся после следующего обновления.</p></div>}
+    {!online&&<p className="management-state" role="status">Без сети можно только просматривать операции. Категория сохранится после подключения.</p>}
     {error&&<p className="form-error" role="alert">{error}</p>}
   </section>{notice&&<Toast toast={notice} onDismiss={dismiss}/>} {confirmation}</>
 }
