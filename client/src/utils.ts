@@ -58,8 +58,27 @@ export function convertExpense(expense: Expense, target: string, currencies: Cur
   return targetRate ? expense.amountMinor / 10 ** decimals * sourceRate / targetRate : 0
 }
 
+// Intl formatters are expensive to construct (WebKit: ~0.1 ms each) and the history screen used to build
+// thousands per render. Formatters are immutable, so one instance per locale + options serves every call.
+const dateTimeFormatters = new Map<string, Intl.DateTimeFormat>()
+const numberFormatters = new Map<string, Intl.NumberFormat>()
+
+export function cachedDateTimeFormat(locale: string, options: Intl.DateTimeFormatOptions) {
+  const key = `${locale}|${JSON.stringify(options)}`
+  let formatter = dateTimeFormatters.get(key)
+  if (!formatter) { formatter = new Intl.DateTimeFormat(locale, options); dateTimeFormatters.set(key, formatter) }
+  return formatter
+}
+
+export function cachedNumberFormat(locale: string, options: Intl.NumberFormatOptions) {
+  const key = `${locale}|${JSON.stringify(options)}`
+  let formatter = numberFormatters.get(key)
+  if (!formatter) { formatter = new Intl.NumberFormat(locale, options); numberFormatters.set(key, formatter) }
+  return formatter
+}
+
 function dateParts(date: Date, timeZone = APP_TIME_ZONE) {
-  const parts = new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(date)
+  const parts = cachedDateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(date)
   return Object.fromEntries(parts.map((part) => [part.type, part.value])) as Record<string, string>
 }
 
