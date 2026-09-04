@@ -179,6 +179,7 @@ html {
 .icon-add,
 .date-chip,
 .amount-row button,
+.amount-row .review-currency,
 .note-block .text-button,
 .danger-link,
 .date-presets button,
@@ -237,7 +238,8 @@ html {
   color: var(--empty);
 }
 
-.amount-row button {
+.amount-row button,
+.amount-row .review-currency {
   padding: 9px 12px;
 }
 
@@ -1049,6 +1051,10 @@ html {
   .analytics-title h1 {
     font-size: clamp(30px, 10vw, 38px);
   }
+
+  .bybit-review-page .review-operation {
+    min-height: 98px;
+  }
 }
 
 /* 320 × 568 and similar compact phones: the category row stays above nav. */
@@ -1095,7 +1101,8 @@ html {
     padding: 0 16px;
   }
 
-  .amount-row button {
+  .amount-row button,
+  .amount-row .review-currency {
     margin-top: 0;
   }
 
@@ -1151,6 +1158,40 @@ html {
   .note-block input {
     min-height: 44px;
     padding-block: 9px;
+  }
+
+  .page.bybit-review-page {
+    padding: 8px 12px 6px;
+  }
+
+  .bybit-review-page .review-operation {
+    min-height: 94px;
+    margin-bottom: 0;
+  }
+
+  .bybit-review-page .review-merchant {
+    min-height: 0;
+    border-radius: 14px;
+  }
+
+  .bybit-review-page .review-tags {
+    margin-top: 6px;
+  }
+
+  .bybit-review-page .review-comment {
+    margin-top: 4px;
+  }
+
+  .page.bybit-review-page .review-comment input {
+    height: 38px;
+  }
+
+  .bybit-review-page .review-save {
+    margin-top: 6px;
+  }
+
+  .bybit-review-page .review-secondary {
+    margin-top: 2px;
   }
 }
 
@@ -1348,30 +1389,30 @@ html {
   font-weight: 700;
 }
 
-.bybit-review-page .review-amount-row {
-  flex: 0 0 92px;
-  height: 92px;
-  padding: 0 4px;
+/* Строка суммы разбора живёт по метрикам расхода (.amount-row + .amount-row button), чтобы общая
+   формула ширины и общие пороги data-size работали одинаково; своя тут только горизонтальная
+   вставка, потому что боковые поля уже заданы самой странице. */
+.bybit-review-page .amount-row {
+  flex: 0 0 auto;
+  padding-inline: 4px;
 }
 
-.review-currency {
+/* Мерчант и предупреждение об открытой авторизации делят слот постоянной высоты: очередь
+   разбирают пачкой, и «Сохранить расход» не должен уезжать из-под пальца. */
+.review-operation {
   flex: 0 0 auto;
-  margin-top: 14px;
-  border-radius: 12px;
-  background: var(--soft);
-  padding: 9px 11px;
-  font-size: 13px;
-  font-weight: 700;
+  display: flex;
+  flex-direction: column;
+  min-height: 84px;
+  margin-bottom: 2px;
 }
 
 .review-merchant {
-  flex: 0 0 auto;
   display: grid;
   grid-template-columns: 38px minmax(0, 1fr);
   align-items: center;
   gap: 11px;
   min-height: 62px;
-  margin-bottom: 6px;
   padding: 9px 12px;
   border: 1px solid var(--line);
   border-radius: 17px;
@@ -1396,10 +1437,32 @@ html {
   white-space: nowrap;
 }
 
-.review-merchant .review-pending-note {
-  margin-top: 3px;
-  color: var(--pending, var(--muted));
+/* Главное предупреждение экрана: та же геометрия, что у строки-подсказки расхода (.categories > p),
+   цвет — «ожидает». Переносы разрешены, обрезать его нельзя. */
+.review-pending-note {
+  margin: 6px 4px 0;
+  color: var(--pending);
+  font-size: 11px;
   font-weight: 600;
+  line-height: 15px;
+}
+
+/* Единственное отступление от модели расхода: на самых низких экранах (320×568) средняя полоса —
+   мерчант, категории, теги и комментарий — сжимается и прокручивается, а строка суммы сверху и
+   действия снизу остаются на месте. Выше 568 px она не прокручивается ни разу. */
+.review-scroll {
+  flex: 0 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  scrollbar-width: none;
+}
+
+.review-scroll::-webkit-scrollbar {
+  display: none;
 }
 
 .bybit-review-page .review-comment {
@@ -1421,45 +1484,11 @@ html {
   margin-top: 5px;
 }
 
-.bybit-review-page .review-hint {
-  flex: 0 0 auto;
-  margin: 1px 4px 6px;
-  color: var(--muted);
-  font-size: 10px;
-}
-
-.bybit-review-page .review-categories {
-  flex: 0 0 auto;
-  grid-template-columns: repeat(auto-fit, minmax(76px, 1fr));
-  grid-auto-rows: 67px;
-  gap: 7px;
-}
-
-.bybit-review-page .review-categories button {
-  min-height: 67px;
-  gap: 8px;
-  padding: 7px;
-  border-radius: 17px;
-  font-size: 11px;
-  font-weight: 600;
-  transition: transform .16s, border-color .16s;
-}
-
-.bybit-review-page .review-categories button:active {
-  transform: scale(.96);
-  border-color: #b5bbaa;
-}
-
-.bybit-review-page .review-categories button i {
-  width: 16px;
-  height: 16px;
-  border-radius: 6px;
-}
-
-.bybit-review-page .review-categories button.selected {
-  border-color: var(--sage);
-  background: var(--soft);
-  box-shadow: inset 0 0 0 1px var(--sage);
+/* Ряд категорий — те же .categories / .main-categories, что на расходе: собственных правил нет,
+   поэтому и лестница медиазапросов по высоте применяется к разбору сама. Боковые поля уже
+   заданы странице, вертикальные приходят из общих правил. */
+.bybit-review-page .categories {
+  padding-inline: 0;
 }
 
 .bybit-review-page .review-save {
@@ -1584,4 +1613,14 @@ html {
   .note-block:focus-within { height: 72px; }
   .edit-actions { flex-basis: 50px; min-height: 50px; padding: 2px 16px 6px; }
   .edit-actions .primary, .edit-actions .sheet-cancel { min-height: 40px; }
+  .page.bybit-review-page { padding: 6px 12px 4px; }
+  /* Полоса забирает всю свободную высоту, поэтому «Сохранить расход» стоит на одном месте
+     и с закрытой операцией, и с открытой авторизацией, которой нужна лишняя строка. */
+  .bybit-review-page .review-scroll { flex-grow: 1; }
+  .bybit-review-page .review-operation { min-height: 0; }
+  .bybit-review-page .review-merchant { min-height: 0; padding: 6px 10px; }
+  .bybit-review-page .review-tags { margin-top: 4px; gap: 3px; }
+  .page.bybit-review-page .review-comment input { height: 36px; }
+  .bybit-review-page .review-save { min-height: 44px; margin-top: 4px; }
+  .bybit-review-page .review-secondary button { min-height: 36px; }
 }

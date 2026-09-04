@@ -478,6 +478,98 @@ describe('Bybit transaction review', () => {
     await screen.findByText('Silver Dreams')
     expect(screen.getByText(/Ожидает списания/)).not.toBeNull()
   })
+
+  // Разбор берёт ряд категорий у расхода: плитками только «Основные», остальные — за «Другое».
+  it('shows only main categories with an "other" tile, and picking from the sheet selects without saving', async () => {
+    const transaction = {
+      id: 'card-transaction-b', txnId: 'bybit-b', orderNo: null, type: 'purchase' as const, settled: true,
+      amountMinor: 4_200, currency: 'RSD', merchantName: 'Maxi', merchantCountry: 'RS', merchantCity: 'Beograd',
+      mccCode: '5411', merchantCategory: 'Grocery', occurredAt: '2026-08-10T12:00:00.000Z', reviewStatus: 'pending' as const, expenseId: null,
+    }
+    const categories = [
+      { id: 'products', name: 'Продукты', color: '#758d69', placement: 'main' as const, sortOrder: 0, createdAt: '2026-08-01T00:00:00.000Z', updatedAt: '2026-08-01T00:00:00.000Z', archivedAt: null, version: 1 },
+      { id: 'home', name: 'Для дома', color: '#7d9db4', placement: 'additional' as const, sortOrder: 0, createdAt: '2026-08-01T00:00:00.000Z', updatedAt: '2026-08-01T00:00:00.000Z', archivedAt: null, version: 1 },
+      { id: 'fun', name: 'Развлечения', color: '#aa8aaf', placement: 'additional' as const, sortOrder: 1, createdAt: '2026-08-01T00:00:00.000Z', updatedAt: '2026-08-01T00:00:00.000Z', archivedAt: null, version: 1 },
+    ]
+    vi.spyOn(workspaceApi, 'listBybitCardTransactions').mockResolvedValue({ transactions: [transaction], pendingCount: 1 })
+    const classify = vi.spyOn(workspaceApi, 'classifyBybitCardTransaction')
+
+    const { container } = render(<BybitReviewView workspaceId="workspace-a" categories={categories} currencies={expenseBootstrap().currencies} online onExpense={vi.fn()} onExpenseUndo={vi.fn()} onStatus={vi.fn()}/>)
+    await screen.findByText('Maxi')
+
+    const tiles = [...container.querySelectorAll('.main-categories button')].map((node) => node.textContent)
+    expect(tiles).toEqual(['Продукты', '•••Другое'])
+    expect(screen.queryByRole('button', { name: 'Развлечения' })).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: '•••Другое' }))
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Развлечения' }))
+
+    // В расходе выбор в шите сразу сохраняет запись; в разборе он только выделяет категорию.
+    expect(classify).not.toHaveBeenCalled()
+    expect(screen.queryByRole('dialog')).toBeNull()
+    const other = container.querySelector('.main-categories button:last-child')
+    expect(other?.textContent).toBe('Развлечения')
+    expect(other?.getAttribute('aria-pressed')).toBe('true')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Сохранить расход' }))
+    await waitFor(() => expect(classify).toHaveBeenCalledWith('workspace-a', transaction.id, 'fun', '', []))
+  })
+
+  // Крупные суммы иначе упирались в многоточие: порог общий для карточки расхода и строки разбора.
+  it('sizes the amount by its digit count on both the entry and the review screen', async () => {
+    const transaction = {
+      id: 'card-transaction-c', txnId: 'bybit-c', orderNo: null, type: 'purchase' as const, settled: true,
+      amountMinor: 20_000_000, currency: 'RSD', merchantName: 'Stan i komunalije', merchantCountry: 'RS', merchantCity: 'Beograd',
+      mccCode: '6513', merchantCategory: 'Rent', occurredAt: '2026-08-10T12:00:00.000Z', reviewStatus: 'pending' as const, expenseId: null,
+    }
+    vi.spyOn(workspaceApi, 'listBybitCardTransactions').mockResolvedValue({ transactions: [transaction], pendingCount: 1 })
+    render(<BybitReviewView workspaceId="workspace-a" categories={expenseBootstrap().categories} currencies={expenseBootstrap().currencies} online onExpense={vi.fn()} onExpenseUndo={vi.fn()} onStatus={vi.fn()}/>)
+
+    await screen.findByText('Stan i komunalije')
+    const reviewAmount = screen.getByLabelText('Сумма')
+    expect(reviewAmount.textContent?.replace(/\s/g, ' ')).toBe('200 000,00')
+    expect(reviewAmount.getAttribute('data-size')).toBe('medium')
+    cleanup()
+
+    render(<EntryView userId="user-a" workspaceId="workspace-a" bootstrap={expenseBootstrap()} setBootstrap={vi.fn()} currentId={null} setCurrentId={vi.fn()} refreshPending={vi.fn()} onDraftDirtyChange={vi.fn()} active/>)
+    const entryAmount = () => screen.getByRole('region', { name: 'Ввод суммы' }).querySelector('.entry-card:not(.aside) .amount-value')
+    expect(entryAmount()?.getAttribute('data-size')).toBe('normal')
+    for (const key of '12345678') fireEvent.click(screen.getByRole('button', { name: key }))
+    expect(entryAmount()?.getAttribute('data-size')).toBe('medium')
+    for (const key of '9012') fireEvent.click(screen.getByRole('button', { name: key }))
+    expect(entryAmount()?.getAttribute('data-size')).toBe('long')
+  })
+
+  // Предупреждение об открытой авторизации — главный текст экрана, а внутри карточки мерчанта
+  // оно наследовало nowrap + ellipsis и обрезалось на полуслове.
+  it('renders the open-authorization warning in full outside the merchant card', async () => {
+    const transaction = {
+      id: 'card-transaction-d', txnId: 'bybit-d', orderNo: null, type: 'purchase' as const, settled: false,
+      amountMinor: 120_000, currency: 'RSD', merchantName: 'Pending Authorization', merchantCountry: 'RS', merchantCity: 'Beograd',
+      mccCode: '5999', merchantCategory: 'Retail', occurredAt: '2026-08-10T12:00:00.000Z', reviewStatus: 'pending' as const, expenseId: null,
+    }
+    vi.spyOn(workspaceApi, 'listBybitCardTransactions').mockResolvedValue({ transactions: [transaction], pendingCount: 1 })
+    const { container } = render(<BybitReviewView workspaceId="workspace-a" categories={expenseBootstrap().categories} currencies={expenseBootstrap().currencies} online onExpense={vi.fn()} onExpenseUndo={vi.fn()} onStatus={vi.fn()}/>)
+
+    await screen.findByText('Pending Authorization')
+    const warning = screen.getByText('Ожидает списания · сумма может уточниться после расчёта')
+    expect(warning.closest('.review-merchant')).toBeNull()
+    expect(container.querySelector('.review-merchant .review-pending-note')).toBeNull()
+    expect(warning.className).toBe('review-pending-note')
+  })
+
+  it('keeps the warning out of settled operations', async () => {
+    const settled = {
+      id: 'card-transaction-e', txnId: 'bybit-e', orderNo: null, type: 'purchase' as const, settled: true,
+      amountMinor: 1_000, currency: 'RSD', merchantName: 'Coffee Corner', merchantCountry: 'RS', merchantCity: 'Beograd',
+      mccCode: '5812', merchantCategory: 'Cafe', occurredAt: '2026-08-10T12:00:00.000Z', reviewStatus: 'pending' as const, expenseId: null,
+    }
+    vi.spyOn(workspaceApi, 'listBybitCardTransactions').mockResolvedValue({ transactions: [settled], pendingCount: 1 })
+    render(<BybitReviewView workspaceId="workspace-a" categories={expenseBootstrap().categories} currencies={expenseBootstrap().currencies} online onExpense={vi.fn()} onExpenseUndo={vi.fn()} onStatus={vi.fn()}/>)
+
+    await screen.findByText('Coffee Corner')
+    expect(screen.queryByText(/Ожидает списания/)).toBeNull()
+  })
 })
 
 describe('settings identity transitions', () => {
