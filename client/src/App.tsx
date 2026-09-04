@@ -14,7 +14,7 @@ import { AccessFlowError, acceptDeviceWithProbe, acceptInvitationWithProbe, crea
 import { completeRecoverySafely, completeRotationSafely } from './recovery-flow'
 import { monitorServiceWorkerUpdates } from './service-worker-update'
 import type { AnalyticsData, AuthenticatedSession, BybitCardStatus, BybitCardTransaction, BybitRegion, CapabilityIntent, Category, Currency, Expense, RecoveryPrepareResponse, SessionState, Tag, WorkspaceBootstrap, WorkspaceOutboxItem, WorkspaceSummary } from './types'
-import { amountToMinor, applyKeypad, convertExpense, countCalendarWeekdays, isoToLocalInput, localDateKey, localInputToIso, monthDateRange, shiftDateKey, startOfWeekDateKey, swipeDirection, weekdayFromDateKey, weekDateRange } from './utils'
+import { amountToMinor, applyKeypad, cachedDateTimeFormat, cachedNumberFormat, convertExpense, countCalendarWeekdays, isoToLocalInput, localDateKey, localInputToIso, monthDateRange, shiftDateKey, startOfWeekDateKey, swipeDirection, weekdayFromDateKey, weekDateRange } from './utils'
 import { buildHistoryCsv, defaultHistoryPreferences, expenseTagNames, filterHistoryExpenses, HISTORY_PERIOD_LABELS, historyTotals, parseHistoryPreferences, type HistoryPeriod, type HistoryPreferences } from './history'
 
 const AnalyticsChart = lazy(() => import('./AnalyticsCharts'))
@@ -233,25 +233,26 @@ function localInputParts(localInput: string) {
 }
 
 function formatShortWeekday(localInput: string) {
-  return localInputParts(localInput)?.date.toLocaleDateString('ru-RU', { weekday: 'short', timeZone: 'UTC' }) ?? ''
+  const parts = localInputParts(localInput)
+  return parts ? cachedDateTimeFormat('ru-RU', { weekday: 'short', timeZone: 'UTC' }).format(parts.date) : ''
 }
 
 export function formatEntryDate(localInput: string) {
   const parts = localInputParts(localInput)
   if (!parts) return ''
-  const calendarDate = parts.date.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', timeZone: 'UTC' })
+  const calendarDate = cachedDateTimeFormat('ru-RU', { day: 'numeric', month: 'long', timeZone: 'UTC' }).format(parts.date)
   return `${formatShortWeekday(localInput)} · ${calendarDate} ${parts.year}, ${parts.hour}:${parts.minute}`
 }
 
 export function formatShortDate(dateKey: string) {
-  return new Date(`${dateKey}T12:00:00Z`).toLocaleDateString('ru-RU', { timeZone: 'UTC', day: 'numeric', month: 'short', year: 'numeric' }).replace(' г.', '')
+  return cachedDateTimeFormat('ru-RU', { timeZone: 'UTC', day: 'numeric', month: 'short', year: 'numeric' }).format(new Date(`${dateKey}T12:00:00Z`)).replace(' г.', '')
 }
 
 export function formatHistoryDate(dateKey: string) {
   const localInput = `${dateKey}T12:00`
   const parts = localInputParts(localInput)
   if (!parts) return ''
-  const calendarDate = parts.date.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', timeZone: 'UTC' })
+  const calendarDate = cachedDateTimeFormat('ru-RU', { day: 'numeric', month: 'long', timeZone: 'UTC' }).format(parts.date)
   return `${formatShortWeekday(localInput)} · ${calendarDate} ${parts.year}`
 }
 
@@ -486,12 +487,12 @@ export function amountSize(amount: string) {
 
 function money(amountMinor: number, currency: string, currencies: Currency[]) {
   const decimals = currencies.find((item) => item.code === currency)?.decimals ?? 2
-  return new Intl.NumberFormat('ru-RU', { style: 'currency', currency, maximumFractionDigits: decimals }).format(amountMinor / 10 ** decimals)
+  return cachedNumberFormat('ru-RU', { style: 'currency', currency, maximumFractionDigits: decimals }).format(amountMinor / 10 ** decimals)
 }
 
 function amountNumber(amountMinor: number, currency: string, currencies: Currency[]) {
   const decimals = currencies.find((item) => item.code === currency)?.decimals ?? 2
-  return new Intl.NumberFormat('ru-RU', { minimumFractionDigits: decimals, maximumFractionDigits: decimals }).format(amountMinor / 10 ** decimals)
+  return cachedNumberFormat('ru-RU', { minimumFractionDigits: decimals, maximumFractionDigits: decimals }).format(amountMinor / 10 ** decimals)
 }
 
 function inputFromExpense(expense: Expense, currencies: Currency[]) {
@@ -860,6 +861,8 @@ export function EntryView({ userId, workspaceId, bootstrap, setBootstrap, curren
   const slide = (dx: number, duration: number) => {
     const node = trackRef.current
     if (!node) return
+    // Ширину читаем до записи стилей: чтение после записи заставляет браузер синхронно пересчитывать раскладку на каждом движении пальца.
+    const span = node.clientWidth + CARD_GAP
     const easing = 'cubic-bezier(.25,.8,.3,1)'
     node.style.transition = duration ? `transform ${duration}ms ${easing}` : 'none'
     node.style.transform = dx ? `translateX(${dx}px)` : ''
@@ -870,7 +873,7 @@ export function EntryView({ userId, workspaceId, bootstrap, setBootstrap, curren
     const targetPresence = !direction || !canMove(direction)
       ? sourcePresence
       : direction === 'older' || Boolean(newerNeighbour) ? 1 : 0
-    const progress = Math.min(Math.abs(dx) / (node.clientWidth + CARD_GAP), 1)
+    const progress = Math.min(Math.abs(dx) / span, 1)
     setActionsPresence(sourcePresence + (targetPresence - sourcePresence) * progress, duration)
     const previewDirection = direction && canMove(direction) ? direction : null
     styleCrossfade(previewDirection ? progress : 0, duration)
@@ -983,6 +986,10 @@ export function EntryView({ userId, workspaceId, bootstrap, setBootstrap, curren
     swipeCancelAt()
   }
 
+  // Слушатели ставятся один раз на всё время жизни экрана: перевешивать четыре touch-обработчика на каждый
+  // рендер (а рендеры идут и во время жеста) — лишняя работа посреди свайпа. Актуальные замыкания берём из рефа.
+  const touchHandlers = useRef({ swipeStartAt, swipeMoveTo, swipeEndAt, swipeCancelAt })
+  touchHandlers.current = { swipeStartAt, swipeMoveTo, swipeEndAt, swipeCancelAt }
   useEffect(() => {
     const node = entryRef.current
     if (!node || !usesNativeTouch()) return
@@ -991,13 +998,13 @@ export function EntryView({ userId, workspaceId, bootstrap, setBootstrap, curren
       suppressTouchPointerUp.current = false
       if (event.touches.length !== 1 || insideTagStrip(event.target)) { swipe.current = null; return }
       const touch = event.touches[0]
-      if (touch) swipeStartAt(touch.clientX, touch.clientY, touch.identifier)
+      if (touch) touchHandlers.current.swipeStartAt(touch.clientX, touch.clientY, touch.identifier)
     }
     const touchMove = (event: TouchEvent) => {
       const start = swipe.current
       if (!start || start.touchId === null) return
       const touch = findTouch(event.touches, start.touchId)
-      if (touch && swipeMoveTo(touch.clientX, touch.clientY)) {
+      if (touch && touchHandlers.current.swipeMoveTo(touch.clientX, touch.clientY)) {
         suppressTouchPointerUp.current = true
         event.preventDefault()
       }
@@ -1006,11 +1013,11 @@ export function EntryView({ userId, workspaceId, bootstrap, setBootstrap, curren
       const start = swipe.current
       if (!start || start.touchId === null) return
       const touch = findTouch(event.changedTouches, start.touchId)
-      if (touch) swipeEndAt(touch.clientX)
+      if (touch) touchHandlers.current.swipeEndAt(touch.clientX)
       setTimeout(() => { suppressTouchPointerUp.current = false }, 0)
     }
     const touchCancel = () => {
-      swipeCancelAt()
+      touchHandlers.current.swipeCancelAt()
       setTimeout(() => { suppressTouchPointerUp.current = false }, 0)
     }
     node.addEventListener('touchstart', touchStart, { passive: true })
@@ -1023,7 +1030,7 @@ export function EntryView({ userId, workspaceId, bootstrap, setBootstrap, curren
       node.removeEventListener('touchend', touchEnd)
       node.removeEventListener('touchcancel', touchCancel)
     }
-  })
+  }, [])
 
   const occurredLabel = formatEntryDate(form.occurredAt) || formatEntryDate(isoToLocalInput(new Date().toISOString()))
   const faceOf = (expense: Expense): CardFace => {
@@ -1144,9 +1151,11 @@ const LONG_PRESS_MS = 450
 const ROW_DRAG_START = 8
 
 // Строка истории: тап открывает запись, долгое нажатие включает выбор нескольких, свайп влево открывает удаление.
-function HistoryRow({ expense, category, tags, currencies, checked, selecting, open, disabled, onOpen, onToggle, onEdit, onDelete, onVoided }: {
+// Строк в истории сотни, и все они живут в дереве постоянно. Мемоизация с колбэками, принимающими запись,
+// даёт перерисовку только тех строк, чьё состояние (выбор, открытый свайп) действительно изменилось.
+const HistoryRow = memo(function HistoryRow({ expense, category, tags, currencies, checked, selecting, open, disabled, onOpen, onToggle, onEdit, onDelete, onVoided }: {
   expense: Expense; category?: Category; tags: Tag[]; currencies: Currency[]; checked: boolean; selecting: boolean; open: boolean; disabled: boolean
-  onOpen: (id: string | null) => void; onToggle: () => void; onEdit: () => void; onDelete: () => void; onVoided?: () => void
+  onOpen: (id: string | null) => void; onToggle: (id: string) => void; onEdit: (id: string) => void; onDelete: (expense: Expense) => void; onVoided?: (expense: Expense) => void
 }) {
   const gesture = useRef<{ x: number; y: number; dragging: boolean; moved: boolean; longPress: ReturnType<typeof setTimeout> | undefined } | null>(null)
   const [dragOffset, setDragOffset] = useState<number | null>(null)
@@ -1168,7 +1177,7 @@ function HistoryRow({ expense, category, tags, currencies, checked, selecting, o
     clearTimeout(gesture.current?.longPress)
     gesture.current = { x: event.clientX, y: event.clientY, dragging: false, moved: false, longPress: selecting || open ? undefined : setTimeout(() => {
       // Долгое нажатие без движения — вход в выбор нескольких записей.
-      if (gesture.current && !gesture.current.dragging) { gesture.current.moved = true; tap(8); onToggle() }
+      if (gesture.current && !gesture.current.dragging) { gesture.current.moved = true; tap(8); onToggle(expense.id) }
     }, LONG_PRESS_MS) }
   }
   const pointerMove = (event: React.PointerEvent) => {
@@ -1192,22 +1201,24 @@ function HistoryRow({ expense, category, tags, currencies, checked, selecting, o
     const moved = gesture.current?.moved
     if (moved) return
     if (open) { onOpen(null); return }
-    if (selecting) onToggle()
-    else if (expense.voidedAt && onVoided) onVoided()
-    else onEdit()
+    if (selecting) onToggle(expense.id)
+    else if (expense.voidedAt && onVoided) onVoided(expense)
+    else onEdit(expense.id)
   }
   const translate = dragOffset ?? (open ? -ROW_ACTION_WIDTH : 0)
   const tagList = expense.tagIds?.length ? sortTags(tags.filter((tag) => expense.tagIds?.includes(tag.id))) : []
   return <div className={`history-expense${checked ? ' selected' : ''}${open ? ' open' : ''}`} onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={(event) => finish(true, event.clientX)} onPointerCancel={() => finish(false)}>
-    <div className="history-swipe" style={{ transform: translate ? `translateX(${translate}px)` : undefined, transition: dragOffset === null ? undefined : 'none' }}>
-      <label className="expense-check" aria-label={`Выбрать расход ${category?.name || ''}`}><input type="checkbox" tabIndex={selecting ? 0 : -1} checked={checked} onChange={onToggle}/><span/></label>
-      <button type="button" className={`history-row${tagList.length ? ' has-tags' : ''}${expense.voidedAt ? ' voided' : ''}`} aria-pressed={selecting ? checked : undefined} onClick={click}><i style={{backgroundColor:category?.color ?? '#a9afa5'}}/><span><b>{category?.name || 'Архивная категория'}</b><small>{new Date(expense.occurredAt).toLocaleTimeString('ru-RU',{timeZone:'Europe/Belgrade',hour:'2-digit',minute:'2-digit'})}{expense.note ? ` · ${expense.note}`:''}</small>{tagList.length ? <span className="tag-chips">{tagList.map((tag) => <TagChip key={tag.id} name={tag.name} color={tag.color}/>)}</span> : null}</span><strong>{money(expense.amountMinor,expense.currency,currencies)}</strong>{expense.voidedAt ? <em className="voided-badge" aria-label="Отклонено провайдером, не учитывается">{expense.voidReason?.kind === 'reversed' ? 'Сторно' : 'Отклонено'}</em> : expense.pending && <em aria-label="Ожидает синхронизации">●</em>}</button>
+    <div className="history-swipe" style={{ transform: translate ? `translateX(${translate}px)` : undefined, transition: dragOffset === null ? undefined : 'none', willChange: dragOffset === null ? undefined : 'transform' }}>
+      <label className="expense-check" aria-label={`Выбрать расход ${category?.name || ''}`}><input type="checkbox" tabIndex={selecting ? 0 : -1} checked={checked} onChange={() => onToggle(expense.id)}/><span/></label>
+      <button type="button" className={`history-row${tagList.length ? ' has-tags' : ''}${expense.voidedAt ? ' voided' : ''}`} aria-pressed={selecting ? checked : undefined} onClick={click}><i style={{backgroundColor:category?.color ?? '#a9afa5'}}/><span><b>{category?.name || 'Архивная категория'}</b><small>{cachedDateTimeFormat('ru-RU',{timeZone:'Europe/Belgrade',hour:'2-digit',minute:'2-digit'}).format(new Date(expense.occurredAt))}{expense.note ? ` · ${expense.note}`:''}</small>{tagList.length ? <span className="tag-chips">{tagList.map((tag) => <TagChip key={tag.id} name={tag.name} color={tag.color}/>)}</span> : null}</span><strong>{money(expense.amountMinor,expense.currency,currencies)}</strong>{expense.voidedAt ? <em className="voided-badge" aria-label="Отклонено провайдером, не учитывается">{expense.voidReason?.kind === 'reversed' ? 'Сторно' : 'Отклонено'}</em> : expense.pending && <em aria-label="Ожидает синхронизации">●</em>}</button>
     </div>
-    <button type="button" className="history-swipe-delete" tabIndex={open ? 0 : -1} aria-hidden={!open} disabled={disabled} onClick={onDelete}><TrashIcon/><span>Удалить</span></button>
+    <button type="button" className="history-swipe-delete" tabIndex={open ? 0 : -1} aria-hidden={!open} disabled={disabled} onClick={() => onDelete(expense)}><TrashIcon/><span>Удалить</span></button>
   </div>
-}
+})
 
-export function HistoryView({ userId, workspaceId, bootstrap, setBootstrap, edit, createNew, refreshPending }: {
+// Вкладка не размонтируется, пока открыто пространство, поэтому она не должна перерисовываться от чужих
+// изменений состояния приложения — только от своих данных и колбэков (все они стабильны у родителя).
+export const HistoryView = memo(function HistoryView({ userId, workspaceId, bootstrap, setBootstrap, edit, createNew, refreshPending }: {
   userId: string
   workspaceId: string
   bootstrap: Bootstrap
@@ -1228,43 +1239,52 @@ export function HistoryView({ userId, workspaceId, bootstrap, setBootstrap, edit
   const [voided, setVoided] = useState<Expense | null>(null)
   const [including, setIncluding] = useState(false)
   const { toast, notify, dismiss } = useToast()
-  const categoryMap = new Map(bootstrap.categories.map((category) => [category.id, category]))
-  const tags = bootstrap.tags ?? []
-  const activeExpenses = bootstrap.expenses.filter((item) => !item.deletedAt)
-  const tagOptions = tags
-    .filter((tag) => tag.id === filters.tagId || activeExpenses.some((expense) => expense.tagIds?.includes(tag.id)))
-    .sort((left, right) => left.name.localeCompare(right.name, 'ru-RU'))
-  const categoryOptions = bootstrap.categories
-    .filter((category) => category.id === filters.categoryId || activeExpenses.some((expense) => expense.categoryId === category.id))
-    .sort((left, right) => left.name.localeCompare(right.name, 'ru-RU'))
-  const currencyOptions = bootstrap.currencies
-    .filter((currency) => currency.code === filters.currency || activeExpenses.some((expense) => expense.currency === currency.code))
-    .sort((left, right) => left.code.localeCompare(right.code))
-  const normalizedQuery = filters.query.trim().toLocaleLowerCase('ru-RU')
-  const expenses = filterHistoryExpenses(activeExpenses, filters).filter((item) => {
-    const dateKey = localDateKey(item.occurredAt)
-    const date = new Date(item.occurredAt)
-    const searchText = [
-      categoryMap.get(item.categoryId)?.name,
-      ...expenseTagNames(item, tags),
-      item.currency,
-      item.note,
-      money(item.amountMinor, item.currency, bootstrap.currencies),
-      String(item.amountMinor / 10 ** (bootstrap.currencies.find((currency) => currency.code === item.currency)?.decimals ?? 2)).replace('.', ','),
-      formatHistoryDate(dateKey),
-      date.toLocaleDateString('ru-RU', { timeZone: 'Europe/Belgrade' }),
-    ].filter(Boolean).join(' ').toLocaleLowerCase('ru-RU')
-    return !normalizedQuery || searchText.includes(normalizedQuery)
-  })
-  const grouped = expenses.reduce<Record<string, Expense[]>>((result, item) => { (result[localDateKey(item.occurredAt)] ||= []).push(item); return result }, {})
-  const groups = Object.entries(grouped)
-  // Итог по показанным записям. В одной валюте — точная сумма; в нескольких — пересчёт в валюту аналитики и разбивка.
-  const totalsTarget = filters.currency || getWorkspacePreference(userId, workspaceId, 'analytics-currency') || bootstrap.defaultAnalyticsCurrency || 'RSD'
-  const totals = historyTotals(expenses, bootstrap.currencies, bootstrap.rates, totalsTarget)
-  const totalLabel = !expenses.length ? null
-    : totals.byCurrency.length === 1 ? money(totals.byCurrency[0]!.amountMinor, totals.byCurrency[0]!.currency, bootstrap.currencies)
-    : totals.converted !== null ? `≈ ${formatAnalyticsAmount(totals.converted, totals.target)}` : null
-  const totalParts = totals.byCurrency.length > 1 ? totals.byCurrency.map((part) => money(part.amountMinor, part.currency, bootstrap.currencies)).join(' + ') : ''
+  // Всё производное от данных и фильтров считается один раз на их изменение: вкладка остаётся смонтированной,
+  // пока открыто пространство, и без мемоизации каждый рендер приложения (например свайп по расходам на экране
+  // ввода) заново фильтровал, группировал и форматировал всю историю.
+  const derived = useMemo(() => {
+    const categoryMap = new Map(bootstrap.categories.map((category) => [category.id, category]))
+    const tags = bootstrap.tags ?? []
+    const activeExpenses = bootstrap.expenses.filter((item) => !item.deletedAt)
+    const tagOptions = tags
+      .filter((tag) => tag.id === filters.tagId || activeExpenses.some((expense) => expense.tagIds?.includes(tag.id)))
+      .sort((left, right) => left.name.localeCompare(right.name, 'ru-RU'))
+    const categoryOptions = bootstrap.categories
+      .filter((category) => category.id === filters.categoryId || activeExpenses.some((expense) => expense.categoryId === category.id))
+      .sort((left, right) => left.name.localeCompare(right.name, 'ru-RU'))
+    const currencyOptions = bootstrap.currencies
+      .filter((currency) => currency.code === filters.currency || activeExpenses.some((expense) => expense.currency === currency.code))
+      .sort((left, right) => left.code.localeCompare(right.code))
+    const normalizedQuery = filters.query.trim().toLocaleLowerCase('ru-RU')
+    const expenses = filterHistoryExpenses(activeExpenses, filters).filter((item) => {
+      // Текст для поиска собирается только при непустом запросе: он дорогой, а без запроса не нужен.
+      if (!normalizedQuery) return true
+      const dateKey = localDateKey(item.occurredAt)
+      const date = new Date(item.occurredAt)
+      const searchText = [
+        categoryMap.get(item.categoryId)?.name,
+        ...expenseTagNames(item, tags),
+        item.currency,
+        item.note,
+        money(item.amountMinor, item.currency, bootstrap.currencies),
+        String(item.amountMinor / 10 ** (bootstrap.currencies.find((currency) => currency.code === item.currency)?.decimals ?? 2)).replace('.', ','),
+        formatHistoryDate(dateKey),
+        cachedDateTimeFormat('ru-RU', { timeZone: 'Europe/Belgrade' }).format(date),
+      ].filter(Boolean).join(' ').toLocaleLowerCase('ru-RU')
+      return searchText.includes(normalizedQuery)
+    })
+    const grouped = expenses.reduce<Record<string, Expense[]>>((result, item) => { (result[localDateKey(item.occurredAt)] ||= []).push(item); return result }, {})
+    const groups = Object.entries(grouped)
+    // Итог по показанным записям. В одной валюте — точная сумма; в нескольких — пересчёт в валюту аналитики и разбивка.
+    const totalsTarget = filters.currency || getWorkspacePreference(userId, workspaceId, 'analytics-currency') || bootstrap.defaultAnalyticsCurrency || 'RSD'
+    const totals = historyTotals(expenses, bootstrap.currencies, bootstrap.rates, totalsTarget)
+    const totalLabel = !expenses.length ? null
+      : totals.byCurrency.length === 1 ? money(totals.byCurrency[0]!.amountMinor, totals.byCurrency[0]!.currency, bootstrap.currencies)
+      : totals.converted !== null ? `≈ ${formatAnalyticsAmount(totals.converted, totals.target)}` : null
+    const totalParts = totals.byCurrency.length > 1 ? totals.byCurrency.map((part) => money(part.amountMinor, part.currency, bootstrap.currencies)).join(' + ') : ''
+    return { categoryMap, tags, activeExpenses, tagOptions, categoryOptions, currencyOptions, normalizedQuery, expenses, groups, totals, totalLabel, totalParts }
+  }, [bootstrap, filters, userId, workspaceId])
+  const { categoryMap, tags, activeExpenses, tagOptions, categoryOptions, currencyOptions, normalizedQuery, expenses, groups, totals, totalLabel, totalParts } = derived
   useEffect(() => {
     setWorkspacePreference(userId, workspaceId, 'history-filters', JSON.stringify(filters))
   }, [filters, userId, workspaceId])
@@ -1272,12 +1292,12 @@ export function HistoryView({ userId, workspaceId, bootstrap, setBootstrap, edit
     setFilters((current) => ({ ...current, ...patch }))
     setSelected(new Set())
   }
-  const toggle = (id: string) => setSelected((current) => {
+  const toggle = useCallback((id: string) => setSelected((current) => {
     const next = new Set(current)
     if (next.has(id)) next.delete(id)
     else next.add(id)
     return next
-  })
+  }), [])
   const filtersActive = Boolean(normalizedQuery || filters.categoryId || filters.tagId || filters.currency || filters.period !== 'all')
   const resetFilters = () => {
     setFilters(defaultHistoryPreferences(localDateKey(new Date())))
@@ -1388,6 +1408,11 @@ export function HistoryView({ userId, workspaceId, bootstrap, setBootstrap, edit
       setDeleting(false)
     }
   }
+  // Удаление и открытие записи замыкаются на актуальные данные, а строкам отдаются неизменные ссылки.
+  const latest = useRef({ removeOne, edit })
+  latest.current = { removeOne, edit }
+  const deleteRow = useCallback((expense: Expense) => void latest.current.removeOne(expense), [])
+  const editRow = useCallback((id: string) => latest.current.edit(id), [])
   return <section className="page"><header className="page-header history-title"><div><p className="eyebrow">Все записи</p><h1>История</h1></div><button type="button" className={`icon-danger history-delete${selected.size ? '' : ' off'}`} onClick={removeSelected} disabled={deleting} tabIndex={selected.size ? 0 : -1} aria-hidden={!selected.size} aria-label={`Удалить выбранные расходы: ${selected.size}`}><TrashIcon/></button></header>
     {activeExpenses.length > 0 && <div className="history-controls">
       <input className="search" type="search" placeholder="Сумма, заметка, дата или категория" value={filters.query} onChange={(event) => updateFilters({ query: event.target.value })}/>
@@ -1411,7 +1436,7 @@ export function HistoryView({ userId, workspaceId, bootstrap, setBootstrap, edit
       {filters.period === 'range' && <div className="history-filter-grid history-range"><label>С<button type="button" className="select-trigger" aria-label="Начало интервала" onClick={() => setCalendar('from')}><span>{filters.from ? formatShortDate(filters.from) : 'Не задано'}</span><ChevronIcon/></button></label><label>По<button type="button" className="select-trigger" aria-label="Конец интервала" onClick={() => setCalendar('to')}><span>{filters.to ? formatShortDate(filters.to) : 'Не задано'}</span><ChevronIcon/></button></label></div>}
       <div className="history-filter-summary"><div className="history-summary"><span>Показано {expenses.length} из {activeExpenses.length}</span>{totalLabel && <b className="history-total" aria-label={`Сумма показанных расходов: ${totalLabel}`}>{totalLabel}</b>}{totalParts && <small>{totalParts}{totals.missing.length ? ` · нет курса: ${totals.missing.join(', ')}` : ''}</small>}</div><div>{filtersActive && <button type="button" onClick={resetFilters}>Сбросить</button>}<button type="button" className="history-export" disabled={!expenses.length} onClick={exportExpenses}>Экспорт CSV</button></div></div>
     </div>}
-    <div className={`history-list${selected.size ? ' selecting' : ''}`}>{groups.map(([date, items]) => <div key={date} className="history-day"><div className="history-date"><span>{formatHistoryDate(date)}</span><b>{items?.length}</b></div>{items?.map((expense) => <HistoryRow key={expense.id} expense={expense} category={categoryMap.get(expense.categoryId)} tags={tags} currencies={bootstrap.currencies} checked={selected.has(expense.id)} selecting={selected.size > 0} open={openRow === expense.id} disabled={deleting} onOpen={setOpenRow} onToggle={() => toggle(expense.id)} onEdit={() => edit(expense.id)} onDelete={() => void removeOne(expense)} onVoided={() => setVoided(expense)}/>)}</div>)}</div>
+    <div className={`history-list${selected.size ? ' selecting' : ''}`}>{groups.map(([date, items]) => <div key={date} className="history-day"><div className="history-date"><span>{formatHistoryDate(date)}</span><b>{items?.length}</b></div>{items?.map((expense) => <HistoryRow key={expense.id} expense={expense} category={categoryMap.get(expense.categoryId)} tags={tags} currencies={bootstrap.currencies} checked={selected.has(expense.id)} selecting={selected.size > 0} open={openRow === expense.id} disabled={deleting} onOpen={setOpenRow} onToggle={toggle} onEdit={editRow} onDelete={deleteRow} onVoided={setVoided}/>)}</div>)}</div>
     {!groups.length && <div className="list-empty" role="status"><span>{filtersActive ? 'Ничего не найдено' : 'История пока пуста'}</span><p>{filtersActive ? 'Измените фильтры или сбросьте их.' : 'Добавьте первый расход — он сразу появится здесь.'}</p>{!filtersActive && <button type="button" className="primary history-empty-action" onClick={createNew}>Добавить первый расход</button>}</div>}
     {calendar && <CalendarSheet
       title={calendar === 'from' ? 'С какого дня' : calendar === 'to' ? 'По какой день' : filters.period === 'week' ? 'Какая неделя' : 'Какой день'}
@@ -1423,7 +1448,7 @@ export function HistoryView({ userId, workspaceId, bootstrap, setBootstrap, edit
     {voided&&<div className="sheet-backdrop" onMouseDown={()=>{if(!including)setVoided(null)}}><div className="bottom-sheet confirm voided-sheet" role="dialog" aria-modal="true" aria-labelledby="voided-title" onMouseDown={(event)=>event.stopPropagation()}><div className="sheet-handle"/><h2 id="voided-title">{voided.voidReason?.kind==='reversed'?'Операция сторнирована':'Операция отклонена'}</h2><p>{describeVoid(voided)}</p><button type="button" className="primary" disabled={including} onClick={()=>void includeOne(voided)}>{including?'Сохраняем…':'Учитывать всё равно'}</button><button type="button" className="sheet-cancel" disabled={including} onClick={()=>{const target=voided;setVoided(null);edit(target.id)}}>Изменить</button><button type="button" className="danger-link" disabled={including} onClick={()=>{const target=voided;setVoided(null);void removeOne(target)}}>Удалить</button></div></div>}
     {toast&&<Toast toast={toast} onDismiss={dismiss}/>}
   </section>
-}
+})
 
 export function AnalyticsView({ userId, workspaceId, bootstrap, theme, online }: { userId: string; workspaceId: string; bootstrap: Bootstrap; theme: Theme; online: boolean }) {
   const [target, setTarget] = useState(getWorkspacePreference(userId, workspaceId, 'analytics-currency') || 'RSD')
@@ -1510,11 +1535,11 @@ function ChartSkeleton() {
 }
 
 function formatAnalyticsAmount(value:number,currency:string) {
-  return `${new Intl.NumberFormat('ru-RU',{maximumFractionDigits:0}).format(value)} ${currency}`
+  return `${cachedNumberFormat('ru-RU',{maximumFractionDigits:0}).format(value)} ${currency}`
 }
 
 function formatCompactNumber(value:number) {
-  return new Intl.NumberFormat('ru-RU',{notation:'compact',maximumFractionDigits:1}).format(value)
+  return cachedNumberFormat('ru-RU',{notation:'compact',maximumFractionDigits:1}).format(value)
 }
 
 function weekComparisonLabel(total:number,previous:number,partial:boolean) {
@@ -2692,6 +2717,10 @@ export default function App({ capability = null }: { capability?: CapabilityInte
     setDraftDirty(false)
     setTab('entry')
   }
+  // История мемоизирована и получает неизменные колбэки; актуальное замыкание берётся из рефа.
+  const openExpenseRef=useRef(openExpense);openExpenseRef.current=openExpense
+  const editExpense=useCallback((id:string)=>void openExpenseRef.current(id),[])
+  const createNewExpense=useCallback(()=>void openExpenseRef.current(null),[])
   const switchWorkspace=async(id:string)=>{
     if(id!==stateRef.current.activeWorkspaceId&&!await confirmDraftDiscard())return
     if(id!==stateRef.current.activeWorkspaceId){updateState((value)=>setActiveWorkspace(value,id));setCurrentId(null);setDraftDirty(false);setTab('entry')}
@@ -2760,7 +2789,7 @@ if(Math.abs(node.scrollLeft-pagerTarget.current)>1)node.scrollLeft=pagerTarget.c
     {!serverAvailable&&<div className="offline-banner" role="status" aria-live="polite"><span><b>Офлайн</b>{queuedCount?` · ${queuedCount} ${pluralRu(queuedCount,['изменение','изменения','изменений'])} ${queuedCount===1?'ждёт':'ждут'} отправки`:' · изменения сохраняются на устройстве и отправятся при подключении'}</span><button type="button" onClick={()=>{void probeServer();setWorkspaceReloadEpoch((value)=>value+1)}}>Повторить</button></div>}
     <main className="pager" ref={pager} onScroll={onPagerScroll} onPointerDown={()=>{stopPagerAnimation();pagerTarget.current=null}} onTouchStart={()=>{stopPagerAnimation();pagerTarget.current=null}}>
       <div className="page-slot" inert={tab!=='entry'} aria-hidden={tab!=='entry'}>{mountedTabs.includes('entry')&&<EntryView userId={auth.user.id} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} currentId={currentId} setCurrentId={setCurrentId} refreshPending={refreshPending} onDraftDirtyChange={setDraftDirty} active={tab==='entry'}/>}</div>
-      <div className="page-slot" inert={tab!=='history'} aria-hidden={tab!=='history'}>{mountedTabs.includes('history')&&<HistoryView userId={auth.user.id} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} edit={(id)=>void openExpense(id)} createNew={()=>void openExpense(null)} refreshPending={refreshPending}/>}</div>
+      <div className="page-slot" inert={tab!=='history'} aria-hidden={tab!=='history'}>{mountedTabs.includes('history')&&<HistoryView userId={auth.user.id} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} edit={editExpense} createNew={createNewExpense} refreshPending={refreshPending}/>}</div>
       <div className="page-slot" inert={tab!=='analytics'} aria-hidden={tab!=='analytics'}>{mountedTabs.includes('analytics')&&<AnalyticsView userId={auth.user.id} workspaceId={workspaceId} bootstrap={bootstrap} theme={theme} online={serverAvailable}/>}</div>
       {reviewConnected&&<div className="page-slot review-page-slot" inert={tab!=='review'} aria-hidden={tab!=='review'}>{mountedTabs.includes('review')&&<BybitReviewView workspaceId={workspaceId} categories={bootstrap.categories} currencies={bootstrap.currencies} tags={bootstrap.tags??[]} onTag={(tag)=>setWorkspaceData((data)=>({...data,tags:[tag,...(data.tags??[]).filter((item)=>item.id!==tag.id)]}))} online={serverAvailable} onStatus={updateBybitStatus} pendingCount={bybitStatus?.pendingCount??0} active={tab==='review'} onExpense={(expense)=>setWorkspaceData((data)=>({...data,expenses:[expense,...data.expenses.filter((item)=>item.id!==expense.id)]}))} onExpenseUndo={(expenseId)=>setWorkspaceData((data)=>({...data,expenses:data.expenses.filter((item)=>item.id!==expenseId)}))}/>}</div>}
       <div className="page-slot" inert={tab!=='settings'} aria-hidden={tab!=='settings'}>{mountedTabs.includes('settings')&&<SettingsView user={auth} workspace={workspace} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} pendingCount={stats.total} refreshPending={refreshPending} onLogout={()=>void logoutCurrent()} theme={theme} onThemeChange={setTheme} onSession={(next)=>hydrate(next,false,settingsIdentityEpoch)} onCreateWorkspace={()=>void openCreate()} online={serverAvailable} bybitStatus={bybitStatus} onBybitStatus={(status)=>updateBybitStatus(status)} onBybitSynced={reloadWorkspaceData}/>}</div>
