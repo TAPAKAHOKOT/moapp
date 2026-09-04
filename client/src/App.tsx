@@ -250,6 +250,16 @@ export function formatShortDate(dateKey: string) {
   return cachedDateTimeFormat('ru-RU', { timeZone: 'UTC', day: 'numeric', month: 'short', year: 'numeric' }).format(new Date(`${dateKey}T12:00:00Z`)).replace(' г.', '')
 }
 
+// Диапазон дат для чипа фильтра: «3–5 сент.», «28 авг. – 5 сент.», и только через год — с годами.
+export function formatDateRange(from: string, to: string) {
+  if (from === to) return formatShortDate(from)
+  const day = (key: string) => Number(key.slice(8))
+  const month = (key: string) => cachedDateTimeFormat('ru-RU', { timeZone: 'UTC', month: 'short' }).format(new Date(`${key}T12:00:00Z`))
+  if (from.slice(0, 7) === to.slice(0, 7)) return `${day(from)}–${day(to)} ${month(to)}`
+  if (from.slice(0, 4) === to.slice(0, 4)) return `${day(from)} ${month(from)} – ${day(to)} ${month(to)}`
+  return `${formatShortDate(from)} – ${formatShortDate(to)}`
+}
+
 export function formatHistoryDate(dateKey: string) {
   const localInput = `${dateKey}T12:00`
   const parts = localInputParts(localInput)
@@ -1410,18 +1420,20 @@ export const HistoryView = memo(function HistoryView({ userId, workspaceId, boot
   const deleteRow = useCallback((expense: Expense) => void latest.current.removeOne(expense), [])
   const editRow = useCallback((id: string) => latest.current.edit(id), [])
   const periodLabel = filters.period === 'all' ? 'Даты' : filters.period === 'range'
-    ? (filters.from && filters.to ? filters.from === filters.to ? formatShortDate(filters.from) : `${formatShortDate(filters.from)} – ${formatShortDate(filters.to)}` : 'Даты')
+    ? (filters.from && filters.to ? formatDateRange(filters.from, filters.to) : 'Даты')
     : HISTORY_PERIOD_LABELS[filters.period]
-  const countLabel = `${expenses.length !== activeExpenses.length ? `${expenses.length} из ${activeExpenses.length}` : expenses.length} ${pluralRu(expenses.length, ['запись', 'записи', 'записей'])}`
+  const countLabel = expenses.length !== activeExpenses.length ? `${expenses.length} из ${activeExpenses.length} записей` : `${expenses.length} ${pluralRu(expenses.length, ['запись', 'записи', 'записей'])}`
   return <section className="page history-page">
     {activeExpenses.length > 0 && <div className="history-toolbar">
       {selected.size > 0
         ? <div className="history-selectbar" role="toolbar" aria-label="Выбранные расходы"><span>Выбрано {selected.size}</span><button type="button" className="danger-link" onClick={removeSelected} disabled={deleting} aria-label={`Удалить выбранные расходы: ${selected.size}`}>Удалить</button><button type="button" className="text-button" onClick={() => setSelected(new Set())}>Отмена</button></div>
         : <div className="history-chips">
+          <div className="history-chip-strip">
           <button type="button" className={`filter-chip${filters.period !== 'all' ? ' active' : ''}`} aria-label="Период истории" aria-haspopup="dialog" aria-expanded={periodOpen} onClick={() => setPeriodOpen(true)}><span>{periodLabel}</span><ChevronIcon/></button>
           <Select className="filter-chip" label="Категория истории" title="Категория" placeholder="Категория" value={filters.categoryId} onChange={(value) => updateFilters({ categoryId: value })} options={[{ value: '', label: 'Все категории' }, ...categoryOptions.map((category) => ({ value: category.id, label: category.name, ...(category.archivedAt ? { hint: 'скрыта' } : {}) }))]}/>
           {(currencyOptions.length > 1 || filters.currency) && <Select className="filter-chip" label="Валюта истории" title="Валюта" placeholder="Валюта" value={filters.currency} onChange={(value) => updateFilters({ currency: value })} options={[{ value: '', label: 'Все валюты' }, ...currencyOptions.map((currency) => ({ value: currency.code, label: currency.code, hint: currency.name }))]}/>}
           {(tagOptions.length > 0 || filters.tagId) && <Select className="filter-chip" label="Тег истории" title="Тег" placeholder="Тег" value={filters.tagId} onChange={(value) => updateFilters({ tagId: value })} options={[{ value: '', label: 'Все теги' }, ...tagOptions.map((tag) => ({ value: tag.id, label: tag.name }))]}/>}
+          </div>
           <button type="button" className={`filter-chip chip-icon${searchOpen || filters.query ? ' active' : ''}`} aria-label="Поиск" aria-pressed={searchOpen} onClick={() => { if (searchOpen) updateFilters({ query: '' }); setSearchOpen((value) => !value) }}><SearchIcon/></button>
         </div>}
       {(searchOpen || filters.query) && selected.size === 0 && <input className="search" type="search" placeholder="Поиск" aria-label="Поиск по истории" autoFocus value={filters.query} onChange={(event) => updateFilters({ query: event.target.value })}/>}
@@ -1923,7 +1935,7 @@ export function BybitReviewView({ workspaceId, categories, currencies, tags=[], 
   return <><section className="page bybit-review-page" aria-labelledby="bybit-review-title">
     <h1 className="sr-only" id="bybit-review-title">Операции с карты Bybit</h1>
     {loading?<p className="management-state" role="status">Загружаем операции…</p>:current?(()=>{const amountText=amountNumber(current.amountMinor,current.currency,currencies);return <>
-      <header className="topline review-topline"><div><p className="eyebrow">Операции с карты · {items.length}</p><p className="review-date">{new Date(current.occurredAt).toLocaleString('ru-RU',{weekday:'short',day:'numeric',month:'long',hour:'2-digit',minute:'2-digit'})}</p></div></header>
+      <header className="topline review-topline"><div><p className="eyebrow">В очереди · {items.length}</p><p className="review-date">{new Date(current.occurredAt).toLocaleString('ru-RU',{weekday:'short',day:'numeric',month:'long',hour:'2-digit',minute:'2-digit'})}</p></div></header>
       <div className="amount-row"><output className="amount-value" data-size={amountSize(amountText)} aria-label="Сумма">{amountText}</output><span className="review-currency">{current.currency}</span></div>
       <div className="review-scroll">
       {/* Мерчант и предупреждение делят слот постоянной высоты: очередь разбирают пачкой, и
