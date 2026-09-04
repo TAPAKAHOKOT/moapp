@@ -21,6 +21,29 @@ const AnalyticsChart = lazy(() => import('./AnalyticsCharts'))
 
 export type Tab = 'entry' | 'history' | 'analytics' | 'settings'
 type Theme = 'light' | 'dark'
+
+function readThemePreference(): ThemePreference {
+  const saved = localStorage.getItem('moapp:theme')
+  return saved === 'dark' || saved === 'light' ? saved : 'system'
+}
+
+function systemTheme(): Theme {
+  return window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+}
+
+// «Как в системе» следует за телефоном и меняется вместе с ним; явный выбор фиксирует тему.
+function useResolvedTheme(preference: ThemePreference): Theme {
+  const [system, setSystem] = useState<Theme>(systemTheme)
+  useEffect(() => {
+    const media = window.matchMedia?.('(prefers-color-scheme: dark)')
+    if (!media) return
+    const update = () => setSystem(media.matches ? 'dark' : 'light')
+    update()
+    media.addEventListener?.('change', update)
+    return () => media.removeEventListener?.('change', update)
+  }, [])
+  return preference === 'system' ? system : preference
+}
 type AnalyticsPeriod = 'week' | 'month'
 const CHART_COLOR = '#758d69'
 const EMPTY_FORM = { amount: '', currency: 'RSD', note: '', occurredAt: '', tagIds: [] as string[], categoryId: '' }
@@ -1584,19 +1607,22 @@ function formatWeekRange(from:string,to:string) {
   return `${startLabel}–${endLabel}`
 }
 
-function AccessLinkSheet({ link, onClose, onRevoke }: { link: { title: string; url: string; expiresAt?: string; revoke?: () => Promise<void> }; onClose: () => void; onRevoke: (reason: unknown) => void }) {
+// Ссылка приглашения или подключения: на телефоне главное действие — «Поделиться», сам URL человеку читать не нужно
+// и он показывается только если ни копирование, ни системное меню недоступны.
+function AccessLinkSheet({ link, onClose, onRevoke }: { link: { title: string; url: string; expiresAt?: string; hint?: string; revoke?: () => Promise<void> }; onClose: () => void; onRevoke: (reason: unknown) => void }) {
   const dialogRef = useDialog(onClose)
   const { confirm, confirmation } = useConfirm()
   const [feedback, setFeedback] = useState('')
   const [feedbackError, setFeedbackError] = useState(false)
   const [busy, setBusy] = useState(false)
+  const canShare = typeof navigator.share === 'function'
   const copy = async () => {
     try { await copyText(link.url); setFeedbackError(false); setFeedback('Ссылка скопирована') }
     catch (reason) { setFeedbackError(true); setFeedback(reason instanceof Error ? reason.message : 'Не удалось скопировать ссылку') }
   }
   const share = async () => {
     try {
-      if (typeof navigator.share === 'function') { await navigator.share({ title: link.title, url: link.url }); setFeedbackError(false); setFeedback('Меню «Поделиться» открыто') }
+      if (canShare) { await navigator.share({ title: link.title, url: link.url }); setFeedbackError(false); setFeedback('Меню «Поделиться» открыто') }
       else await copy()
     } catch (reason) {
       if (reason instanceof DOMException && reason.name === 'AbortError') return
@@ -1612,41 +1638,104 @@ function AccessLinkSheet({ link, onClose, onRevoke }: { link: { title: string; u
   }
   return <div className="sheet-backdrop" onMouseDown={onClose}><section ref={dialogRef} className="bottom-sheet access-sheet" role="dialog" aria-modal="true" aria-labelledby="access-link-title" onMouseDown={(event) => event.stopPropagation()}>
     <div className="sheet-handle"/><div className="sheet-title"><h2 id="access-link-title">{link.title}</h2><button type="button" className="icon-button" data-dialog-initial-focus onClick={onClose} aria-label="Закрыть">×</button></div>
-    {link.expiresAt && <p>Действует до {new Date(link.expiresAt).toLocaleString('ru-RU')}</p>}
-    <div className="qr"><QRCodeSVG value={link.url} size={180}/></div><code className="access-link">{link.url}</code>
+    {link.hint && <p className="sheet-copy">{link.hint}</p>}
+    <div className="qr"><QRCodeSVG value={link.url} size={160}/></div>
+    {link.expiresAt && <p className="sheet-copy centered">{formatLinkLifetime(link.expiresAt)}</p>}
+    {feedbackError && <code className="access-link">{link.url}</code>}
     {feedback && <p className="inline-feedback" role={feedbackError ? 'alert' : 'status'}>{feedback}</p>}
-    <button type="button" className="primary" onClick={() => void copy()}>Скопировать</button>
-    <button type="button" className="sheet-cancel" onClick={() => void share()}>Поделиться</button>
+    {canShare
+      ? <><button type="button" className="primary" onClick={() => void share()}>Поделиться</button><button type="button" className="sheet-cancel" onClick={() => void copy()}>Скопировать</button></>
+      : <button type="button" className="primary" onClick={() => void copy()}>Скопировать</button>}
     {link.revoke && <button type="button" className="danger-link" disabled={busy} onClick={() => void revoke()}>{busy ? 'Отзываем…' : 'Отозвать'}</button>}
   </section>{confirmation}</div>
 }
 
-function AccessSettings({ user, workspace, pendingCount, online, onSession, onCreateWorkspace, onNotice, onBusyChange }: {
+// «Ссылка действует 3 дня» вместо даты с секундами.
+function formatLinkLifetime(expiresAt: string) {
+  const hours = Math.round((Date.parse(expiresAt) - Date.now()) / 3_600_000)
+  if (hours >= 47) { const days = Math.round(hours / 24); return `Ссылка действует ${days} ${pluralRu(days, ['день', 'дня', 'дней'])}` }
+  if (hours >= 1) return `Ссылка действует ${hours} ${pluralRu(hours, ['час', 'часа', 'часов'])}`
+  return 'Ссылка действует меньше часа'
+}
+
+function formatRelativeTime(iso: string) {
+  const minutes = Math.round((Date.now() - Date.parse(iso)) / 60_000)
+  if (minutes < 1) return 'только что'
+  if (minutes < 60) return `${minutes} ${pluralRu(minutes, ['минуту', 'минуты', 'минут'])} назад`
+  const hours = Math.round(minutes / 60)
+  if (hours < 24) return `${hours} ${pluralRu(hours, ['час', 'часа', 'часов'])} назад`
+  return new Date(iso).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' })
+}
+
+// Строка настроек: слева понятие, справа значение и стрелка. Всё, что требует экрана, открывается шитом.
+function SettingsRow({ label, value, tone, disabled = false, onClick }: { label: string; value?: string; tone?: 'warn' | 'danger'; disabled?: boolean; onClick?: () => void }) {
+  const className = `settings-row${tone ? ` ${tone}` : ''}`
+  if (!onClick) return <div className={className}><span>{label}</span>{value !== undefined && <span className="settings-row-value"><span>{value}</span></span>}</div>
+  return <button type="button" className={className} disabled={disabled} onClick={() => { tap(4); onClick() }}><span>{label}</span><span className="settings-row-value">{value !== undefined && <span>{value}</span>}{tone !== 'danger' && <ChevronIcon/>}</span></button>
+}
+
+// Шит со списком (участники, устройства, категории, теги): заголовок, содержимое, при необходимости — не закрывается, пока идёт запрос.
+function ListSheet({ title, onClose, dismissible = true, children }: { title: string; onClose: () => void; dismissible?: boolean; children: React.ReactNode }) {
+  const dialogRef = useDialog(onClose, dismissible)
+  const titleId = useId()
+  return <div className="sheet-backdrop" onMouseDown={() => { if (dismissible) onClose() }}><section ref={dialogRef} className="bottom-sheet list-sheet" role="dialog" aria-modal="true" aria-labelledby={titleId} onMouseDown={(event) => event.stopPropagation()}>
+    <div className="sheet-handle"/><div className="sheet-title"><h2 id={titleId}>{title}</h2><button type="button" className="icon-button" data-dialog-initial-focus disabled={!dismissible} onClick={onClose} aria-label="Закрыть">×</button></div>
+    {children}
+  </section></div>
+}
+
+// Одно поле с кнопкой «Сохранить»: имена и названия правятся одинаково, без сохранения «после выхода из поля».
+function TextSheet({ title, value, placeholder, maxLength = 80, onClose, onSave }: { title: string; value: string; placeholder?: string; maxLength?: number; onClose: () => void; onSave: (value: string) => Promise<void> }) {
+  const [draft, setDraft] = useState(value)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const dialogRef = useDialog(onClose, !busy)
+  const titleId = useId()
+  const submit = async () => {
+    const trimmed = draft.trim()
+    if (!trimmed) { setError('Поле не может быть пустым.'); return }
+    if (trimmed === value) { onClose(); return }
+    setBusy(true); setError('')
+    try { await onSave(trimmed); onClose() }
+    catch (reason) { setError(reason instanceof Error ? reason.message : 'Не удалось сохранить') }
+    finally { setBusy(false) }
+  }
+  return <div className="sheet-backdrop" onMouseDown={() => { if (!busy) onClose() }}>
+    <form ref={dialogRef as React.Ref<HTMLFormElement>} className="bottom-sheet editor" role="dialog" aria-modal="true" aria-labelledby={titleId} noValidate onSubmit={(event) => { event.preventDefault(); void submit() }} onMouseDown={(event) => event.stopPropagation()}>
+      <div className="sheet-handle"/>
+      <div className="sheet-title"><h2 id={titleId}>{title}</h2><button type="button" className="icon-button" disabled={busy} onClick={onClose} aria-label="Закрыть">×</button></div>
+      <label>{title}<input data-dialog-initial-focus maxLength={maxLength} placeholder={placeholder} aria-invalid={Boolean(error)} value={draft} disabled={busy} onChange={(event) => { setError(''); setDraft(event.target.value) }}/></label>
+      {error && <p className="form-error" role="alert">{error}</p>}
+      <button className="primary" disabled={busy}>{busy ? 'Сохраняем…' : 'Сохранить'}</button>
+    </form>
+  </div>
+}
+
+type AccessSheet = 'members' | 'devices' | 'workspace-name' | 'display-name' | null
+
+// Две группы строк — «Пространство» и «Профиль»; списки участников и устройств живут в шитах, на первом уровне только счётчик.
+function AccessSettings({ user, workspace, pendingCount, online, onSession, onNotice, onBusyChange, children }: {
   user: AuthenticatedSession
   workspace: WorkspaceSummary
   pendingCount: number
   online: boolean
   onSession: (session: SessionState) => Promise<void>
-  onCreateWorkspace: () => void
   onNotice: (message: string, urgent?: boolean) => void
   onBusyChange: (busy: boolean) => void
+  children?: React.ReactNode
 }) {
   const [members, setMembers] = useState<import('./types').Participant[]>([])
   const [devices, setDevices] = useState<import('./types').DeviceSession[]>([])
   const [invitations, setInvitations] = useState<import('./types').InvitationMetadata[]>([])
-  const [link, setLink] = useState<{ title: string; url: string; expiresAt?: string; revoke?: () => Promise<void> } | null>(null)
-  const [name, setName] = useState(user.user.displayName)
-  const [workspaceName, setWorkspaceName] = useState(workspace.name)
+  const [link, setLink] = useState<{ title: string; url: string; expiresAt?: string; hint?: string; revoke?: () => Promise<void> } | null>(null)
   const [recovery, setRecovery] = useState<RecoveryPrepareResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
   const [busyAction, setBusyAction] = useState<string | null>(null)
-  const [workspaceNameState, setWorkspaceNameState] = useState<'idle'|'dirty'|'saving'|'saved'|'error'>('idle')
-  const [displayNameState, setDisplayNameState] = useState<'idle'|'dirty'|'saving'|'saved'|'error'>('idle')
+  const [sheet, setSheet] = useState<AccessSheet>(null)
   const { confirm, confirmation } = useConfirm()
+  const owner = workspace.role === 'owner'
 
-  useEffect(() => { setWorkspaceName(workspace.name); setWorkspaceNameState('idle') }, [workspace.id, workspace.name])
-  useEffect(() => { setName(user.user.displayName); setDisplayNameState('idle') }, [user.user.displayName])
   useEffect(() => {
     onBusyChange(Boolean(busyAction))
     return () => onBusyChange(false)
@@ -1659,7 +1748,7 @@ function AccessSettings({ user, workspace, pendingCount, online, onSession, onCr
   const refresh = useCallback(async (signal?: AbortSignal) => {
     if (!online) {
       setLoading(false)
-      setLoadError('Данные доступа обновятся после подключения к интернету.')
+      setLoadError('Список обновится, когда появится сеть.')
       return
     }
     setLoading(true); setLoadError('')
@@ -1674,9 +1763,9 @@ function AccessSettings({ user, workspace, pendingCount, online, onSession, onCr
       setLoading(false)
     } catch (reason) {
       if (signal?.aborted) return
-      setLoading(false); setLoadError(reason instanceof ApiError || reason instanceof Error ? reason.message : 'Не удалось обновить данные доступа.')
+      setLoading(false); setLoadError(reason instanceof ApiError || reason instanceof Error ? reason.message : 'Не удалось загрузить список.')
     }
-  }, [online, showError, workspace.id, workspace.role])
+  }, [online, workspace.id, workspace.role])
 
   useEffect(() => {
     const controller = new AbortController()
@@ -1690,7 +1779,7 @@ function AccessSettings({ user, workspace, pendingCount, online, onSession, onCr
     try {
       const result = await createInvitation(workspace.id)
       setLink({
-        title: 'Приглашение', url: result.url, expiresAt: result.invitation.expiresAt,
+        title: 'Приглашение', url: result.url, expiresAt: result.invitation.expiresAt, hint: `Отправьте ссылку человеку, которого зовёте в «${workspace.name}».`,
         revoke: async () => { await revokeInvitation(workspace.id, result.invitation.id); setLink(null); await refresh() },
       })
       await refresh()
@@ -1703,16 +1792,17 @@ function AccessSettings({ user, workspace, pendingCount, online, onSession, onCr
     setBusyAction('device')
     try {
       const result = await createDeviceLink()
-      setLink({ title: 'Подключить моё устройство', url: result.url, expiresAt: result.deviceLink.expiresAt })
+      setLink({ title: 'Открыть на другом устройстве', url: result.url, expiresAt: result.deviceLink.expiresAt, hint: 'Откройте ссылку или QR на другом телефоне или компьютере — там появится этот же профиль.' })
     } catch (reason) { showError(reason, 'Не удалось создать ссылку') }
     finally { setBusyAction(null) }
   }
 
   const rotateRecovery = async () => {
-    if (user.user.recoveryConfigured && !await confirm({ title: 'Заменить ссылку восстановления?', message: 'После завершения старая ссылка сразу перестанет работать. Сначала убедитесь, что сможете сохранить новую.', confirmLabel: 'Создать новую ссылку', danger: true })) return
+    if (busyAction) return
+    if (user.user.recoveryConfigured && !await confirm({ title: 'Заменить ссылку доступа?', message: 'Старая ссылка перестанет работать, как только вы подтвердите новую. Сначала убедитесь, что сможете сохранить новую.', confirmLabel: 'Заменить', danger: true })) return
     setBusyAction('recovery')
     try { setRecovery(await prepareInitialOrManualRecovery()) }
-    catch (reason) { showError(reason, 'Не удалось подготовить восстановление') }
+    catch (reason) { showError(reason, 'Не удалось подготовить ссылку доступа') }
     finally { setBusyAction(null) }
   }
 
@@ -1720,8 +1810,8 @@ function AccessSettings({ user, workspace, pendingCount, online, onSession, onCr
     if (!recovery) return
     const outcome = await completeRotationSafely({ prepared: recovery, targetUserId: user.user.id })
     if (outcome.status !== 'completed') {
-      if (outcome.status === 'rotation-stale') throw new Error('Параллельно была сохранена другая ссылка. Используйте последнюю подтверждённую ссылку.')
-      throw new Error('Не удалось подтвердить замену ссылки. Не удаляйте предыдущую, пока не повторите операцию.')
+      if (outcome.status === 'rotation-stale') throw new Error('Параллельно была сохранена другая ссылка. Используйте последнюю подтверждённую.')
+      throw new Error('Не удалось подтвердить новую ссылку. Не удаляйте предыдущую, пока не повторите.')
     }
     await onSession(outcome.session)
   }
@@ -1734,86 +1824,68 @@ function AccessSettings({ user, workspace, pendingCount, online, onSession, onCr
     finally { setBusyAction(null) }
   }
 
-  const saveWorkspaceName = async () => {
-    const trimmed = workspaceName.trim()
-    if (workspace.role !== 'owner' || trimmed === workspace.name) return
-    if (!trimmed) { setWorkspaceName(workspace.name); setWorkspaceNameState('error'); return }
-    if (busyAction) return
-    setBusyAction('workspace-name'); setWorkspaceNameState('saving')
-    try {
-      await renameWorkspace(workspace.id, trimmed, workspace.version)
-      await onSession(await getSession())
-      setWorkspaceNameState('saved')
-    } catch {
-      setWorkspaceName(workspace.name); setWorkspaceNameState('error')
-    } finally { setBusyAction(null) }
+  const saveWorkspaceName = async (name: string) => {
+    await renameWorkspace(workspace.id, name, workspace.version)
+    await onSession(await getSession())
+  }
+  const saveDisplayName = async (name: string) => {
+    await updateProfile(name)
+    await onSession(await getSession())
   }
 
-  const saveDisplayName = async () => {
-    const trimmed = name.trim()
-    if (trimmed === user.user.displayName) return
-    if (!trimmed) { setName(user.user.displayName); setDisplayNameState('error'); return }
-    if (busyAction) return
-    setBusyAction('display-name'); setDisplayNameState('saving')
-    try {
-      await updateProfile(trimmed)
-      await onSession(await getSession())
-      setDisplayNameState('saved')
-    } catch {
-      setName(user.user.displayName); setDisplayNameState('error')
-    } finally { setBusyAction(null) }
-  }
-
+  const otherDevices = devices.filter((item) => !item.current)
+  const busy = Boolean(busyAction)
+  const listState = loading
+    ? <p className="management-state" role="status">Загружаем…</p>
+    : loadError ? <p className="management-state" role="status"><span>{loadError}</span>{online && <button type="button" onClick={() => void refresh()}>Повторить</button>}</p> : null
   return <>
-    <div className="settings-group">
-      <h2>Общие настройки пространства</h2>
-      <label>Название<input value={workspaceName} maxLength={80} disabled={workspace.role !== 'owner' || !online || busyAction === 'workspace-name'} aria-busy={busyAction === 'workspace-name'} onChange={(event) => {setWorkspaceName(event.target.value);setWorkspaceNameState(event.target.value.trim()===workspace.name?'idle':'dirty')}} onBlur={() => void saveWorkspaceName()}/><span className={`field-state ${workspaceNameState}`}>{workspaceNameState==='dirty'?'Сохранится после выхода из поля':workspaceNameState==='saving'?'Сохраняем…':workspaceNameState==='saved'?'Сохранено':workspaceNameState==='error'?'Не удалось сохранить — возвращено прежнее название':''}</span></label>
-      <small>{workspace.role === 'owner' ? 'Вы владелец пространства' : 'Вы участник пространства'}</small>
-      <button type="button" className="sheet-cancel" disabled={!online || Boolean(busyAction)} onClick={onCreateWorkspace}>Создать новое пространство</button>
-    </div>
-    <div className="settings-group">
-      <h2>Участники</h2>
-      {loading && <p className="management-state" role="status">Загружаем участников…</p>}
-      {loadError && <p className="management-state" role="status"><span>{loadError}</span>{online&&<button type="button" onClick={()=>void refresh()}>Повторить</button>}</p>}
-      {!loading && !loadError && !members.length && <p className="management-state" role="status">Участников пока нет.</p>}
+    <div className="settings-list" role="group" aria-labelledby="settings-space"><h2 id="settings-space">Пространство</h2><div className="settings-rows">
+      <SettingsRow label="Название пространства" value={workspace.name} onClick={owner ? () => setSheet('workspace-name') : undefined} disabled={!online}/>
+      <SettingsRow label="Участники" value={loading ? '…' : owner ? `${members.length} · пригласить` : String(members.length)} onClick={() => setSheet('members')}/>
+      {children}
+    </div></div>
+    <div className="settings-list" role="group" aria-labelledby="settings-profile"><h2 id="settings-profile">Профиль</h2><div className="settings-rows">
+      <SettingsRow label="Ваше имя" value={user.user.displayName} onClick={() => setSheet('display-name')} disabled={!online}/>
+      <SettingsRow label="Ссылка доступа" value={busyAction === 'recovery' ? 'Готовим…' : user.user.recoveryConfigured ? 'сохранена' : 'не сохранена'} tone={user.user.recoveryConfigured ? undefined : 'warn'} onClick={() => void rotateRecovery()} disabled={!online || busy}/>
+      <SettingsRow label="Другие устройства" value={loading ? '…' : otherDevices.length ? String(otherDevices.length) : 'нет'} onClick={() => setSheet('devices')}/>
+    </div></div>
+    {sheet === 'workspace-name' && <TextSheet title="Название пространства" value={workspace.name} placeholder="Например, Дом или Поездка" onClose={() => setSheet(null)} onSave={saveWorkspaceName}/>}
+    {sheet === 'display-name' && <TextSheet title="Ваше имя" value={user.user.displayName} onClose={() => setSheet(null)} onSave={saveDisplayName}/>}
+    {sheet === 'members' && <ListSheet title="Участники" dismissible={!busy} onClose={() => setSheet(null)}>
+      {listState}
       {members.map((member) => <div className="management-row" key={member.userId}>
-        <span>{member.displayName}<small>{member.role === 'owner' ? 'Владелец' : 'Участник'}</small></span>
-        {workspace.role === 'owner' && !member.isCurrentUser && <span>
-          <button type="button" disabled={!online || Boolean(busyAction)} onClick={() => void (async () => {
+        <span>{member.displayName}<small>{member.role === 'owner' ? 'Владелец' : 'Участник'}{member.isCurrentUser ? ' · это вы' : ''}</small></span>
+        {owner && !member.isCurrentUser && <span>
+          <button type="button" disabled={!online || busy} onClick={() => void (async () => {
             if (!await confirm({ title: 'Передать владение?', message: `${member.displayName} станет владельцем пространства, а вы — участником.`, confirmLabel: 'Передать', danger: true })) return
             await runAction(`transfer-${member.userId}`, async () => { await transferOwnership(workspace.id, member.userId, workspace.version); await onSession(await getSession()) }, 'Не удалось передать владение', 'Владение передано')
           })()}>Передать</button>
-          <button type="button" disabled={!online || Boolean(busyAction)} onClick={() => void (async () => {
-            if (!await confirm({ title: 'Удалить участника?', message: 'Серверный доступ прекратится, но уже скачанные на его устройства офлайн-данные удалённо стереть нельзя.', confirmLabel: 'Удалить', danger: true })) return
+          <button type="button" disabled={!online || busy} onClick={() => void (async () => {
+            if (!await confirm({ title: 'Удалить участника?', message: 'Доступ к пространству прекратится, но уже скачанные на его устройства данные стереть удалённо нельзя.', confirmLabel: 'Удалить', danger: true })) return
             await runAction(`remove-${member.userId}`, async () => { await removeMember(workspace.id, member.userId); await refresh() }, 'Не удалось удалить участника', 'Участник удалён')
           })()}>Удалить</button>
         </span>}
       </div>)}
-      {workspace.role === 'owner' ? <>
-        <button type="button" className="sheet-cancel" disabled={!online || Boolean(busyAction)} onClick={() => void invite()}>{busyAction === 'invite' ? 'Создаём приглашение…' : 'Пригласить человека'}</button>
-        {!loading && !loadError && !invitations.length && <p className="management-state" role="status">Активных приглашений нет.</p>}
-        {invitations.map((item) => <div className="management-row" key={item.id}><span>Активное приглашение<small>до {new Date(item.expiresAt).toLocaleString('ru-RU')}</small></span><button type="button" disabled={!online || Boolean(busyAction)} onClick={() => void (async()=>{if(!await confirm({title:'Отозвать приглашение?',message:'Ссылка сразу перестанет работать.',confirmLabel:'Отозвать',danger:true}))return;await runAction(`invite-${item.id}`, async () => { await revokeInvitation(workspace.id, item.id); await refresh() }, 'Не удалось отозвать приглашение', 'Приглашение отозвано')})()}>{busyAction===`invite-${item.id}`?'Отзываем…':'Отозвать'}</button></div>)}
-      </> : <button type="button" className="danger-link" disabled={!online || Boolean(busyAction)} onClick={() => {
-        const warning = pendingCount ? `Есть несинхронизированные изменения: ${pendingCount}. Выйти и удалить их с этого устройства?` : 'Выйти из пространства?'
-        void (async () => {
-          if (!await confirm({ title: 'Выйти из пространства?', message: warning, confirmLabel: 'Выйти', danger: true })) return
-          await runAction('leave', async () => { await leaveWorkspace(workspace.id); await clearWorkspaceOfflineData(user.user.id, workspace.id); await onSession(await getSession()) }, 'Не удалось выйти из пространства')
-        })()
-      }}>Выйти из пространства</button>}
-    </div>
-    <div className="settings-group">
-      <h2>Доступ</h2>
-      <label>Ваше имя<input value={name} maxLength={80} disabled={!online || busyAction === 'display-name'} aria-busy={busyAction === 'display-name'} onChange={(event) => {setName(event.target.value);setDisplayNameState(event.target.value.trim()===user.user.displayName?'idle':'dirty')}} onBlur={() => void saveDisplayName()}/><span className={`field-state ${displayNameState}`}>{displayNameState==='dirty'?'Сохранится после выхода из поля':displayNameState==='saving'?'Сохраняем…':displayNameState==='saved'?'Сохранено':displayNameState==='error'?'Не удалось сохранить — возвращено прежнее имя':''}</span></label>
-      <button type="button" className="sheet-cancel" disabled={!online || Boolean(busyAction)} onClick={() => void device()}>{busyAction === 'device' ? 'Готовим ссылку…' : 'Подключить моё устройство'}</button>
-      {loading && <p className="management-state" role="status">Загружаем устройства…</p>}
-      {!loading && !loadError && !devices.length && <p className="management-state" role="status">Подключённых устройств пока нет.</p>}
-      {devices.map((deviceItem) => <div className="management-row" key={deviceItem.id}>
-        <span>{deviceItem.label}<small>{deviceItem.current ? 'Это устройство' : `Активность: ${new Date(deviceItem.lastSeenAt).toLocaleString('ru-RU')}`}</small></span>
-        {!deviceItem.current && <button type="button" disabled={!online || Boolean(busyAction)} onClick={() => void (async()=>{if(!await confirm({title:'Отключить устройство?',message:`Устройство «${deviceItem.label}» потеряет доступ к профилю.`,confirmLabel:'Отключить',danger:true}))return;await runAction(`device-${deviceItem.id}`, async () => { await revokeSession(deviceItem.id); await refresh() }, 'Не удалось отключить сессию', 'Устройство отключено')})()}>{busyAction===`device-${deviceItem.id}`?'Отключаем…':'Отключить'}</button>}
+      {owner && invitations.map((item) => <div className="management-row" key={item.id}><span>Приглашение<small>{formatLinkLifetime(item.expiresAt).replace('Ссылка действует', 'действует ещё')}</small></span><button type="button" disabled={!online || busy} onClick={() => void (async () => { if (!await confirm({ title: 'Отозвать приглашение?', message: 'Ссылка сразу перестанет работать.', confirmLabel: 'Отозвать', danger: true })) return; await runAction(`invite-${item.id}`, async () => { await revokeInvitation(workspace.id, item.id); await refresh() }, 'Не удалось отозвать приглашение', 'Приглашение отозвано') })()}>{busyAction === `invite-${item.id}` ? 'Отзываем…' : 'Отозвать'}</button></div>)}
+      {owner
+        ? <button type="button" className="primary sheet-action" disabled={!online || busy} onClick={() => void invite()}>{busyAction === 'invite' ? 'Создаём приглашение…' : 'Пригласить человека'}</button>
+        : <button type="button" className="danger-link sheet-action" disabled={!online || busy} onClick={() => {
+          const warning = pendingCount ? `Неотправленные изменения (${pendingCount}) пропадут вместе с данными пространства на этом телефоне.` : 'Пространство исчезнет с этого телефона. Вернуться в него можно только по новому приглашению.'
+          void (async () => {
+            if (!await confirm({ title: 'Выйти из пространства?', message: warning, confirmLabel: 'Выйти', danger: true })) return
+            await runAction('leave', async () => { await leaveWorkspace(workspace.id); await clearWorkspaceOfflineData(user.user.id, workspace.id); await onSession(await getSession()) }, 'Не удалось выйти из пространства')
+          })()
+        }}>Выйти из пространства</button>}
+    </ListSheet>}
+    {sheet === 'devices' && <ListSheet title="Другие устройства" dismissible={!busy} onClose={() => setSheet(null)}>
+      {listState}
+      {otherDevices.map((deviceItem) => <div className="management-row" key={deviceItem.id}>
+        <span>{deviceItem.label}<small>Был в сети {formatRelativeTime(deviceItem.lastSeenAt)}</small></span>
+        <button type="button" disabled={!online || busy} onClick={() => void (async () => { if (!await confirm({ title: 'Отключить устройство?', message: `На устройстве «${deviceItem.label}» придётся войти заново.`, confirmLabel: 'Отключить', danger: true })) return; await runAction(`device-${deviceItem.id}`, async () => { await revokeSession(deviceItem.id); await refresh() }, 'Не удалось отключить устройство', 'Устройство отключено') })()}>{busyAction === `device-${deviceItem.id}` ? 'Отключаем…' : 'Отключить'}</button>
       </div>)}
-      {!user.user.recoveryConfigured && <p className="page-intro device-note">Восстановление пока не настроено. Без сохранённой ссылки доступ нельзя будет вернуть после потери всех устройств.</p>}
-      <button type="button" className="primary" disabled={!online || Boolean(busyAction)} onClick={() => void rotateRecovery()}>{busyAction === 'recovery' ? 'Готовим ссылку…' : user.user.recoveryConfigured ? 'Создать новую ссылку восстановления' : 'Настроить восстановление'}</button>
-    </div>
+      {!loading && !loadError && !otherDevices.length && <p className="sheet-copy">Пока этот профиль открыт только здесь.</p>}
+      <button type="button" className="primary sheet-action" disabled={!online || busy} onClick={() => void device()}>{busyAction === 'device' ? 'Готовим ссылку…' : 'Открыть на другом устройстве'}</button>
+    </ListSheet>}
     {link && <AccessLinkSheet link={link} onClose={() => setLink(null)} onRevoke={(reason) => showError(reason, 'Не удалось отозвать ссылку')}/>}
     {recovery && <RecoverySave key={recovery.completionToken} prepared={recovery} mode={user.user.recoveryConfigured ? 'rotation' : 'initial'} close={() => setRecovery(null)} complete={completeRotation}/>}
     {confirmation}
@@ -1825,7 +1897,8 @@ const bybitRegions: Array<{id:BybitRegion;label:string}> = [
   {id:'ge',label:'Georgia'}, {id:'ae',label:'UAE'}, {id:'tr',label:'Turkey'}, {id:'nl',label:'Netherlands'}, {id:'id',label:'Indonesia'},
 ]
 
-function BybitConnectionPanel({ workspace, workspaceId, status, online, onStatus, onSynced=()=>{} }: { workspace:WorkspaceSummary;workspaceId:string;status:BybitCardStatus|null;online:boolean;onStatus:(status:BybitCardStatus)=>void;onSynced?:()=>void }) {
+// Карта Bybit в шите: одна строка состояния, одна кнопка «Обновить», «Отключить» — текстом внизу.
+function BybitSheet({ workspace, workspaceId, status, online, onStatus, onSynced=()=>{}, onClose }: { workspace:WorkspaceSummary;workspaceId:string;status:BybitCardStatus|null;online:boolean;onStatus:(status:BybitCardStatus)=>void;onSynced?:()=>void;onClose:()=>void }) {
   const [editing,setEditing]=useState(false)
   const [apiKey,setApiKey]=useState('')
   const [apiSecret,setApiSecret]=useState('')
@@ -1840,41 +1913,42 @@ function BybitConnectionPanel({ workspace, workspaceId, status, online, onStatus
     try{
       const next=await connectBybitCard(workspaceId,apiKey.trim(),apiSecret.trim(),region)
       onStatus(next);setApiKey('');setApiSecret('');setEditing(false)
-    }catch(reason){setError(reason instanceof ApiError?reason.message:'Не удалось подключить Bybit Card')}
+    }catch(reason){setError(reason instanceof ApiError?reason.message:'Не удалось подключить карту')}
     finally{setBusy(false)}
   }
   const sync=async()=>{
     setBusy(true);setError('')
-    try{onStatus(await syncBybitCard(workspaceId));onSynced()}catch(reason){setError(reason instanceof ApiError?reason.message:'Не удалось синхронизировать Bybit Card')}
+    try{onStatus(await syncBybitCard(workspaceId));onSynced()}catch(reason){setError(reason instanceof ApiError?reason.message:'Не удалось обновить операции')}
     finally{setBusy(false)}
   }
   const disconnect=async()=>{
-    if(!await confirm({title:'Отключить Bybit Card?',message:'Необработанные операции удалятся. Уже созданные расходы останутся в истории.',confirmLabel:'Отключить',danger:true}))return
+    if(!await confirm({title:'Отключить карту?',message:'Неразобранные операции пропадут. Уже сохранённые расходы останутся в истории.',confirmLabel:'Отключить',danger:true}))return
     setBusy(true);setError('')
     try{await disconnectBybitCard(workspaceId);onStatus({connected:false,canManage:true,pendingCount:0});setEditing(false)}
-    catch(reason){setError(reason instanceof ApiError?reason.message:'Не удалось отключить Bybit Card')}
+    catch(reason){setError(reason instanceof ApiError?reason.message:'Не удалось отключить карту')}
     finally{setBusy(false)}
   }
-  return <div className="settings-group bybit-settings"><h2>Bybit Card</h2><div className="integration-card">
-    <div className="integration-title"><span className="bybit-mark">B</span><span><b>Bybit Card</b><small>{status===null?'Проверяем подключение…':status.connected?status.status==='error'?'Подключено · нужна синхронизация':'Подключено':'Не подключено'}</small></span>{status?.connected&&<i className={status.status==='error'?'error':'active'}/>}</div>
+  const state=status===null?'Проверяем подключение…':status.connected?status.status==='error'?'Подключена · нужно обновить':status.lastSyncedAt?`Подключена · обновлено ${formatRelativeTime(status.lastSyncedAt)}`:'Подключена':'Не подключена'
+  return <ListSheet title="Карта Bybit" dismissible={!busy} onClose={onClose}>
+    <div className="integration-title"><span className="bybit-mark">B</span><span><b>Bybit Card</b><small>{state}</small></span>{status?.connected&&<i className={status.status==='error'?'error':'active'}/>}</div>
     {status?.connected?<>
-      <p>Новые платежи учитываются только с {new Date(status.enabledAt!).toLocaleString('ru-RU')}. Более ранняя история не импортируется.</p>
-      {status.lastSyncedAt&&<small className="integration-meta">Последняя синхронизация: {new Date(status.lastSyncedAt).toLocaleString('ru-RU')}</small>}
+      <p className="sheet-copy">Платежи попадают в историю начиная с {new Date(status.enabledAt!).toLocaleDateString('ru-RU',{day:'numeric',month:'long'})}. Более ранние не загружаются.</p>
       {status.lastError&&<p className="form-error" role="alert">{status.lastError}</p>}
-      <button type="button" className="sheet-cancel" disabled={!online||busy} onClick={()=>void sync()}>{busy?'Синхронизируем…':'Синхронизировать сейчас'}</button>
-      {manage&&<button type="button" className="danger-link" disabled={!online||busy} onClick={()=>void disconnect()}>Отключить интеграцию</button>}
+      <button type="button" className="primary sheet-action" disabled={!online||busy} onClick={()=>void sync()}>{busy?'Обновляем…':'Обновить'}</button>
+      {manage&&<button type="button" className="danger-link sheet-action" disabled={!online||busy} onClick={()=>void disconnect()}>Отключить</button>}
     </>:manage?<>
-      <p>Moapp загрузит только платежи, совершённые после включения интеграции. Нужен отдельный read-only ключ с разрешением BitCard.</p>
-      {!editing?<button type="button" className="primary" disabled={!online||status===null} onClick={()=>setEditing(true)}>Подключить Bybit Card</button>:<form className="integration-form" onSubmit={(event)=>void connect(event)}>
+      <p className="sheet-copy">Платежи по карте будут появляться в истории сами — останется выбрать категорию. Загружаются только платежи после подключения. Нужен отдельный ключ только для чтения с разрешением BitCard.</p>
+      {!editing?<button type="button" className="primary sheet-action" disabled={!online||status===null} onClick={()=>setEditing(true)}>Подключить</button>:<form className="integration-form" onSubmit={(event)=>void connect(event)}>
         <label>Регион аккаунта<Select label="Регион аккаунта" value={region} disabled={busy} onChange={(value)=>setRegion(value as BybitRegion)} options={bybitRegions.map((item)=>({value:item.id,label:item.label}))}/></label>
         {region==='eu'&&<small className="integration-meta">Для EU Bybit требует ключ, созданный через Connect to Third-Party Applications.</small>}
         <label>API key<input autoComplete="off" value={apiKey} disabled={busy} maxLength={256} onChange={(event)=>setApiKey(event.target.value)}/></label>
         <label>API secret<input type="password" autoComplete="new-password" value={apiSecret} disabled={busy} maxLength={512} onChange={(event)=>setApiSecret(event.target.value)}/></label>
-        <button className="primary" disabled={busy||!online}>{busy?'Проверяем ключ…':'Включить интеграцию'}</button><button type="button" className="sheet-cancel" disabled={busy} onClick={()=>{setEditing(false);setError('')}}>Отмена</button>
+        <button className="primary" disabled={busy||!online}>{busy?'Проверяем ключ…':'Подключить'}</button><button type="button" className="sheet-cancel" disabled={busy} onClick={()=>{setEditing(false);setError('')}}>Отмена</button>
       </form>}
-    </>:<p>Подключить карту может владелец пространства.</p>}
+    </>:<p className="sheet-copy">Подключить карту может владелец пространства.</p>}
     {error&&<p className="form-error" role="alert">{error}</p>}
-  </div>{confirmation}</div>
+    {confirmation}
+  </ListSheet>
 }
 
 type ReviewAction={transaction:BybitCardTransaction;expense?:Expense;categoryId?:string;comment:string;tagIds:string[]}
@@ -1959,6 +2033,74 @@ export function BybitReviewView({ workspaceId, categories, currencies, tags=[], 
   </section>{notice&&<Toast toast={notice} onDismiss={dismiss}/>} {confirmation}</>
 }
 
+// Порядок в списке меняется перетаскиванием за ручку ≡ (или стрелками с клавиатуры) — вместо двух стрелок на каждую строку.
+// На iOS ручке нужен touch-action: none, иначе Safari отдаёт жест прокрутке и обрывает указатель.
+function DragList<T extends { id: string }>({ items, disabled = false, onReorder, render }: { items: T[]; disabled?: boolean; onReorder: (ids: string[]) => void; render: (item: T) => React.ReactNode }) {
+  const [order, setOrder] = useState<string[] | null>(null)
+  const [drag, setDrag] = useState<{ id: string; pointerY: number } | null>(null)
+  const listRef = useRef<HTMLDivElement>(null)
+  const grabOffset = useRef(0)
+  const shown = order ? order.map((id) => items.find((item) => item.id === id)).filter((item): item is T => Boolean(item)) : items
+  const rowOf = (id: string) => Array.from(listRef.current?.querySelectorAll<HTMLElement>('[data-drag-id]') ?? []).find((row) => row.dataset.dragId === id) ?? null
+  // Поднятая строка следует за пальцем; её место в списке уже поменялось, поэтому сдвиг считается от новой позиции в раскладке.
+  useLayoutEffect(() => {
+    if (!drag) return
+    const row = rowOf(drag.id)
+    const list = listRef.current
+    if (!row || !list) return
+    row.style.transform = `translateY(${drag.pointerY - (list.getBoundingClientRect().top + row.offsetTop + grabOffset.current)}px)`
+  }, [drag, order])
+  const start = (event: React.PointerEvent<HTMLElement>, id: string) => {
+    if (disabled || event.button !== 0) return
+    const row = rowOf(id)
+    if (!row) return
+    event.currentTarget.setPointerCapture?.(event.pointerId)
+    grabOffset.current = event.clientY - row.getBoundingClientRect().top
+    setOrder(items.map((item) => item.id))
+    setDrag({ id, pointerY: event.clientY })
+  }
+  const move = (event: React.PointerEvent) => {
+    if (!drag) return
+    const rows = Array.from(listRef.current?.querySelectorAll<HTMLElement>('[data-drag-id]') ?? []).filter((row) => row.dataset.dragId !== drag.id)
+    // Новая позиция — число чужих строк, середину которых палец уже прошёл.
+    let index = 0
+    for (const row of rows) { const rect = row.getBoundingClientRect(); if (event.clientY > rect.top + rect.height / 2) index += 1 }
+    setOrder((current) => {
+      if (!current) return current
+      const without = current.filter((id) => id !== drag.id)
+      const next = [...without.slice(0, index), drag.id, ...without.slice(index)]
+      return next.every((id, at) => id === current[at]) ? current : next
+    })
+    setDrag({ id: drag.id, pointerY: event.clientY })
+  }
+  const end = (commit: boolean) => {
+    if (!drag) return
+    const row = rowOf(drag.id)
+    if (row) row.style.transform = ''
+    const next = order
+    setDrag(null); setOrder(null)
+    if (commit && next && next.some((id, at) => id !== items[at]?.id)) onReorder(next)
+  }
+  const keyMove = (event: React.KeyboardEvent, id: string) => {
+    const direction = event.key === 'ArrowUp' ? -1 : event.key === 'ArrowDown' ? 1 : 0
+    if (!direction || disabled) return
+    event.preventDefault()
+    const ids = items.map((item) => item.id)
+    const index = ids.indexOf(id)
+    const target = index + direction
+    if (index < 0 || target < 0 || target >= ids.length) return
+    ;[ids[index], ids[target]] = [ids[target]!, ids[index]!]
+    onReorder(ids)
+  }
+  return <div ref={listRef} className={`drag-list${drag ? ' dragging' : ''}`}>{shown.map((item) => <div key={item.id} data-drag-id={item.id} className={`drag-row${drag?.id === item.id ? ' lifted' : ''}`}>
+    {render(item)}
+    {items.length > 1 && <span className="drag-handle" role="button" tabIndex={disabled ? -1 : 0} aria-label="Перетащить, чтобы изменить порядок" aria-disabled={disabled} onPointerDown={(event) => start(event, item.id)} onPointerMove={move} onPointerUp={() => end(true)} onPointerCancel={() => end(false)} onKeyDown={(event) => keyMove(event, item.id)}>≡</span>}
+  </div>)}</div>
+}
+
+type ThemePreference = 'system' | 'light' | 'dark'
+const THEME_OPTIONS: SelectOption[] = [{ value: 'system', label: 'Как в системе' }, { value: 'light', label: 'Светлая' }, { value: 'dark', label: 'Тёмная' }]
+
 // Экспорт CSV живёт в настройках: это действие раз в квартал, а не при каждом просмотре истории.
 export function exportHistoryCsv(bootstrap: Bootstrap) {
   const expenses = bootstrap.expenses.filter((item) => !item.deletedAt).sort((left, right) => right.occurredAt.localeCompare(left.occurredAt))
@@ -1975,17 +2117,20 @@ export function exportHistoryCsv(bootstrap: Bootstrap) {
   return expenses.length
 }
 
-export function SettingsView({ user, workspace, workspaceId, bootstrap, setBootstrap, pendingCount, refreshPending, onLogout, theme, onThemeChange, onSession, onCreateWorkspace, online, bybitStatus=null, onBybitStatus=()=>{}, onBybitSynced=()=>{} }: { user: AuthenticatedSession; workspace:WorkspaceSummary; workspaceId:string; bootstrap:Bootstrap; setBootstrap:React.Dispatch<React.SetStateAction<Bootstrap>>; pendingCount:number; refreshPending:()=>void;onLogout:()=>void;theme:Theme;onThemeChange:(theme:Theme)=>void;onSession:(session:SessionState)=>Promise<void>;onCreateWorkspace:()=>void;online:boolean;bybitStatus?:BybitCardStatus|null;onBybitStatus?:(status:BybitCardStatus)=>void;onBybitSynced?:()=>void }) {
-  const [section,setSection]=useState<'space'|'integrations'|'general'>('space')
+type SettingsSheet = 'categories' | 'tags' | 'bybit' | 'theme' | null
+
+// Настройки — плоский список в три группы: «что это за пространство», «кто я», «что на этом телефоне».
+// Без сегментов и вложенных заголовков: строка = одно понятие, всё, что требует экрана, открывается шитом.
+export function SettingsView({ user, workspace, workspaceId, bootstrap, setBootstrap, pendingCount, refreshPending, onLogout, theme, onThemeChange, onSession, online, bybitStatus=null, onBybitStatus=()=>{}, onBybitSynced=()=>{} }: { user: AuthenticatedSession; workspace:WorkspaceSummary; workspaceId:string; bootstrap:Bootstrap; setBootstrap:React.Dispatch<React.SetStateAction<Bootstrap>>; pendingCount:number; refreshPending:()=>void;onLogout:()=>void;theme:ThemePreference;onThemeChange:(theme:ThemePreference)=>void;onSession:(session:SessionState)=>Promise<void>;online:boolean;bybitStatus?:BybitCardStatus|null;onBybitStatus?:(status:BybitCardStatus)=>void;onBybitSynced?:()=>void }) {
+  const [sheet,setSheet]=useState<SettingsSheet>(null)
   const [editing,setEditing]=useState<Category|null>(null)
   const [adding,setAdding]=useState(false)
-  const [moving,setMoving]=useState<string|null>(null)
+  const [reordering,setReordering]=useState(false)
   const [editingTag,setEditingTag]=useState<Tag|null>(null)
   const [addingTag,setAddingTag]=useState(false)
   const [accessBusy,setAccessBusy]=useState(false)
   const {toast:notice,notify:setNotice,dismiss:hideNotice}=useToast()
   const accessNotice=useCallback((message:string,urgent=false)=>setNotice(message,undefined,urgent),[setNotice])
-  const colors=['#819978','#d98f70','#d2ad62','#7d9db4','#aa8aaf','#797d72']
   const save=async(category:Category)=>{
     const previous=bootstrap.categories.find((item)=>item.id===category.id)
     const matchesOptimistic=(item:Category)=>item.version===category.version&&item.updatedAt===category.updatedAt&&item.name===category.name&&item.color===category.color&&item.placement===category.placement&&item.sortOrder===category.sortOrder&&item.archivedAt===category.archivedAt
@@ -1993,7 +2138,7 @@ export function SettingsView({ user, workspace, workspaceId, bootstrap, setBoots
     try{
       const saved=previous?await updateCategory(workspaceId,category.id,category):await createCategory(workspaceId,category)
       setBootstrap((b)=>({...b,categories:b.categories.map((x)=>x.id===category.id&&matchesOptimistic(x)?saved:x)}))
-      setEditing(null);setAdding(false);setNotice('Категория сохранена')
+      setEditing(null);setAdding(false);setNotice(category.archivedAt?'Категория скрыта':'Категория сохранена')
     }catch(error){
       setBootstrap((b)=>{
         const optimistic=b.categories.find((x)=>x.id===category.id)
@@ -2004,16 +2149,16 @@ export function SettingsView({ user, workspace, workspaceId, bootstrap, setBoots
     }
     refreshPending()
   }
-  const move=async(category:Category,direction:-1|1)=>{
-    if(!online||moving)return
-    setMoving(category.id)
-    const group=bootstrap.categories.filter((x)=>x.placement===category.placement&&!x.archivedAt).sort((a,b)=>a.sortOrder-b.sortOrder)
-    const previousOrder=new Map(group.map((item)=>[item.id,item.sortOrder]))
-    const index=group.findIndex((x)=>x.id===category.id),next=index+direction;if(next<0||next>=group.length){setMoving(null);return}
-    ;[group[index],group[next]]=[group[next],group[index]]
-    const groupIds=group.map((x)=>x.id),optimisticOrder=new Map(groupIds.map((id,order)=>[id,order]))
-    const ids=bootstrap.categories.filter((x)=>!x.archivedAt).sort((a,b)=>a.placement.localeCompare(b.placement)||a.sortOrder-b.sortOrder).map((x)=>x.id)
-    const ordered=ids.filter((id)=>!groupIds.includes(id));if(category.placement==='main')ordered.unshift(...groupIds);else ordered.push(...groupIds)
+  const activeCategories=bootstrap.categories.filter((x)=>!x.archivedAt).sort((a,b)=>a.placement.localeCompare(b.placement)||a.sortOrder-b.sortOrder)
+  const mainCategories=activeCategories.filter((x)=>x.placement==='main')
+  const otherCategories=activeCategories.filter((x)=>x.placement==='additional')
+  // Порядок внутри одной группы: сервер принимает полный список активных категорий, поэтому вторая группа идёт как есть.
+  const reorderGroup=async(placement:Category['placement'],ids:string[])=>{
+    if(!online||reordering)return
+    setReordering(true)
+    const previousOrder=new Map(activeCategories.map((item)=>[item.id,item.sortOrder]))
+    const optimisticOrder=new Map(ids.map((id,order)=>[id,order]))
+    const ordered=placement==='main'?[...ids,...otherCategories.map((x)=>x.id)]:[...mainCategories.map((x)=>x.id),...ids]
     setBootstrap((b)=>({...b,categories:b.categories.map((x)=>optimisticOrder.has(x.id)?{...x,sortOrder:optimisticOrder.get(x.id)!}:x)}))
     try{
       const result=await reorderCategories(workspaceId,ordered);const fresh=new Map(result.categories.map((x)=>[x.id,x]))
@@ -2023,15 +2168,14 @@ export function SettingsView({ user, workspace, workspaceId, bootstrap, setBoots
       setNotice(error instanceof ApiError?error.message:'Не удалось изменить порядок',undefined,true)
     }
     refreshPending()
-    setMoving(null)
+    setReordering(false)
   }
   const tags=sortTags(bootstrap.tags??[])
-  const [movingTag,setMovingTag]=useState<string|null>(null)
   const saveTag=async(name:string,color:string|null)=>{
     try{
       const saved=editingTag?await updateTag(workspaceId,editingTag.id,{name,color,version:editingTag.version}):await createTag(workspaceId,{name,color})
       setBootstrap((b)=>({...b,tags:[saved,...(b.tags??[]).filter((x)=>x.id!==saved.id)]}))
-      setEditingTag(null);setAddingTag(false);setNotice(editingTag?'Тег переименован':'Тег создан')
+      setEditingTag(null);setAddingTag(false);setNotice(editingTag?'Тег сохранён':'Тег создан')
     }catch(error){
       setNotice(error instanceof ApiError?error.code==='DUPLICATE'?'Тег с таким названием уже есть':error.message:'Не удалось сохранить тег',undefined,true)
     }
@@ -2044,40 +2188,54 @@ export function SettingsView({ user, workspace, workspaceId, bootstrap, setBoots
       setEditingTag(null);setNotice('Тег удалён')
     }catch(error){setNotice(error instanceof ApiError?error.message:'Не удалось удалить тег',undefined,true)}
   }
-  const moveTag=async(tag:Tag,direction:-1|1)=>{
-    if(!online||movingTag)return
-    const index=tags.findIndex((x)=>x.id===tag.id),next=index+direction;if(next<0||next>=tags.length)return
-    setMovingTag(tag.id)
-    const ordered=[...tags];[ordered[index],ordered[next]]=[ordered[next]!,ordered[index]!]
+  const reorderTagList=async(ids:string[])=>{
+    if(!online||reordering)return
+    setReordering(true)
     const previous=new Map(tags.map((x)=>[x.id,x.sortOrder]))
-    setBootstrap((b)=>({...b,tags:(b.tags??[]).map((x)=>{const at=ordered.findIndex((o)=>o.id===x.id);return at>=0?{...x,sortOrder:at}:x})}))
-    try{const result=await reorderTags(workspaceId,ordered.map((x)=>x.id));setBootstrap((b)=>({...b,tags:result.tags}))}
+    setBootstrap((b)=>({...b,tags:(b.tags??[]).map((x)=>{const at=ids.indexOf(x.id);return at>=0?{...x,sortOrder:at}:x})}))
+    try{const result=await reorderTags(workspaceId,ids);setBootstrap((b)=>({...b,tags:result.tags}))}
     catch(error){setBootstrap((b)=>({...b,tags:(b.tags??[]).map((x)=>previous.has(x.id)?{...x,sortOrder:previous.get(x.id)!}:x)}));setNotice(error instanceof ApiError?error.message:'Не удалось изменить порядок тегов',undefined,true)}
-    setMovingTag(null)
+    setReordering(false)
   }
-  const groups:[Category['placement'],string][]=[['main','Основные'],['additional','Дополнительные']]
-  const sections=[
-    {id:'space' as const,label:'Пространство',caption:'Участники и доступ'},
-    {id:'integrations' as const,label:'Интеграции',caption:bybitStatus?.connected?'Bybit подключён':'Подключения'},
-    {id:'general' as const,label:'Общее',caption:'Тема, категории и теги'},
-  ]
-  return <section className="page settings-page"><header className="page-header settings-title"><div><p className="eyebrow">{workspace.name}</p><h1>Настройки</h1></div></header>
-    <nav className="settings-sections" aria-label="Разделы настроек">{sections.map((item)=><button type="button" key={item.id} aria-current={section===item.id?'page':undefined} className={section===item.id?'selected':''} onClick={()=>setSection(item.id)}><b>{item.label}</b><small>{item.caption}</small></button>)}</nav>
-    {section==='space'&&<div className="settings-section-panel"><div className="settings-section-copy"><p className="eyebrow">Пространство</p><h2>Люди и доступ</h2><p>Название пространства, участники, устройства и восстановление.</p></div><AccessSettings user={user} workspace={workspace} pendingCount={pendingCount} online={online} onSession={onSession} onCreateWorkspace={onCreateWorkspace} onNotice={accessNotice} onBusyChange={setAccessBusy}/><div className="settings-group"><h2>Локальный профиль</h2><p className="page-intro device-note">Расходы и сессия сохраняются в этом браузере для работы без интернета. Не используйте эту функцию на общем устройстве.</p><button type="button" className="danger-link" disabled={accessBusy||Boolean(moving)} onClick={onLogout}>Выйти и удалить локальные данные</button></div></div>}
-    {section==='integrations'&&<div className="settings-section-panel"><div className="settings-section-copy"><p className="eyebrow">Интеграции</p><h2>Подключённые сервисы</h2><p>Автоматический импорт операций из внешних источников.</p></div><BybitConnectionPanel workspace={workspace} workspaceId={workspaceId} status={bybitStatus} online={online} onStatus={onBybitStatus} onSynced={onBybitSynced}/></div>}
-    {section==='general'&&<div className="settings-section-panel"><div className="settings-section-copy"><p className="eyebrow">Общее</p><h2>Вид и категории</h2><p>Оформление этого устройства и структура быстрых кнопок расходов.</p></div><div className="settings-group"><h2>Оформление</h2><div className="theme-setting"><div><b>Тема</b><small>Сохраняется только на этом устройстве</small></div><div className="theme-toggle" role="group" aria-label="Тема оформления"><button type="button" className={theme==='light'?'selected':''} aria-pressed={theme==='light'} onClick={()=>onThemeChange('light')}>Светлая</button><button type="button" className={theme==='dark'?'selected':''} aria-pressed={theme==='dark'} onClick={()=>onThemeChange('dark')}>Тёмная</button></div></div><button type="button" className="sheet-cancel" onClick={()=>{try{setNotice(`Экспортировано расходов: ${exportHistoryCsv(bootstrap)}`)}catch{setNotice('Не удалось подготовить файл экспорта',undefined,true)}}}>Экспорт в CSV</button></div><p className="page-intro">Настройте быстрые кнопки и их порядок. Категории меняются только онлайн; архивные останутся в истории.</p>
-      <div className="settings-group"><button type="button" className="primary" disabled={!online} onClick={()=>setAdding(true)}>Новая категория</button></div>
-      {groups.map(([placement,title])=>{const items=bootstrap.categories.filter((x)=>x.placement===placement&&!x.archivedAt).sort((a,b)=>a.sortOrder-b.sortOrder);return <div className="settings-group" key={placement}><h2>{title}</h2>{items.map((category,index)=><div className="category-row" key={category.id}><i style={{background:category.color ?? '#a9afa5'}}/><button type="button" className="category-name" disabled={!online||Boolean(moving)} onClick={()=>setEditing(category)}>{category.name}</button><button type="button" disabled={!online||Boolean(moving)||index===0} onClick={()=>void move(category,-1)} aria-label={`Поднять категорию ${category.name}`}>↑</button><button type="button" disabled={!online||Boolean(moving)||index===items.length-1} onClick={()=>void move(category,1)} aria-label={`Опустить категорию ${category.name}`}>↓</button></div>)}{!items.length&&<p className="management-state" role="status">Категорий в этом разделе пока нет.</p>}</div>})}
-      <div className="settings-group"><h2>Теги</h2><p className="page-intro">Короткие метки поверх категорий: любой тег можно повесить на любой расход.</p>{tags.length?tags.map((tag,index)=><div className="category-row" key={tag.id}><i style={{background:tag.color??'#a9afa5'}}/><button type="button" className="category-name" disabled={!online||Boolean(movingTag)} onClick={()=>setEditingTag(tag)}>{tag.name}</button><button type="button" disabled={!online||Boolean(movingTag)||index===0} onClick={()=>void moveTag(tag,-1)} aria-label={`Поднять тег ${tag.name}`}>↑</button><button type="button" disabled={!online||Boolean(movingTag)||index===tags.length-1} onClick={()=>void moveTag(tag,1)} aria-label={`Опустить тег ${tag.name}`}>↓</button></div>):<p className="management-state">Тегов пока нет.</p>}<button type="button" className="sheet-cancel" disabled={!online} onClick={()=>setAddingTag(true)}>Новый тег</button></div>
-      {(editing||adding)&&<CategoryEditor category={editing} colors={colors} onClose={()=>{setEditing(null);setAdding(false)}} onSave={save}/>}
-      {(editingTag||addingTag)&&<TagEditor tag={editingTag} onClose={()=>{setEditingTag(null);setAddingTag(false)}} onSave={saveTag} onDelete={editingTag?()=>removeTag(editingTag):undefined}/>}</div>}
+  const bybitValue=bybitStatus===null?(online?'…':'нужна сеть'):bybitStatus.connected?(bybitStatus.status==='error'?'нужно обновить':'подключена'):'не подключена'
+  const categoryRow=(category:Category)=><><i style={{background:category.color??'#a9afa5'}}/><button type="button" className="category-name" disabled={!online||reordering} onClick={()=>setEditing(category)}>{category.name}</button></>
+  return <section className="page settings-page">
+    <AccessSettings user={user} workspace={workspace} pendingCount={pendingCount} online={online} onSession={onSession} onNotice={accessNotice} onBusyChange={setAccessBusy}>
+      <SettingsRow label="Категории" value={String(activeCategories.length)} onClick={()=>setSheet('categories')}/>
+      <SettingsRow label="Теги" value={tags.length?String(tags.length):'нет'} onClick={()=>setSheet('tags')}/>
+      <SettingsRow label="Карта Bybit" value={bybitValue} onClick={()=>setSheet('bybit')}/>
+    </AccessSettings>
+    <div className="settings-list" role="group" aria-labelledby="settings-device"><h2 id="settings-device">Этот телефон</h2><div className="settings-rows">
+      <SettingsRow label="Тема" value={THEME_OPTIONS.find((option)=>option.value===theme)?.label} onClick={()=>setSheet('theme')}/>
+      <SettingsRow label="Экспорт в CSV" onClick={()=>{try{setNotice(`Экспортировано расходов: ${exportHistoryCsv(bootstrap)}`)}catch{setNotice('Не удалось подготовить файл экспорта',undefined,true)}}}/>
+      <SettingsRow label="Выйти" tone="danger" disabled={accessBusy||reordering} onClick={onLogout}/>
+    </div></div>
+    {sheet==='categories'&&<ListSheet title="Категории" onClose={()=>setSheet(null)}>
+      {mainCategories.length>0&&<h3>На главном экране</h3>}
+      <DragList items={mainCategories} disabled={!online||reordering} onReorder={(ids)=>void reorderGroup('main',ids)} render={categoryRow}/>
+      {otherCategories.length>0&&<h3>{mainCategories.length?'За плиткой «Ещё»':'Категории'}</h3>}
+      <DragList items={otherCategories} disabled={!online||reordering} onReorder={(ids)=>void reorderGroup('additional',ids)} render={categoryRow}/>
+      {!activeCategories.length&&<p className="sheet-copy">Категорий пока нет.</p>}
+      <p className="sheet-copy">{online?'Порядок меняется перетаскиванием за ≡. Скрытые категории остаются у старых расходов.':'Категории меняются только при подключении к сети.'}</p>
+      <button type="button" className="primary sheet-action" disabled={!online} onClick={()=>setAdding(true)}>Новая категория</button>
+    </ListSheet>}
+    {sheet==='tags'&&<ListSheet title="Теги" onClose={()=>setSheet(null)}>
+      <DragList items={tags} disabled={!online||reordering} onReorder={(ids)=>void reorderTagList(ids)} render={(tag)=><><i style={{background:tag.color??'#a9afa5'}}/><button type="button" className="category-name" disabled={!online||reordering} onClick={()=>setEditingTag(tag)}>{tag.name}</button></>}/>
+      <p className="sheet-copy">{tags.length?'Тег — короткая пометка поверх категории, например «отпуск». Один расход может нести несколько тегов.':'Тегов пока нет. Тег — короткая пометка поверх категории, например «отпуск» или «вдвоём».'}</p>
+      <button type="button" className="primary sheet-action" disabled={!online} onClick={()=>setAddingTag(true)}>Новый тег</button>
+    </ListSheet>}
+    {sheet==='bybit'&&<BybitSheet workspace={workspace} workspaceId={workspaceId} status={bybitStatus} online={online} onStatus={onBybitStatus} onSynced={onBybitSynced} onClose={()=>setSheet(null)}/>}
+    {sheet==='theme'&&<SelectSheet title="Тема" value={theme} options={THEME_OPTIONS} searchable={false} onClose={()=>setSheet(null)} onSelect={(value)=>{setSheet(null);onThemeChange(value as ThemePreference)}}/>}
+    {(editing||adding)&&<CategoryEditor category={editing} mainCount={mainCategories.length} onClose={()=>{setEditing(null);setAdding(false)}} onSave={save}/>}
+    {(editingTag||addingTag)&&<TagEditor tag={editingTag} onClose={()=>{setEditingTag(null);setAddingTag(false)}} onSave={saveTag} onDelete={editingTag?()=>removeTag(editingTag):undefined}/>}
     {notice&&<Toast toast={notice} onDismiss={hideNotice}/>}
   </section>
 }
 
-function CategoryEditor({ category, colors, onClose, onSave }:{category:Category|null;colors:string[];onClose:()=>void;onSave:(c:Category)=>Promise<void>}) {
+// Редактор категории: вместо «Размещение: Основные / Дополнительные» — переключатель «Показывать на главном экране».
+function CategoryEditor({ category, mainCount, onClose, onSave }:{category:Category|null;mainCount:number;onClose:()=>void;onSave:(c:Category)=>Promise<void>}) {
   const now = new Date().toISOString()
-  const [draft,setDraft]=useState<Category>(category||{id:crypto.randomUUID(),name:'',color:colors[0] ?? '#819978',placement:'additional',sortOrder:999,createdAt:now,updatedAt:now,archivedAt:null,version:1})
+  const [draft,setDraft]=useState<Category>(category||{id:crypto.randomUUID(),name:'',color:TAG_COLORS[0]!,placement:'additional',sortOrder:999,createdAt:now,updatedAt:now,archivedAt:null,version:1})
   const [busy,setBusy]=useState(false)
   const [validation,setValidation]=useState('')
   const {confirm,confirmation}=useConfirm()
@@ -2088,8 +2246,9 @@ function CategoryEditor({ category, colors, onClose, onSave }:{category:Category
     setValidation('');setBusy(true)
     try{await onSave({...next,name:name||next.name})}finally{setBusy(false)}
   }
-  const colorNames=['шалфейный','терракотовый','песочный','голубой','сиреневый','графитовый']
-  return <><div className="sheet-backdrop" onMouseDown={()=>{if(!busy)onClose()}}><form ref={dialogRef as React.Ref<HTMLFormElement>} className="bottom-sheet editor" role="dialog" aria-modal="true" aria-labelledby="category-editor-title" noValidate onSubmit={(e)=>{e.preventDefault();void submit(draft)}} onMouseDown={(e)=>e.stopPropagation()}><div className="sheet-handle"/><div className="sheet-title"><h2 id="category-editor-title">{category?'Изменить':'Новая категория'}</h2><button type="button" className="icon-button" data-dialog-initial-focus disabled={busy} aria-label="Закрыть" onClick={onClose}>×</button></div><label>Название<input maxLength={40} aria-invalid={Boolean(validation)} value={draft.name} onChange={(e)=>{setValidation('');setDraft({...draft,name:e.target.value})}}/></label>{validation&&<p className="form-error" role="alert">{validation}</p>}<fieldset><legend>Цвет</legend><div className="colors">{colors.map((color,index)=><button aria-label={`Цвет: ${colorNames[index] ?? color}`} aria-pressed={draft.color===color} type="button" key={color} className={draft.color===color?'selected':''} style={{background:color}} onClick={()=>setDraft({...draft,color})}/>)}</div></fieldset><label>Размещение<Select label="Размещение" value={draft.placement} onChange={(value)=>setDraft({...draft,placement:value as Category['placement']})} options={[{value:'main',label:'Основные'},{value:'additional',label:'Дополнительные'}]}/></label><button className="primary" disabled={busy}>{busy?'Сохраняем…':'Сохранить'}</button>{category&&<button type="button" className="danger-link" disabled={busy} onClick={()=>void (async()=>{if(await confirm({title:'Архивировать категорию?',message:'Она исчезнет из выбора, но останется у старых расходов.',confirmLabel:'Архивировать',danger:true}))await submit({...draft,archivedAt:new Date().toISOString()})})()}>Архивировать</button>}</form></div>{confirmation}</>
+  const onMain=draft.placement==='main'
+  const othersOnMain=mainCount-(category?.placement==='main'?1:0)
+  return <><div className="sheet-backdrop" onMouseDown={()=>{if(!busy)onClose()}}><form ref={dialogRef as React.Ref<HTMLFormElement>} className="bottom-sheet editor" role="dialog" aria-modal="true" aria-labelledby="category-editor-title" noValidate onSubmit={(e)=>{e.preventDefault();void submit(draft)}} onMouseDown={(e)=>e.stopPropagation()}><div className="sheet-handle"/><div className="sheet-title"><h2 id="category-editor-title">{category?'Категория':'Новая категория'}</h2><button type="button" className="icon-button" data-dialog-initial-focus disabled={busy} aria-label="Закрыть" onClick={onClose}>×</button></div><label>Название<input maxLength={40} aria-invalid={Boolean(validation)} value={draft.name} onChange={(e)=>{setValidation('');setDraft({...draft,name:e.target.value})}}/></label>{validation&&<p className="form-error" role="alert">{validation}</p>}<fieldset><legend>Цвет</legend><div className="colors">{TAG_COLORS.map((color,index)=><button aria-label={`Цвет: ${TAG_COLOR_NAMES[index] ?? color}`} aria-pressed={draft.color===color} type="button" key={color} className={draft.color===color?'selected':''} style={{background:color}} onClick={()=>setDraft({...draft,color})}/>)}</div></fieldset><label className="switch-row"><span><b>Показывать на главном экране</b><small>{onMain?`Плиткой рядом с клавиатурой${othersOnMain>=3?' — уже тесно, плиток больше четырёх не помещается':''}`:'Иначе — за плиткой «Ещё»'}</small></span><input type="checkbox" role="switch" checked={onMain} disabled={busy} onChange={(e)=>setDraft({...draft,placement:e.target.checked?'main':'additional'})}/></label><button className="primary" disabled={busy}>{busy?'Сохраняем…':'Сохранить'}</button>{category&&<button type="button" className="danger-link" disabled={busy} onClick={()=>void (async()=>{if(await confirm({title:'Скрыть категорию?',message:'Она пропадёт из выбора, но останется у старых расходов.',confirmLabel:'Скрыть',danger:true}))await submit({...draft,archivedAt:new Date().toISOString()})})()}>Скрыть</button>}</form></div>{confirmation}</>
 }
 
 const tabs:{id:Tab;label:string}[]=[{id:'entry',label:'Расход'},{id:'history',label:'История'},{id:'analytics',label:'Аналитика'},{id:'settings',label:'Настройки'}]
@@ -2391,7 +2550,8 @@ export default function App({ capability = null }: { capability?: CapabilityInte
   const { toast: notice, notify: setNotice, dismiss: hideNotice } = useToast()
   const { confirm, confirmation } = useConfirm()
   const online=useOnlineStatus()
-  const [theme,setTheme]=useState<Theme>(()=>localStorage.getItem('moapp:theme')==='dark'?'dark':'light')
+  const [themePreference,setThemePreference]=useState<ThemePreference>(readThemePreference)
+  const theme=useResolvedTheme(themePreference)
   const [updateWaiting,setUpdateWaiting]=useState(false)
   const [draftDirty,setDraftDirty]=useState(false)
   const [workspaceReloadEpoch,setWorkspaceReloadEpoch]=useState(0)
@@ -2510,7 +2670,8 @@ export default function App({ capability = null }: { capability?: CapabilityInte
     monitor.current=item;void item.checkForUpdate()
     return()=>item.dispose()
   },[])
-  useEffect(()=>{document.documentElement.dataset.theme=theme;localStorage.setItem('moapp:theme',theme)},[theme])
+  useEffect(()=>{document.documentElement.dataset.theme=theme},[theme])
+  useEffect(()=>{if(themePreference==='system')localStorage.removeItem('moapp:theme');else localStorage.setItem('moapp:theme',themePreference)},[themePreference])
   useLayoutEffect(()=>{
     const node=pager.current
     if(!node)return
@@ -2718,7 +2879,9 @@ export default function App({ capability = null }: { capability?: CapabilityInte
   const logoutCurrent=async()=>{
     const current=stateRef.current
     if(!current.session?.authenticated)return
-    if(!await confirm({title:'Выйти на этом устройстве?',message:'Локальные данные этого профиля и офлайн-кэш будут удалены с устройства.',confirmLabel:'Выйти и удалить',danger:true}))return
+    const queued=current.activeWorkspaceId?current.runtimes[current.activeWorkspaceId]?.outbox.total??0:0
+    const message=queued?`Данные приложения удалятся с этого телефона, а ${queued} ${pluralRu(queued,['неотправленное изменение пропадёт','неотправленных изменения пропадут','неотправленных изменений пропадут'])}. Вернуться можно по сохранённой ссылке доступа.`:'Данные приложения удалятся с этого телефона. Вернуться можно по сохранённой ссылке доступа.'
+    if(!await confirm({title:'Выйти?',message,confirmLabel:'Выйти',danger:true}))return
     stopNetwork();const pending=beginLogout(current);capabilityRef.current=null;commitState(createLoggedOutState());coordinator.current?.announce(null,null)
     try{
       await pending
@@ -2830,7 +2993,7 @@ if(Math.abs(node.scrollLeft-pagerTarget.current)>1)node.scrollLeft=pagerTarget.c
       <div className="page-slot" inert={tab!=='entry'} aria-hidden={tab!=='entry'}>{mountedTabs.includes('entry')&&<EntryView userId={auth.user.id} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} currentId={currentId} setCurrentId={setCurrentId} refreshPending={refreshPending} onDraftDirtyChange={setDraftDirty} active={tab==='entry'}/>}</div>
       <div className="page-slot" inert={tab!=='history'} aria-hidden={tab!=='history'}>{mountedTabs.includes('history')&&<HistoryView userId={auth.user.id} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} edit={editExpense} createNew={createNewExpense} refreshPending={refreshPending} inbox={historyInbox}/>}</div>
       <div className="page-slot" inert={tab!=='analytics'} aria-hidden={tab!=='analytics'}>{mountedTabs.includes('analytics')&&<AnalyticsView userId={auth.user.id} workspaceId={workspaceId} bootstrap={bootstrap} theme={theme} online={serverAvailable}/>}</div>
-      <div className="page-slot" inert={tab!=='settings'} aria-hidden={tab!=='settings'}>{mountedTabs.includes('settings')&&<SettingsView user={auth} workspace={workspace} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} pendingCount={stats.total} refreshPending={refreshPending} onLogout={()=>void logoutCurrent()} theme={theme} onThemeChange={setTheme} onSession={(next)=>hydrate(next,false,settingsIdentityEpoch)} onCreateWorkspace={()=>void openCreate()} online={serverAvailable} bybitStatus={bybitStatus} onBybitStatus={(status)=>updateBybitStatus(status)} onBybitSynced={reloadWorkspaceData}/>}</div>
+      <div className="page-slot" inert={tab!=='settings'} aria-hidden={tab!=='settings'}>{mountedTabs.includes('settings')&&<SettingsView user={auth} workspace={workspace} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} pendingCount={stats.total} refreshPending={refreshPending} onLogout={()=>void logoutCurrent()} theme={themePreference} onThemeChange={setThemePreference} onSession={(next)=>hydrate(next,false,settingsIdentityEpoch)} online={serverAvailable} bybitStatus={bybitStatus} onBybitStatus={(status)=>updateBybitStatus(status)} onBybitSynced={reloadWorkspaceData}/>}</div>
     </main>
     <nav className="bottom-nav" aria-label="Основная навигация">{navigationTabs.map((item)=><button type="button" key={item.id} aria-current={tab===item.id?'page':undefined} aria-label={item.id==='history'&&reviewCount?`История: ${reviewCount} операций с карты ждут разбора`:item.label} className={tab===item.id?'active':''} onClick={()=>{if(tab!==item.id)tap(4);setTab(item.id)}}><span><NavIcon tab={item.id}/>{item.id==='history'&&reviewCount>0&&<b className="nav-badge">{reviewCount>99?'99+':reviewCount}</b>}</span><small>{item.label}</small></button>)}</nav>
     {reviewOpen&&reviewConnected&&<ReviewOverlay onClose={()=>setReviewOpen(false)}><BybitReviewView workspaceId={workspaceId} categories={bootstrap.categories} currencies={bootstrap.currencies} tags={bootstrap.tags??[]} onTag={(tag)=>setWorkspaceData((data)=>({...data,tags:[tag,...(data.tags??[]).filter((item)=>item.id!==tag.id)]}))} online={serverAvailable} onStatus={updateBybitStatus} pendingCount={bybitStatus?.pendingCount??0} active onExpense={(expense)=>setWorkspaceData((data)=>({...data,expenses:[expense,...data.expenses.filter((item)=>item.id!==expense.id)]}))} onExpenseUndo={(expenseId)=>setWorkspaceData((data)=>({...data,expenses:data.expenses.filter((item)=>item.id!==expenseId)}))}/></ReviewOverlay>}
