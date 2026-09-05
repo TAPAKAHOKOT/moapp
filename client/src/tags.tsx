@@ -116,7 +116,7 @@ export function TagSheet({ tags, selected, online, onClose, onChange, onCreate }
       {canCreate && <button type="button" className="tag-create" disabled={busy || !online} onClick={() => void create()}>{busy ? 'Создаём…' : `Создать тег «${query.trim()}»`}</button>}
       {canCreate && !online && <p className="sheet-empty" role="status">Новые теги создаются только онлайн.</p>}
       {error && <p className="form-error" role="alert">{error}</p>}
-      <div className="select-options" role="listbox" aria-label="Теги" aria-multiselectable="true">{filtered.map((tag) => { const active = selected.includes(tag.id); return <button type="button" role="option" key={tag.id} aria-selected={active} className="select-option" onClick={() => toggle(tag.id)}><span><i className="tag-dot" style={{ background: tag.color ?? 'var(--sage)' }}/><b>{tag.name}</b></span>{active && <CheckIcon/>}</button> })}</div>
+      <div className="select-options" role="listbox" aria-label="Теги" aria-multiselectable="true">{filtered.map((tag) => { const active = selected.includes(tag.id); return <button type="button" role="option" key={tag.id} aria-selected={active} className="select-option" onClick={() => toggle(tag.id)}><span><i className="tag-dot" style={tagStyle(tag)}/><b>{tag.name}</b></span>{active && <CheckIcon/>}</button> })}</div>
       {!tags.length && !normalized && <p className="sheet-empty" role="status">Тегов пока нет. Введите название, чтобы создать первый.</p>}
       <button type="button" className="primary sheet-done" onClick={onClose}>Готово</button>
     </section>
