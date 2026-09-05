@@ -298,6 +298,10 @@ textarea,
   line-height: 1.5;
 }
 
+.confirm-sheet .sheet-cancel.danger {
+  color: var(--danger);
+}
+
 .toast-undo button {
   min-height: 44px;
 }

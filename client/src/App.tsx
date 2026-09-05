@@ -552,8 +552,17 @@ export default function App({ capability = null }: { capability?: CapabilityInte
     const current=stateRef.current
     if(!current.session?.authenticated)return
     const queued=current.activeWorkspaceId?current.runtimes[current.activeWorkspaceId]?.outbox.total??0:0
-    const message=queued?`Данные приложения удалятся с этого телефона, а ${queued} ${pluralRu(queued,['неотправленное изменение пропадёт','неотправленных изменения пропадут','неотправленных изменений пропадут'])}. Вернуться можно по сохранённой ссылке доступа.`:'Данные приложения удалятся с этого телефона. Вернуться можно по сохранённой ссылке доступа.'
-    if(!await confirm({title:'Выйти?',message,confirmLabel:'Выйти',danger:true}))return
+    if(recoveryNeeded){
+      // Без сохранённой ссылки «Выйти» — это потеря профиля навсегда, а новичок читает его как «закрыть приложение»:
+      // главная кнопка ведёт сохранить ключ, выход — второй, красной строкой.
+      const name=current.session.workspaces.find((item)=>item.id===current.activeWorkspaceId)?.name??'пространство'
+      const choice=await confirm({title:'Ссылка доступа не сохранена',message:`После выхода вернуться в «${name}» можно будет только по новому приглашению. Ссылка доступа это единственный ключ.`,confirmLabel:'Сохранить ссылку',secondaryLabel:'Всё равно выйти'})
+      if(choice==='confirm'){void openRecoverySave();return}
+      if(choice!=='secondary')return
+    }else{
+      const message=queued?`Данные приложения удалятся с этого телефона, а ${queued} ${pluralRu(queued,['неотправленное изменение пропадёт','неотправленных изменения пропадут','неотправленных изменений пропадут'])}. Вернуться можно по сохранённой ссылке доступа.`:'Данные приложения удалятся с этого телефона. Вернуться можно по сохранённой ссылке доступа.'
+      if(!await confirm({title:'Выйти?',message,confirmLabel:'Выйти',danger:true}))return
+    }
     stopNetwork();const pending=beginLogout(current);capabilityRef.current=null;commitState(createLoggedOutState());coordinator.current?.announce(null,null)
     try{
       await pending

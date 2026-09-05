@@ -2,8 +2,9 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import * as accessFlow from './access-flow'
-import { AnalyticsView, BybitReviewView, CapabilityScreen, CreateWorkspaceSheet, EntryView, fallbackAnalytics, formatEntryDate, formatHistoryDate, HistoryView, pagerTabsAt, RecoverySave, SettingsView, useToast, WorkspaceSwitcher } from './App'
+import App, { AnalyticsView, BybitReviewView, CapabilityScreen, CreateWorkspaceSheet, EntryView, fallbackAnalytics, formatEntryDate, formatHistoryDate, HistoryView, pagerTabsAt, RecoverySave, SettingsView, useToast, WorkspaceSwitcher } from './App'
 import * as workspaceApi from './workspace-api'
+import * as workspaceOffline from './workspace-offline'
 import type { AuthenticatedSession, WorkspaceBootstrap } from './types'
 
 // Фильтры истории выбирают несколько значений: шит остаётся открытым до «Готово».
@@ -1075,5 +1076,69 @@ describe('workspace onboarding controls', () => {
 
     expect(await screen.findByRole('button', { name: 'Выйти и продолжить' })).not.toBeNull()
     expect(screen.getByText(/ссылка от другого профиля/i)).not.toBeNull()
+  })
+})
+
+describe('logout confirmation', () => {
+  const workspace = { id: 'workspace-a', name: 'Дом', role: 'owner' as const, version: 1, joinedAt: '2026-08-01T00:00:00.000Z' }
+  const guest = { authenticated: false as const, user: null, workspaces: [] as [], legacyClaimAvailable: false, serverTime: '2026-08-10T14:00:00.000Z' }
+  const authSession = (recoveryConfigured: boolean): AuthenticatedSession => ({ authenticated: true, user: { id: 'user-a', displayName: 'Аня', recoveryConfigured, recoveryGeneration: recoveryConfigured ? 1 : 0 }, currentSessionId: 'session-a', currentSessionExpiresAt: '2030-01-01T00:00:00.000Z', serverTime: '2026-08-10T14:00:00.000Z', restrictedToRecovery: false, workspaces: [workspace], legacyWorkspaceId: null })
+  afterEach(() => { workspaceApi.allowWorkspaceMutations(); workspaceApi.setSessionContext(null) })
+
+  // Целое приложение в jsdom: сеть и офлайн-хранилище подменены, до строки «Выйти» доходим через вкладку настроек.
+  async function openLogout(recoveryConfigured: boolean) {
+    let loggedOut = false
+    vi.spyOn(workspaceApi, 'getSession').mockImplementation(async () => loggedOut ? guest : authSession(recoveryConfigured))
+    vi.spyOn(workspaceApi, 'getBootstrap').mockResolvedValue({ data: expenseBootstrap(), offline: false })
+    vi.spyOn(workspaceApi, 'syncAllWorkspaces').mockResolvedValue(undefined)
+    vi.spyOn(workspaceApi, 'getBybitCardStatus').mockResolvedValue({ connected: false, canManage: true, pendingCount: 0 })
+    vi.spyOn(workspaceApi, 'listMembers').mockResolvedValue({ members: [] })
+    vi.spyOn(workspaceApi, 'listSessions').mockResolvedValue({ sessions: [] })
+    vi.spyOn(workspaceApi, 'listInvitations').mockResolvedValue({ invitations: [] })
+    vi.spyOn(workspaceApi, 'prepareInitialOrManualRecovery').mockResolvedValue(prepared)
+    const logout = vi.spyOn(workspaceApi, 'logoutExpected').mockImplementation(async () => { loggedOut = true })
+    vi.spyOn(workspaceOffline, 'cacheProfile').mockResolvedValue(undefined)
+    vi.spyOn(workspaceOffline, 'cacheBootstrap').mockResolvedValue(undefined)
+    vi.spyOn(workspaceOffline, 'readCachedBootstrap').mockResolvedValue(undefined)
+    vi.spyOn(workspaceOffline, 'readCachedProfile').mockResolvedValue(undefined)
+    vi.spyOn(workspaceOffline, 'outboxStats').mockResolvedValue({ total: 0, conflicts: 0, failed: 0 })
+    vi.spyOn(workspaceOffline, 'waitForWorkspaceOfflineWrites').mockResolvedValue(undefined)
+    vi.spyOn(workspaceOffline, 'clearUserOfflineData').mockResolvedValue(undefined)
+    render(<App/>)
+    fireEvent.click(await screen.findByRole('button', { name: 'Настройки' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Выйти' }))
+    return { logout, dialog: await screen.findByRole('alertdialog') }
+  }
+
+  it('offers to save the access link first when leaving would lose the profile', async () => {
+    const { logout, dialog } = await openLogout(false)
+    expect(within(dialog).getByRole('heading').textContent).toBe('Ссылка доступа не сохранена')
+    expect(dialog.textContent).toContain('После выхода вернуться в «Дом» можно будет только по новому приглашению.')
+    expect(within(dialog).queryByRole('button', { name: 'Выйти' })).toBeNull()
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Сохранить ссылку' }))
+    expect(await screen.findByRole('heading', { name: 'Сохраните ссылку доступа' })).not.toBeNull()
+    expect(screen.queryByRole('alertdialog')).toBeNull()
+    expect(logout).not.toHaveBeenCalled()
+
+    // Со второй попытки красная строка всё же выводит из профиля.
+    fireEvent.click(screen.getByRole('button', { name: 'Позже' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Выйти' }))
+    fireEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Всё равно выйти' }))
+    await waitFor(() => expect(logout).toHaveBeenCalled())
+    expect(logout.mock.calls[0]?.slice(0, 2)).toEqual(['user-a', 'session-a'])
+    expect(await screen.findByRole('button', { name: 'Создать пространство' })).not.toBeNull()
+  })
+
+  it('keeps the plain warning when the access link is already saved', async () => {
+    const { logout, dialog } = await openLogout(true)
+    expect(within(dialog).getByRole('heading').textContent).toBe('Выйти?')
+    expect(within(dialog).getByText('Данные приложения удалятся с этого телефона. Вернуться можно по сохранённой ссылке доступа.')).not.toBeNull()
+    expect(within(dialog).queryByRole('button', { name: 'Сохранить ссылку' })).toBeNull()
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Выйти' }))
+    await waitFor(() => expect(logout).toHaveBeenCalled())
+    expect(logout.mock.calls[0]?.slice(0, 2)).toEqual(['user-a', 'session-a'])
+    expect(await screen.findByRole('button', { name: 'Создать пространство' })).not.toBeNull()
   })
 })
