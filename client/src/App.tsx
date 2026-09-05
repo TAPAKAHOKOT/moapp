@@ -1110,8 +1110,13 @@ export function EntryView({ userId, workspaceId, bootstrap, setBootstrap, curren
   useEffect(() => {
     const node = entryRef.current
     if (!node || !usesNativeTouch()) return
+    // Пока палец на экране расхода, лента вкладок не прокручивается сама: ни от края экрана, ни «перетеканием»
+    // из полосы тегов. Вкладки с этого экрана и так переключаются только кнопками внизу.
+    const pagerNode = node.closest<HTMLElement>('.pager')
+    const lockPager = (locked: boolean) => { if (pagerNode) pagerNode.style.overflowX = locked ? 'hidden' : '' }
     const findTouch = (touches: TouchList, identifier: number) => Array.from(touches).find((touch) => touch.identifier === identifier)
     const touchStart = (event: TouchEvent) => {
+      lockPager(true)
       suppressTouchPointerUp.current = false
       if (event.touches.length !== 1 || insideTagStrip(event.target)) { swipe.current = null; return }
       const touch = event.touches[0]
@@ -1127,13 +1132,15 @@ export function EntryView({ userId, workspaceId, bootstrap, setBootstrap, curren
       }
     }
     const touchEnd = (event: TouchEvent) => {
+      if (event.touches.length === 0) lockPager(false)
       const start = swipe.current
       if (!start || start.touchId === null) return
       const touch = findTouch(event.changedTouches, start.touchId)
       if (touch) touchHandlers.current.swipeEndAt(touch.clientX)
       setTimeout(() => { suppressTouchPointerUp.current = false }, 0)
     }
-    const touchCancel = () => {
+    const touchCancel = (event: TouchEvent) => {
+      if (event.touches.length === 0) lockPager(false)
       touchHandlers.current.swipeCancelAt()
       setTimeout(() => { suppressTouchPointerUp.current = false }, 0)
     }
@@ -1142,6 +1149,7 @@ export function EntryView({ userId, workspaceId, bootstrap, setBootstrap, curren
     node.addEventListener('touchend', touchEnd, { passive: true })
     node.addEventListener('touchcancel', touchCancel, { passive: true })
     return () => {
+      lockPager(false)
       node.removeEventListener('touchstart', touchStart)
       node.removeEventListener('touchmove', touchMove)
       node.removeEventListener('touchend', touchEnd)
@@ -2475,6 +2483,59 @@ function SyncIssuesSheet({ userId, workspaceId, bootstrap, online, onClose, onRe
   </section></div>{confirmation}</>
 }
 
+// Диагностика жеста на телефоне: включается адресом ?debug=swipe и запоминается, выключается ?debug=off.
+// Панель пишет, куда пришло касание, что делает лента вкладок и лента карточек — то, чего не видно в эмуляции.
+function readDebugFlag(): string | null {
+  try {
+    const wanted = new URL(window.location.href).searchParams.get('debug')
+    if (wanted === 'off') localStorage.removeItem('moapp:debug')
+    else if (wanted) localStorage.setItem('moapp:debug', wanted)
+    return localStorage.getItem('moapp:debug')
+  } catch { return null }
+}
+
+function SwipeDebug() {
+  const [lines, setLines] = useState<string[]>(['debug=swipe: жду касания'])
+  useEffect(() => {
+    const pager = document.querySelector<HTMLElement>('.pager')
+    const push = (line: string, replaceMove = false) => setLines((current) => {
+      const kept = replaceMove && current.at(-1)?.startsWith('move') ? current.slice(0, -1) : current
+      return [...kept.slice(-8), line]
+    })
+    const describe = (target: EventTarget | null) => target instanceof Element ? `${target.tagName.toLowerCase()}${target.className && typeof target.className === 'string' ? `.${target.className.split(' ').filter(Boolean).slice(0, 2).join('.')}` : ''}` : '?'
+    let startX = 0, startY = 0
+    const track = () => document.querySelector<HTMLElement>('.entry-track')?.style.transform || '0'
+    const onStart = (event: TouchEvent) => {
+      const touch = event.touches[0]
+      if (!touch) return
+      startX = touch.clientX; startY = touch.clientY
+      const action = event.target instanceof Element ? getComputedStyle(event.target).touchAction : '?'
+      push(`start x${Math.round(touch.clientX)} y${Math.round(touch.clientY)} ${describe(event.target)} touch-action=${action} pager=${pager?.scrollLeft ?? '-'} fingers=${event.touches.length}`)
+    }
+    const onMove = (event: TouchEvent) => {
+      const touch = event.touches[0]
+      if (!touch) return
+      push(`move dx${Math.round(touch.clientX - startX)} dy${Math.round(touch.clientY - startY)} pager=${pager?.scrollLeft ?? '-'} track=${track()}${event.defaultPrevented ? ' prevented' : ''}`, true)
+    }
+    const onEnd = (event: TouchEvent) => push(`${event.type} pager=${pager?.scrollLeft ?? '-'} track=${track()}`)
+    const onScroll = () => push(`pager scrolled to ${pager?.scrollLeft}`)
+    const onPointerCancel = (event: PointerEvent) => push(`pointercancel ${event.pointerType} ${describe(event.target)}`)
+    document.addEventListener('touchstart', onStart, { passive: true })
+    document.addEventListener('touchmove', onMove, { passive: true })
+    document.addEventListener('touchend', onEnd, { passive: true })
+    document.addEventListener('touchcancel', onEnd, { passive: true })
+    document.addEventListener('pointercancel', onPointerCancel, { passive: true })
+    pager?.addEventListener('scroll', onScroll, { passive: true })
+    return () => {
+      document.removeEventListener('touchstart', onStart); document.removeEventListener('touchmove', onMove)
+      document.removeEventListener('touchend', onEnd); document.removeEventListener('touchcancel', onEnd)
+      document.removeEventListener('pointercancel', onPointerCancel)
+      pager?.removeEventListener('scroll', onScroll)
+    }
+  }, [])
+  return <pre className="swipe-debug" aria-hidden="true">{lines.join('\n')}</pre>
+}
+
 export function pagerTabsAt(scrollLeft: number, clientWidth: number, items=tabs): Tab[] {
   if (clientWidth <= 0) return ['entry']
   const position = Math.max(0, Math.min(items.length - 1, scrollLeft / clientWidth))
@@ -2699,6 +2760,7 @@ export default function App({ capability = null }: { capability?: CapabilityInte
   const online=useOnlineStatus()
   const [themePreference,setThemePreference]=useState<ThemePreference>(readThemePreference)
   const theme=useResolvedTheme(themePreference)
+  const [debugFlag]=useState(readDebugFlag)
   const [updateWaiting,setUpdateWaiting]=useState(false)
   const [draftDirty,setDraftDirty]=useState(false)
   const [workspaceReloadEpoch,setWorkspaceReloadEpoch]=useState(0)
@@ -3152,5 +3214,6 @@ if(Math.abs(node.scrollLeft-pagerTarget.current)>1)node.scrollLeft=pagerTarget.c
     }}/>}
     {error && <Toast toast={{text:error,urgent:true}} onDismiss={()=>setError('')}/>}
     {notice&&<Toast toast={notice} onDismiss={hideNotice}/>} {confirmation}
+    {debugFlag==='swipe'&&<SwipeDebug/>}
   </div>
 }
