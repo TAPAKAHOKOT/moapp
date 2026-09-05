@@ -1,5 +1,5 @@
 import type { Category, Currency, Expense, RateSnapshot, Tag } from './types'
-import { convertExpense, localDateKey, monthDateRange, weekDateRange } from './utils'
+import { convertExpense, hasRate, localDateKey, monthDateRange, weekDateRange } from './utils'
 
 // Относительные пресеты считаются от сегодняшнего дня при каждом применении, поэтому сохранённый фильтр не устаревает.
 export const HISTORY_PERIODS = ['all', 'today', 'this-week', 'this-month', 'range'] as const
@@ -128,8 +128,7 @@ export function historyTotals(shown: Expense[], currencies: Currency[], rates: R
   const expenses = shown.filter((expense) => !expense.voidedAt)
   const byCurrency = new Map<string, number>()
   for (const expense of expenses) byCurrency.set(expense.currency, (byCurrency.get(expense.currency) ?? 0) + expense.amountMinor)
-  const hasRate = (code: string) => code === target || Boolean((rates.ratesToRsd[code] ?? (code === 'RSD' ? 1 : 0)) && (rates.ratesToRsd[target] ?? (target === 'RSD' ? 1 : 0)))
-  const missing = [...byCurrency.keys()].filter((code) => !hasRate(code)).sort()
+  const missing = [...new Set(expenses.filter((expense) => !hasRate(rates, expense.currency, target, localDateKey(expense.occurredAt))).map((expense) => expense.currency))].sort()
   const converted = missing.length ? null : expenses.reduce((sum, expense) => sum + convertExpense(expense, target, currencies, rates), 0)
   return {
     byCurrency: [...byCurrency].map(([currency, amountMinor]) => ({ currency, amountMinor })).sort((left, right) => right.amountMinor - left.amountMinor || left.currency.localeCompare(right.currency)),

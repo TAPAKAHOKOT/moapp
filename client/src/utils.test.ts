@@ -44,6 +44,16 @@ describe('money helpers', () => {
     const expense = { amountMinor: 1000, currency: 'EUR' } as Expense
     expect(convertExpense(expense, 'RSD', currencies, { base: 'RSD', date: '2026-08-03', ratesToRsd: { EUR: 117, RSD: 1 } })).toBe(1170)
   })
+  it('prefers the rate of the purchase day over the latest snapshot', () => {
+    const rates = { base: 'RSD' as const, date: '2026-09-05', ratesToRsd: { RSD: 1, EUR: 117.5, USD: 101 }, daily: { '2026-08-03': { RSD: 1, EUR: 117 } } }
+    const expense: Expense = { id: 'e', amountMinor: 1_000, currency: 'EUR', categoryId: 'food', note: null, occurredAt: '2026-08-03T10:00:00.000Z', createdAt: '2026-08-03T10:00:00.000Z', updatedAt: '2026-08-03T10:00:00.000Z', version: 1, deletedAt: null }
+    expect(convertExpense(expense, 'RSD', currencies, rates)).toBe(1170)
+    // A day the server did not list falls back to the snapshot.
+    expect(convertExpense({ ...expense, occurredAt: '2026-09-01T10:00:00.000Z' }, 'RSD', currencies, rates)).toBe(1175)
+    // A currency missing from that day's table also falls back to the snapshot instead of counting as unavailable.
+    expect(convertExpense(expense, 'USD', currencies, rates)).toBeCloseTo(1170 / 101, 6)
+  })
+
   it('keeps an identity conversion even when the rate snapshot is empty', () => {
     const expense = { amountMinor: 1000, currency: 'EUR' } as Expense
     expect(convertExpense(expense, 'EUR', currencies, { base: 'RSD', date: null, ratesToRsd: {} })).toBe(10)

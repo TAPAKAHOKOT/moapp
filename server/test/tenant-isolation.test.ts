@@ -71,6 +71,10 @@ test("workspace guards hide foreign tenants and scoped bootstrap never mixes row
   assert.equal(own.json().workspaceId, workspaceA);
   assert.equal(own.json().workspace.id, workspaceA);
   assert.deepEqual(new Set(own.json().expenses.map((row: { amountMinor: number }) => row.amountMinor)), new Set([1_000, 2_000]));
+  // Курсы по дням покупок: клиент считает историю и офлайн-аналитику так же, как сервер.
+  const daily = own.json().rates.daily as Record<string, Record<string, number>>;
+  assert.equal(Object.keys(daily).length, 1, "one expense day in this workspace");
+  assert.deepEqual(Object.values(daily)[0], { RSD: 1, EUR: 117 }, "USD has no rate in the fixture, so it is omitted");
 
   const foreign = await app.inject({ method: "GET", url: `/api/workspaces/${workspaceB}/expenses`, headers: identityA.headers });
   assert.equal(foreign.statusCode, 404);

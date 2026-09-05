@@ -43,6 +43,36 @@ function rateFor(app: FastifyInstance, currency: string, date: string): StoredRa
       ORDER BY rate_date DESC LIMIT 1`).get(currency) as StoredRate | undefined;
 }
 
+/*
+ * Per-day rates for the client: the same "latest rate on or before the day, else the latest known" rule as
+ * convertMajor, computed in memory for many (day, currency) pairs at once instead of one query per pair.
+ */
+export function buildRateLookup(app: FastifyInstance, codes: Iterable<string>): (currency: string, date: string) => number | undefined {
+  const wanted = [...new Set([...codes].filter((code) => code !== "EUR"))];
+  const byCode = new Map<string, Array<{ date: string; rate: number }>>();
+  if (wanted.length) {
+    const rows = app.db.prepare(`SELECT quote_currency AS code, rate_date AS date, rate FROM exchange_rates
+      WHERE base_currency='EUR' AND quote_currency IN (${wanted.map(() => "?").join(",")}) ORDER BY quote_currency, rate_date`)
+      .all(...wanted) as Array<{ code: string; date: string; rate: number }>;
+    for (const row of rows) {
+      const list = byCode.get(row.code) ?? [];
+      list.push({ date: row.date, rate: row.rate });
+      byCode.set(row.code, list);
+    }
+  }
+  return (currency, date) => {
+    if (currency === "EUR") return 1;
+    const list = byCode.get(currency);
+    if (!list?.length) return undefined;
+    let low = 0, high = list.length;
+    while (low < high) {
+      const middle = (low + high) >> 1;
+      if (list[middle]!.date <= date) low = middle + 1; else high = middle;
+    }
+    return (low > 0 ? list[low - 1] : list[list.length - 1])!.rate;
+  };
+}
+
 export function convertMajor(app: FastifyInstance, amount: number, source: string, target: string, date: string): { amount: number; rateDate: string } | undefined {
   if (source === target) return { amount, rateDate: date };
   const sourceRate = rateFor(app, source, date);

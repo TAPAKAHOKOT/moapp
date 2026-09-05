@@ -103,6 +103,12 @@ describe('historyTotals', () => {
     expect(totals.converted).toBeCloseTo(10)
   })
 
+  it('converts each row by the rate of its own day when the server lists it', () => {
+    const daily = { base: 'RSD' as const, date: '2026-09-05', ratesToRsd: { RSD: 1, EUR: 120 }, daily: { '2026-08-24': { RSD: 1, EUR: 117 } } }
+    const totals = historyTotals([row('a', 1_000, 'EUR')], currencies, daily, 'RSD')
+    expect(totals.converted).toBe(1170)
+  })
+
   it('names currencies without a rate instead of guessing a total', () => {
     const totals = historyTotals([row('a', 1_000, 'RSD'), row('b', 500, 'USD')], currencies, rates, 'RSD')
     expect(totals.missing).toEqual(['USD'])
