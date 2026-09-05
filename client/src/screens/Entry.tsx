@@ -19,6 +19,23 @@ export const SWIPE_COMMIT = 64
 
 export const CARD_GAP = 18
 
+// Та же кривая, что раньше стояла в CSS-переходе (cubic-bezier(.25,.8,.3,1)), но считается в JS: лентой управляет
+// requestAnimationFrame. Safari на iPhone на первом кадре ускоренного CSS-перехода терял содержимое карточки —
+// в ?debug=swipe значения ровные, а карточка мигает, — тогда как покадровое движение за пальцем не мигало ни разу.
+export function trackEasing(t: number) {
+  if (t <= 0) return 0
+  if (t >= 1) return 1
+  const [x1, y1, x2, y2] = [0.25, 0.8, 0.3, 1]
+  const bezier = (a: number, b: number, u: number) => 3 * a * u * (1 - u) ** 2 + 3 * b * u * u * (1 - u) + u ** 3
+  let low = 0, high = 1, u = t
+  for (let index = 0; index < 20; index++) {
+    u = (low + high) / 2
+    if (bezier(x1, x2, u) < t) low = u
+    else high = u
+  }
+  return bezier(y1, y2, u)
+}
+
 // Вид карточки задаётся её содержимым, а не состоянием экрана: соседняя карточка сохранённого расхода
 // рисуется теми же правилами, что и живая, и в момент подмены ничего не меняет цвет и не сдвигается.
 export type CardFace = { kind: 'new' | 'edit'; title: string; date: string; amount: string; currency: string }
@@ -181,14 +198,17 @@ export function EntryView({ userId, workspaceId, bootstrap, setBootstrap, curren
   const offset = useRef(0)
   const swapped = useRef(false)
   const committing = useRef(false)
-  const swapTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
+  // Текущая анимация ленты (requestAnimationFrame): новый жест или подмена карточки её обрывают.
+  const trackFrame = useRef(0)
+  const stopTrack = () => { if (trackFrame.current) { cancelAnimationFrame(trackFrame.current); trackFrame.current = 0 } }
+  const placeTrack = (node: HTMLElement, dx: number) => { node.style.transform = `translateX(${dx}px)`; offset.current = dx }
+  useEffect(() => () => stopTrack(), [])
   // Черновик несохранённого нового расхода, чтобы свайп по истории не стирал набранное.
   const draft = useRef(EMPTY_FORM)
   const synced = useRef<{ id: string; form: typeof EMPTY_FORM }>({ id: '', form: EMPTY_FORM })
   const formRef = useRef(form)
   formRef.current = form
 
-  useEffect(() => () => clearTimeout(swapTimer.current), [])
 
   // Соседняя карточка уже стоит на месте текущей, поэтому ленту возвращаем в ноль синхронно — до кадра, без мигания.
   useLayoutEffect(() => {
@@ -197,7 +217,8 @@ export function EntryView({ userId, workspaceId, bootstrap, setBootstrap, curren
       swapped.current = false
       committing.current = false
       const node = trackRef.current
-      if (node) { node.style.transition = 'none'; node.style.transform = 'translate3d(0px,0,0)'; offset.current = 0 }
+      stopTrack()
+      if (node) placeTrack(node, 0)
     }
     // При свайпе новое состояние уже достигнуто анимацией; при удалении и открытии из истории кнопка мягко гаснет или проявляется сама.
     setActionsPresence(currentId ? 1 : 0, didSwap ? 0 : 180)
@@ -329,18 +350,28 @@ export function EntryView({ userId, workspaceId, bootstrap, setBootstrap, curren
   const newerNeighbour = currentIndex > 0 ? activeExpenses[currentIndex - 1] : undefined
   const canMove = (direction: 'older' | 'newer') => direction === 'older' ? Boolean(olderNeighbour) : currentIndex >= 0
 
-  // Лента едет за пальцем один к одному, поэтому соседняя карточка видна на всём пути.
-  const slide = (dx: number, duration: number) => {
+  // Лента едет за пальцем один к одному, поэтому соседняя карточка видна на всём пути. Доводка — тоже покадрово,
+  // из requestAnimationFrame, а не CSS-переходом (см. trackEasing); onDone зовётся, когда лента встала.
+  const slide = (dx: number, duration: number, onDone?: () => void) => {
     const node = trackRef.current
     if (!node) return
     // Ширину читаем до записи стилей: чтение после записи заставляет браузер синхронно пересчитывать раскладку на каждом движении пальца.
     const span = node.clientWidth + CARD_GAP
-    const easing = 'cubic-bezier(.25,.8,.3,1)'
-    node.style.transition = duration ? `transform ${duration}ms ${easing}` : 'none'
-    // Покой — тоже трансформация (translate3d), а не её отсутствие: переход к `none` Safari доводит через
-    // пересборку слоя, и карточка на кадр пропадает.
-    node.style.transform = `translate3d(${dx}px,0,0)`
-    offset.current = dx
+    stopTrack()
+    if (!duration) { placeTrack(node, dx); if (onDone) setTimeout(onDone, 0) }
+    else {
+      const from = offset.current
+      let started: number | null = null
+      const step = (now: number) => {
+        if (started === null) started = now
+        const progress = Math.min(1, (now - started) / duration)
+        placeTrack(node, progress < 1 ? from + (dx - from) * trackEasing(progress) : dx)
+        if (progress < 1) { trackFrame.current = requestAnimationFrame(step); return }
+        trackFrame.current = 0
+        onDone?.()
+      }
+      trackFrame.current = requestAnimationFrame(step)
+    }
 
     const sourcePresence = current ? 1 : 0
     const direction = dx ? swipeDirection(dx) : null
@@ -377,10 +408,8 @@ export function EntryView({ userId, workspaceId, bootstrap, setBootstrap, curren
     // Чем ближе карточка уже подтянута пальцем, тем короче доводка — быстрый флик не должен ощущаться вязким.
     const duration = reduced ? 0 : Math.min(300, Math.max(150, Math.abs(destination - offset.current) * 0.55))
     committing.current = true
-    slide(destination, duration)
-    clearTimeout(swapTimer.current)
     // Подмену делаем ровно в той точке, где соседняя карточка встала на место текущей: сдвиг снимет useLayoutEffect до отрисовки.
-    swapTimer.current = setTimeout(() => { swapped.current = true; setCurrentId(target?.id ?? null) }, duration)
+    slide(destination, duration, () => { swapped.current = true; setCurrentId(target?.id ?? null) })
     tap(6)
   }
 
