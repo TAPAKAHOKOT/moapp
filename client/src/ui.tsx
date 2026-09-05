@@ -151,35 +151,44 @@ export function useDialog(onClose: () => void, dismissible = true, instanceKey: 
   return ref
 }
 
-export type ConfirmOptions = { title: string; message: string; confirmLabel: string; danger?: boolean }
+// Вторая кнопка (secondaryLabel) — для развилки «сделать безопасно / всё равно продолжить»: она красная и текстом,
+// главная остаётся кнопкой. Без неё диалог отвечает булевым, как раньше.
+export type ConfirmOptions = { title: string; message: string; confirmLabel: string; danger?: boolean; secondaryLabel?: string }
+export type ConfirmResult = 'confirm' | 'secondary' | false
 
-export function ConfirmSheet({ options, onResult }: { options: ConfirmOptions; onResult: (confirmed: boolean) => void }) {
+export function ConfirmSheet({ options, onResult }: { options: ConfirmOptions; onResult: (result: ConfirmResult) => void }) {
   const dialogRef = useDialog(() => onResult(false))
   return <div className="sheet-backdrop" onMouseDown={() => onResult(false)}>
     <section ref={dialogRef} className="bottom-sheet confirm-sheet" role="alertdialog" aria-modal="true" aria-labelledby="confirm-title" aria-describedby="confirm-message" onMouseDown={(event) => event.stopPropagation()}>
       <div className="sheet-handle"/>
       <h2 id="confirm-title">{options.title}</h2>
       <p id="confirm-message">{options.message}</p>
-      <button type="button" className={`primary${options.danger ? ' danger' : ''}`} onClick={() => onResult(true)}>{options.confirmLabel}</button>
+      <button type="button" className={`primary${options.danger ? ' danger' : ''}`} onClick={() => onResult('confirm')}>{options.confirmLabel}</button>
+      {options.secondaryLabel && <button type="button" className="sheet-cancel danger" onClick={() => onResult('secondary')}>{options.secondaryLabel}</button>}
       <button type="button" className="sheet-cancel" data-dialog-initial-focus onClick={() => onResult(false)}>Отмена</button>
     </section>
   </div>
 }
 
+type Confirm = {
+  (options: ConfirmOptions & { secondaryLabel: string }): Promise<ConfirmResult>
+  (options: ConfirmOptions): Promise<boolean>
+}
+
 export function useConfirm() {
-  const [request, setRequest] = useState<(ConfirmOptions & { resolve: (confirmed: boolean) => void }) | null>(null)
-  const pending = useRef<((confirmed: boolean) => void) | null>(null)
+  const [request, setRequest] = useState<ConfirmOptions | null>(null)
+  const pending = useRef<((result: ConfirmResult) => void) | null>(null)
   useEffect(() => () => pending.current?.(false), [])
-  const confirm = useCallback((options: ConfirmOptions) => new Promise<boolean>((resolve) => {
+  const confirm = useCallback(((options: ConfirmOptions) => new Promise<ConfirmResult | boolean>((resolve) => {
     pending.current?.(false)
-    pending.current = resolve
-    setRequest({ ...options, resolve })
-  }), [])
-  const settle = useCallback((confirmed: boolean) => {
+    pending.current = (result) => resolve(options.secondaryLabel ? result : result === 'confirm')
+    setRequest(options)
+  })) as Confirm, [])
+  const settle = useCallback((result: ConfirmResult) => {
     const current = pending.current
     pending.current = null
     setRequest(null)
-    current?.(confirmed)
+    current?.(result)
   }, [])
   const confirmation = request ? <ConfirmSheet options={request} onResult={settle}/> : null
   return { confirm, confirmation }
