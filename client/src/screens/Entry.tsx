@@ -2,7 +2,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { WorkspaceApiError as ApiError, submitExpenseOperation } from '../workspace-api'
 import { getWorkspacePreference, setWorkspacePreference } from '../app-state'
 import type { Category, Currency, Expense, Tag, WorkspaceSummary } from '../types'
-import { amountToMinor, applyKeypad, cachedNumberFormat, formatAmountInput, isoToLocalInput, localInputToIso, swipeDirection } from '../utils'
+import { amountToMinor, applyKeypad, cachedNumberFormat, formatAmountInput, isoToLocalInput, localInputToIso, mostFrequentCurrency, swipeDirection } from '../utils'
 import { ChevronIcon, CurrencySheet, GridIcon, Toast, TrashIcon, prefersReducedMotion, tap, useConfirm, useDialog, useToast } from '../ui'
 import { amountSize, formatEntryDate, formatShortWeekday, inputFromExpense } from '../format'
 import type { Bootstrap } from '../format'
@@ -236,7 +236,9 @@ export function EntryView({ userId, workspaceId, workspace, bootstrap, setBootst
     }
   }, [currentId])
 
-  const blankForm = () => ({ ...EMPTY_FORM, currency: getWorkspacePreference(userId, workspaceId, 'last-currency') || 'RSD' })
+  // Валюта нового расхода: последняя выбранная вручную, иначе та, в которой в пространстве записывают чаще всего, иначе динар.
+  const defaultCurrency = () => getWorkspacePreference(userId, workspaceId, 'last-currency') || mostFrequentCurrency(bootstrap.expenses) || 'RSD'
+  const blankForm = () => ({ ...EMPTY_FORM, currency: defaultCurrency() })
   useLayoutEffect(() => {
     const base = current ? inputFromExpense(current, bootstrap.currencies) : formHasContent(draft.current) ? draft.current : blankForm()
     // Свежую версию записи подхватываем, только пока пользователь не начал править её сам.
@@ -555,7 +557,7 @@ export function EntryView({ userId, workspaceId, workspace, bootstrap, setBootst
     : { ...blankFace(form.amount, form.currency), date: occurredLabel }
   const olderFace = olderNeighbour ? faceOf(olderNeighbour) : null
   const newerFace = newerNeighbour ? faceOf(newerNeighbour)
-    : currentIndex === 0 ? blankFace(draft.current.amount, draft.current.amount ? draft.current.currency : getWorkspacePreference(userId, workspaceId, 'last-currency') || 'RSD')
+    : currentIndex === 0 ? blankFace(draft.current.amount, draft.current.amount ? draft.current.currency : defaultCurrency())
     : null
   const main = bootstrap.categories.filter((item) => !item.archivedAt && item.placement === 'main').sort((a,b) => a.sortOrder-b.sortOrder)
   const additional = bootstrap.categories.filter((item) => !item.archivedAt && item.placement === 'additional').sort((a,b) => a.sortOrder-b.sortOrder)

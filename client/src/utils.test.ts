@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { amountToMinor, appTimeZone, applyKeypad, convertExpense, countCalendarWeekdays, formatAmountInput, isoToLocalInput, localDateKey, localInputToIso, monthDateRange, shiftDateKey, startOfWeekDateKey, swipeDirection, weekDateRange, weekdayFromDateKey } from './utils'
+import { amountToMinor, appTimeZone, applyKeypad, convertExpense, countCalendarWeekdays, formatAmountInput, isoToLocalInput, localDateKey, localInputToIso, monthDateRange, mostFrequentCurrency, shiftDateKey, startOfWeekDateKey, swipeDirection, weekDateRange, weekdayFromDateKey } from './utils'
 import type { Currency, Expense } from './types'
 
 const currencies: Currency[] = [
@@ -113,5 +113,26 @@ describe('amount display', () => {
     expect(formatAmountInput('12.')).toBe('12,')
     expect(formatAmountInput('12.50')).toBe('12,50')
     expect(formatAmountInput('1000000.5')).toBe('1\u00a0000\u00a0000,5')
+  })
+})
+
+describe('mostFrequentCurrency', () => {
+  const record = (currency: string, occurredAt: string, deletedAt: string | null = null) => ({ currency, occurredAt, deletedAt })
+  it('returns null for a workspace without active expenses', () => {
+    expect(mostFrequentCurrency([])).toBeNull()
+    expect(mostFrequentCurrency([record('EUR', '2026-08-01T10:00:00.000Z', '2026-08-02T10:00:00.000Z')])).toBeNull()
+  })
+  it('picks the currency used most often, ignoring deleted records', () => {
+    expect(mostFrequentCurrency([
+      record('RSD', '2026-08-01T10:00:00.000Z'),
+      record('EUR', '2026-08-02T10:00:00.000Z'),
+      record('EUR', '2026-08-03T10:00:00.000Z'),
+      record('RSD', '2026-08-04T10:00:00.000Z', '2026-08-05T10:00:00.000Z'),
+      record('RSD', '2026-08-06T10:00:00.000Z', '2026-08-07T10:00:00.000Z'),
+    ])).toBe('EUR')
+  })
+  it('breaks a tie in favour of the more recent purchase', () => {
+    expect(mostFrequentCurrency([record('RSD', '2026-08-01T10:00:00.000Z'), record('USD', '2026-08-09T10:00:00.000Z')])).toBe('USD')
+    expect(mostFrequentCurrency([record('USD', '2026-08-01T10:00:00.000Z'), record('RSD', '2026-08-09T10:00:00.000Z')])).toBe('RSD')
   })
 })
