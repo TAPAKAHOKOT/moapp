@@ -1785,9 +1785,12 @@ body {
   background: var(--paper);
 }
 
+/* Список вариантов без линий-разделителей: выбранная строка — скруглённая плашка, которая выходит на 8px за текст. */
 .select-options {
   overflow: auto;
   -webkit-overflow-scrolling: touch;
+  margin: 0 -8px;
+  padding: 0 0 2px;
 }
 
 .bottom-sheet.tall .select-options {
@@ -1797,18 +1800,22 @@ body {
 
 .select-option {
   width: 100%;
-  min-height: 52px;
+  min-height: 50px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 0 4px;
+  padding: 0 12px;
   border: 0;
-  border-bottom: 1px solid var(--line);
+  border-radius: 14px;
   background: transparent;
   color: var(--ink);
   text-align: left;
   font-size: 14px;
+}
+
+.select-option + .select-option {
+  margin-top: 2px;
 }
 
 .select-option>span {
@@ -1828,7 +1835,11 @@ body {
 }
 
 .select-option[aria-selected="true"] {
-  background: color-mix(in srgb,var(--sage) 8%,transparent);
+  background: color-mix(in srgb,var(--sage) 12%,transparent);
+}
+
+:root[data-theme="dark"] .select-option[aria-selected="true"] {
+  background: color-mix(in srgb,var(--sage) 14%,var(--card));
 }
 
 .select-option[aria-selected="true"] svg {
@@ -1977,6 +1988,13 @@ button.tag-chip:disabled {
   border-radius: 4px;
   margin-right: 8px;
   flex: 0 0 auto;
+  background: var(--tag, var(--sage));
+  transition: box-shadow .15s ease;
+}
+
+/* У выбранного тега точка получает кольцо своего цвета — выбор читается и без плашки. */
+.select-option[aria-selected="true"] .tag-dot {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--tag, var(--sage)) 32%, transparent);
 }
 
 .colors .colors-none {
