@@ -872,13 +872,19 @@ describe('workspace onboarding controls', () => {
     outside.remove()
   })
 
-  it('requires recovery-save acknowledgement and supports blocking mode', () => {
+  it('confirms the link by itself once it is copied and hides «Позже» in blocking mode', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(window.navigator, 'clipboard', { configurable: true, value: { writeText } })
     const complete = vi.fn().mockResolvedValue(undefined)
-    render(<RecoverySave prepared={prepared} complete={complete} close={vi.fn()} allowLater={false}/>)
+    const close = vi.fn()
+    render(<RecoverySave prepared={prepared} complete={complete} close={close} allowLater={false}/>)
     expect(screen.queryByRole('button', { name: 'Позже' })).toBeNull()
-    expect((screen.getByRole('button', { name: 'Завершить' }) as HTMLButtonElement).disabled).toBe(true)
-    fireEvent.click(screen.getByRole('checkbox'))
-    expect((screen.getByRole('button', { name: 'Завершить' }) as HTMLButtonElement).disabled).toBe(false)
+    expect(screen.queryByRole('checkbox')).toBeNull()
+    // Один шаг: скопировал — ссылка подтверждена и шит закрыт, без чекбокса и «Завершить».
+    fireEvent.click(screen.getByRole('button', { name: 'Скопировать' }))
+    await waitFor(() => expect(complete).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(close).toHaveBeenCalledTimes(1))
+    expect(writeText).toHaveBeenCalledWith(prepared.recoveryUrl)
   })
 
   it('explains the difference between initial, rotating and public recovery links', () => {
@@ -895,26 +901,25 @@ describe('workspace onboarding controls', () => {
     expect(screen.getByText(/все прежние устройства будут отключены/i)).not.toBeNull()
   })
 
-  it('keeps the recovery link visible after an error and shows the success reminder after completion', async () => {
+  it('keeps the link visible after an error and closes after a successful retry', async () => {
+    Object.defineProperty(window.navigator, 'clipboard', { configurable: true, value: { writeText: vi.fn().mockResolvedValue(undefined) } })
     const complete = vi.fn()
       .mockRejectedValueOnce(new Error('Связь прервалась'))
       .mockResolvedValueOnce(undefined)
     const close = vi.fn()
     render(<RecoverySave prepared={prepared} complete={complete} close={close} mode="rotation" allowLater={false}/>)
 
-    fireEvent.click(screen.getByRole('checkbox'))
-    fireEvent.click(screen.getByRole('button', { name: 'Завершить' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Скопировать' }))
     expect((await screen.findByRole('alert')).textContent).toContain('Связь прервалась')
     expect(screen.getByText(prepared.recoveryUrl)).not.toBeNull()
+    expect(close).not.toHaveBeenCalled()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Завершить' }))
-    expect(await screen.findByRole('heading', { name: 'Новая ссылка сохранена' })).not.toBeNull()
-    expect(screen.getByText(/предыдущая ссылка больше не работает/i)).not.toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: 'Готово' }))
-    expect(close).toHaveBeenCalledTimes(1)
+    fireEvent.click(screen.getByRole('button', { name: 'Повторить' }))
+    await waitFor(() => expect(close).toHaveBeenCalledTimes(1))
+    expect(complete).toHaveBeenCalledTimes(2)
   })
 
-  it('keeps the original opener through recovery completion and restores focus on close', async () => {
+  it('starts on the copy action and restores focus to the opener on close', async () => {
     const opener = document.createElement('button')
     opener.textContent = 'Открыть восстановление'
     document.body.append(opener)
@@ -923,12 +928,6 @@ describe('workspace onboarding controls', () => {
     const view = render(<RecoverySave prepared={prepared} complete={vi.fn().mockResolvedValue(undefined)} close={close} mode="rotation"/>)
     await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Скопировать' })))
 
-    fireEvent.click(screen.getByRole('checkbox'))
-    fireEvent.click(screen.getByRole('button', { name: 'Завершить' }))
-    const done = await screen.findByRole('button', { name: 'Готово' })
-    await waitFor(() => expect(document.activeElement).toBe(done))
-    fireEvent.keyDown(document, { key: 'Tab' })
-    expect(document.activeElement).toBe(done)
     fireEvent.keyDown(document, { key: 'Escape' })
     expect(close).toHaveBeenCalledTimes(1)
 
@@ -950,12 +949,14 @@ describe('workspace onboarding controls', () => {
 
   it('keeps a visible fallback when clipboard access is unavailable', async () => {
     Object.defineProperty(window.navigator, 'clipboard', { configurable: true, value: undefined })
-    render(<RecoverySave prepared={prepared} complete={vi.fn().mockResolvedValue(undefined)} close={vi.fn()}/>)
+    const complete = vi.fn().mockResolvedValue(undefined)
+    render(<RecoverySave prepared={prepared} complete={complete} close={vi.fn()}/>)
 
     fireEvent.click(screen.getByRole('button', { name: 'Скопировать' }))
 
     expect((await screen.findByRole('alert')).textContent).toContain('Копирование недоступно')
     expect(screen.getByText(prepared.recoveryUrl)).not.toBeNull()
+    expect(complete).not.toHaveBeenCalled()
   })
 
   it('retries a transient capability action with the same in-memory token and attempt', async () => {
@@ -1022,6 +1023,6 @@ describe('workspace onboarding controls', () => {
     fireEvent.click(connect)
 
     expect(await screen.findByRole('button', { name: 'Выйти и продолжить' })).not.toBeNull()
-    expect(screen.getByText(/ссылка относится к другому профилю/i)).not.toBeNull()
+    expect(screen.getByText(/ссылка от другого профиля/i)).not.toBeNull()
   })
 })

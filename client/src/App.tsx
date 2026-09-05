@@ -1253,10 +1253,12 @@ const HistoryRow = memo(function HistoryRow({ expense, category, tags, currencie
 const SearchIcon = () => <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/></svg>
 
 type HistoryInbox = { count: number; onOpen: () => void }
+type HistoryReminder = { onSave: () => void }
+const LockIcon = () => <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2.5"/><path d="M8 11V7.5a4 4 0 0 1 8 0V11"/></svg>
 
 // Вкладка не размонтируется, пока открыто пространство, поэтому она не должна перерисовываться от чужих
 // изменений состояния приложения — только от своих данных и колбэков (все они стабильны у родителя).
-export const HistoryView = memo(function HistoryView({ userId, workspaceId, bootstrap, setBootstrap, edit, createNew, refreshPending, inbox = null }: {
+export const HistoryView = memo(function HistoryView({ userId, workspaceId, bootstrap, setBootstrap, edit, createNew, refreshPending, inbox = null, reminder = null }: {
   userId: string
   workspaceId: string
   bootstrap: Bootstrap
@@ -1265,6 +1267,7 @@ export const HistoryView = memo(function HistoryView({ userId, workspaceId, boot
   createNew: () => void
   refreshPending: () => void
   inbox?: HistoryInbox | null
+  reminder?: HistoryReminder | null
 }) {
   const [filters, setFilters] = useState<HistoryPreferences>(() => parseHistoryPreferences(
     getWorkspacePreference(userId, workspaceId, 'history-filters'),
@@ -1473,6 +1476,7 @@ export const HistoryView = memo(function HistoryView({ userId, workspaceId, boot
       </div>
       {showParts && totalParts && <p className="history-total-parts">{totalParts}{totals.missing.length ? ` · нет курса: ${totals.missing.join(', ')}` : ''}</p>}
     </div>}
+    {reminder && !selected.size && <div className="history-inbox history-reminder"><span className="reminder-mark"><LockIcon/></span><span><b>Сохраните ссылку доступа</b><small>Иначе без этого телефона расходы не вернуть</small></span><button type="button" className="reminder-action" onClick={reminder.onSave}>Сохранить</button></div>}
     {inbox && inbox.count > 0 && !selected.size && <button type="button" className="history-inbox" onClick={inbox.onOpen}><span className="bybit-mark">B</span><span><b>{inbox.count} {pluralRu(inbox.count, ['операция с карты ждёт', 'операции с карты ждут', 'операций с карты ждут'])} разбора</b><small>Выбрать категории</small></span><ChevronIcon/></button>}
     <div className={`history-list${selected.size ? ' selecting' : ''}`}>{groups.map(({ date, items, total }) => <div key={date} className="history-day"><div className="history-date"><span>{formatHistoryDate(date)}</span>{total && <b>{total}</b>}</div>{items.map((expense) => <HistoryRow key={expense.id} expense={expense} category={categoryMap.get(expense.categoryId)} tags={tags} currencies={bootstrap.currencies} checked={selected.has(expense.id)} selecting={selected.size > 0} open={openRow === expense.id} disabled={deleting} onOpen={setOpenRow} onToggle={toggle} onEdit={editRow} onDelete={deleteRow} onVoided={setVoided}/>)}</div>)}</div>
     {!groups.length && <div className="list-empty" role="status"><span>{filtersActive ? 'Ничего не найдено' : 'История пока пуста'}</span><p>{filtersActive ? 'Измените фильтры или сбросьте их.' : 'Добавьте первый расход — он сразу появится здесь.'}</p>{!filtersActive && <button type="button" className="primary history-empty-action" onClick={createNew}>Добавить первый расход</button>}</div>}
@@ -1814,6 +1818,7 @@ function AccessSettings({ user, workspace, pendingCount, online, onSession, onNo
       throw new Error('Не удалось подтвердить новую ссылку. Не удаляйте предыдущую, пока не повторите.')
     }
     await onSession(outcome.session)
+    onNotice('Ссылка доступа сохранена')
   }
 
   const runAction = async (key: string, action: () => Promise<void>, fallback: string, success?: string) => {
@@ -2302,7 +2307,7 @@ function SyncIssuesSheet({ userId, workspaceId, bootstrap, online, onClose, onRe
   const {confirm,confirmation}=useConfirm()
   const reload=useCallback(async()=>{
     try{const all=await readOutbox(userId,workspaceId);setItems(all.filter(isOutboxIssue).sort((left,right)=>left.createdAt.localeCompare(right.createdAt)))}
-    catch{setError('Не удалось прочитать локальную очередь.')}
+    catch{setError('Не удалось прочитать очередь отправки.')}
     finally{setLoading(false)}
   },[userId,workspaceId])
   useEffect(()=>{void reload()},[reload])
@@ -2313,21 +2318,21 @@ function SyncIssuesSheet({ userId, workspaceId, bootstrap, online, onClose, onRe
     finally{await reload();setBusy(null)}
   }
   const discardOne=async(item:WorkspaceOutboxItem)=>{
-    if(!await confirm({title:'Отменить это изменение?',message:'Локальная версия расхода будет удалена, вместо неё останется то, что сохранено на сервере.',confirmLabel:'Отменить изменение',danger:true}))return
+    if(!await confirm({title:'Отменить это изменение?',message:'Ваша версия расхода удалится, останется та, что на сервере.',confirmLabel:'Отменить изменение',danger:true}))return
     setBusy(item.operationId);setError('');setNotice('')
-    try{await onDiscard([item.operationId]);setNotice('Изменение отменено, показана серверная версия.')}
+    try{await onDiscard([item.operationId]);setNotice('Изменение отменено, показана версия с сервера.')}
     catch(reason){setError(reason instanceof Error?reason.message:'Не удалось отменить изменение')}
     finally{await reload();setBusy(null)}
   }
   const discardAll=async()=>{
-    if(!await confirm({title:'Отменить все проблемные изменения?',message:'Локальные версии этих расходов будут удалены из очереди. После обновления приложение покажет серверные данные.',confirmLabel:'Отменить изменения',danger:true}))return
+    if(!await confirm({title:'Отменить все проблемные изменения?',message:'Ваши версии этих расходов удалятся, останутся те, что на сервере.',confirmLabel:'Отменить изменения',danger:true}))return
     setBusy('all');setError('');setNotice('')
     try{await onDiscard()}
     catch(reason){setError(reason instanceof Error?reason.message:'Не удалось очистить проблемные изменения');await reload();setBusy(null)}
   }
   return <><div className="sheet-backdrop" onMouseDown={()=>{if(busy===null)onClose()}}><section ref={dialogRef} className="bottom-sheet sync-issues-sheet" role="dialog" aria-modal="true" aria-labelledby="sync-issues-title" onMouseDown={(event)=>event.stopPropagation()}>
-    <div className="sheet-handle"/><div className="sheet-title"><h2 id="sync-issues-title">Не сохранено на сервере</h2><button type="button" className="icon-button" data-dialog-initial-focus disabled={busy!==null} onClick={onClose} aria-label="Закрыть">×</button></div>
-    <p>Эти изменения остались только на этом устройстве: сервер их не принял. Их можно отправить ещё раз или отменить — тогда вернётся серверная версия.</p>
+    <div className="sheet-handle"/><div className="sheet-title"><h2 id="sync-issues-title">Не отправлено</h2><button type="button" className="icon-button" data-dialog-initial-focus disabled={busy!==null} onClick={onClose} aria-label="Закрыть">×</button></div>
+    <p>Эти изменения остались только на этом телефоне: сервер их не принял. Их можно отправить ещё раз или отменить — тогда вернётся версия с сервера.</p>
     {loading&&<p className="management-state" role="status">Проверяем очередь…</p>}
     <div className="sync-issue-list">{items.map((item)=>{
       const summary=summarizeOutboxItem(item,bootstrap)
@@ -2365,7 +2370,7 @@ export function CreateWorkspaceSheet({ existing, onClose, onCreate }: { existing
   const stableId = useRef(crypto.randomUUID())
   const dialogRef=useDialog(onClose,!busy)
   const submit=()=>{if(!name.trim()||!existing&&!displayName.trim()){setValidation(!existing&&!displayName.trim()?'Введите ваше имя.':'Введите название пространства.');return}setValidation('');setBusy(true);void onCreate(stableId.current,name.trim(),existing?undefined:displayName.trim()).finally(()=>setBusy(false))}
-  return <div className="sheet-backdrop" onMouseDown={()=>{if(!busy)onClose()}}><form ref={dialogRef as React.Ref<HTMLFormElement>} className="bottom-sheet editor" role="dialog" aria-modal="true" aria-labelledby="create-workspace-title" noValidate onMouseDown={(event)=>event.stopPropagation()} onSubmit={(event)=>{event.preventDefault();submit()}}><div className="sheet-handle"/><div className="sheet-title"><h2 id="create-workspace-title">Создать пространство</h2><button type="button" className="icon-button" data-dialog-initial-focus disabled={busy} aria-label="Закрыть" onClick={onClose}>×</button></div>{!existing&&<label>Как вас называть<input maxLength={80} aria-invalid={Boolean(validation&&!displayName.trim())} value={displayName} onChange={(event)=>{setValidation('');setDisplayName(event.target.value)}}/></label>}<label>Название пространства<input maxLength={80} aria-invalid={Boolean(validation&&!name.trim())} value={name} onChange={(event)=>{setValidation('');setName(event.target.value)}}/></label>{validation&&<p className="form-error" role="alert">{validation}</p>}<button className="primary" disabled={busy}>{busy?'Создаём…':'Создать пространство'}</button><button type="button" className="sheet-cancel" disabled={busy} onClick={onClose}>Отмена</button></form></div>
+  return <div className="sheet-backdrop" onMouseDown={()=>{if(!busy)onClose()}}><form ref={dialogRef as React.Ref<HTMLFormElement>} className="bottom-sheet editor" role="dialog" aria-modal="true" aria-labelledby="create-workspace-title" noValidate onMouseDown={(event)=>event.stopPropagation()} onSubmit={(event)=>{event.preventDefault();submit()}}><div className="sheet-handle"/><div className="sheet-title"><h2 id="create-workspace-title">Создать пространство</h2><button type="button" className="icon-button" data-dialog-initial-focus disabled={busy} aria-label="Закрыть" onClick={onClose}>×</button></div>{!existing&&<label>Как вас называть<input maxLength={80} placeholder="Например, Ваня" aria-invalid={Boolean(validation&&!displayName.trim())} value={displayName} onChange={(event)=>{setValidation('');setDisplayName(event.target.value)}}/></label>}<label>Название пространства<input maxLength={80} placeholder="Например, Дом или Поездка" aria-invalid={Boolean(validation&&!name.trim())} value={name} onChange={(event)=>{setValidation('');setName(event.target.value)}}/></label>{validation&&<p className="form-error" role="alert">{validation}</p>}<button className="primary" disabled={busy}>{busy?'Создаём…':'Создать пространство'}</button><button type="button" className="sheet-cancel" disabled={busy} onClick={onClose}>Отмена</button></form></div>
 }
 
 // Очередь операций с карты открывается поверх истории и закрывается обратно в неё: это входящие, а не вкладка.
@@ -2383,39 +2388,61 @@ export function WorkspaceSwitcher({ items, active, runtimes, online = navigator.
   return <div className="sheet-backdrop" onMouseDown={close}><section ref={dialogRef} className="bottom-sheet" role="dialog" aria-modal="true" aria-labelledby="workspace-switcher-title" onMouseDown={(event)=>event.stopPropagation()}><div className="sheet-handle"/><div className="sheet-title"><h2 id="workspace-switcher-title">Пространства</h2><button type="button" className="icon-button" onClick={close} aria-label="Закрыть">×</button></div>{items.map((item)=>{const runtime=runtimes[item.id];const disabled=!online&&!runtime?.bootstrap;return <button type="button" data-dialog-initial-focus={item.id===active||undefined} aria-pressed={item.id===active} className="workspace-option" key={item.id} disabled={disabled} onClick={()=>onSelect(item.id)}><span>{item.name}<small>{item.role==='owner'?'Владелец':'Участник'} {runtime?.outbox.total?`· ${runtime.outbox.total} ждут`:''}</small></span>{item.id===active?'✓':disabled?'Нет офлайн-кэша':''}</button>})}<button type="button" className="primary" disabled={!online} onClick={onCreate}>Создать пространство</button></section></div>
 }
 
+// Ссылка доступа — единственный способ вернуться к расходам без этого телефона. Одно действие: поделиться или
+// скопировать; после удачного сохранения ссылка подтверждается сама, а «сохранено» сообщает тост у родителя.
+// Сырой URL показывается только когда ни копирование, ни системное меню не сработали.
 export function RecoverySave({ prepared, complete, close, allowLater = true, mode = 'initial' }: { prepared: RecoveryPrepareResponse; complete: () => Promise<void | boolean>; close: () => void; allowLater?: boolean; mode?: 'initial' | 'rotation' | 'public' }) {
-  const [saved,setSaved]=useState(false); const [busy,setBusy]=useState(false); const [completed,setCompleted]=useState(false); const [error,setError]=useState(''); const [feedback,setFeedback]=useState(''); const [feedbackError,setFeedbackError]=useState(false)
-  const dialogRef=useDialog(close,allowLater||completed)
-  useEffect(()=>{if(!completed)return;requestAnimationFrame(()=>dialogRef.current?.querySelector<HTMLElement>('[data-dialog-initial-focus]')?.focus({preventScroll:true}))},[completed])
+  const [busy,setBusy]=useState(false); const [error,setError]=useState(''); const [feedback,setFeedback]=useState(''); const [feedbackError,setFeedbackError]=useState(false); const [savedOnce,setSavedOnce]=useState(false)
+  const dialogRef=useDialog(close,allowLater&&!busy)
+  const canShare=typeof navigator.share==='function'
   const finish = async () => {
     setBusy(true); setError('')
     try {
       const done = await complete()
-      if (done !== false) setCompleted(true)
+      if (done !== false) close()
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : 'Не удалось завершить. Ссылка остаётся на экране — не закрывайте его.')
+      setError(reason instanceof Error ? reason.message : 'Не удалось подтвердить. Ссылка остаётся на экране — не закрывайте его.')
     } finally { setBusy(false) }
   }
-  const copyRecovery=async()=>{try{await copyText(prepared.recoveryUrl);setFeedbackError(false);setFeedback('Ссылка скопирована')}catch(reason){setFeedbackError(true);setFeedback(reason instanceof Error?reason.message:'Не удалось скопировать ссылку')}}
-  const shareRecovery=async()=>{try{if(typeof navigator.share==='function'){await navigator.share({title:'Ссылка восстановления moapp',url:prepared.recoveryUrl});setFeedbackError(false);setFeedback('Меню «Поделиться» открыто')}else await copyRecovery()}catch(reason){if(reason instanceof DOMException&&reason.name==='AbortError')return;setFeedbackError(true);setFeedback('Не удалось поделиться ссылкой')}}
-  if (completed) return <div className="sheet-backdrop"><section ref={dialogRef} className="bottom-sheet access-sheet" role="dialog" aria-modal="true" aria-labelledby="recovery-complete-title"><div className="sheet-handle"/><h2 id="recovery-complete-title">{mode === 'public' ? 'Доступ восстановлен' : 'Новая ссылка сохранена'}</h2><p>{mode === 'public' ? 'Старая ссылка больше не работает, все прежние устройства отключены. Убедитесь, что новая ссылка сохранена.' : mode === 'rotation' ? 'Предыдущая ссылка больше не работает. Теперь храните новую ссылку.' : 'Восстановление настроено. Храните эту новую ссылку в безопасном месте.'}</p><button type="button" className="primary" data-dialog-initial-focus onClick={close}>Готово</button></section></div>
+  const copyRecovery=async()=>{
+    try{await copyText(prepared.recoveryUrl);setFeedbackError(false);setFeedback('Ссылка скопирована');setSavedOnce(true)}
+    catch(reason){setFeedbackError(true);setFeedback(reason instanceof Error?reason.message:'Не удалось скопировать ссылку');return}
+    await finish()
+  }
+  const shareRecovery=async()=>{
+    if(!canShare){await copyRecovery();return}
+    try{await navigator.share({title:'Ссылка доступа moapp',url:prepared.recoveryUrl});setFeedbackError(false);setFeedback('');setSavedOnce(true)}
+    catch(reason){if(!(reason instanceof DOMException&&reason.name==='AbortError')){setFeedbackError(true);setFeedback('Не удалось поделиться ссылкой')}return}
+    await finish()
+  }
   const warning = mode === 'initial'
-    ? 'Позже показать эту ссылку снова будет нельзя — можно только заменить новой. Любой, у кого есть ссылка, получит полный доступ ко всем вашим пространствам.'
+    ? 'Это единственный способ вернуться к расходам, если телефон потеряется. Отправьте её себе в Заметки или в менеджер паролей: показать эту ссылку снова будет нельзя — только заменить новой. Любой, у кого она есть, получит полный доступ.'
     : mode === 'public'
-      ? 'Сохраните новую ссылку прежде чем продолжить. После завершения старая ссылка перестанет работать, а все прежние устройства будут отключены.'
-      : 'После завершения старая ссылка сразу перестанет работать. Любой, у кого есть новая ссылка, получит полный доступ.'
-  return <div className="sheet-backdrop" onMouseDown={()=>{if(allowLater&&!busy)close()}}><section ref={dialogRef} className="bottom-sheet access-sheet" role="dialog" aria-modal="true" aria-labelledby="recovery-save-title" onMouseDown={(event)=>event.stopPropagation()}><div className="sheet-handle"/><h2 id="recovery-save-title">Сохраните ссылку восстановления</h2><p>{warning}</p><p>Подтвердить нужно до {new Date(prepared.expiresAt).toLocaleString('ru-RU',{dateStyle:'short',timeStyle:'short'})}.</p><div className="qr"><QRCodeSVG value={prepared.recoveryUrl} size={180}/></div><code className="access-link">{prepared.recoveryUrl}</code>{feedback&&<p className="inline-feedback" role={feedbackError?'alert':'status'}>{feedback}</p>}<button type="button" className="sheet-cancel" data-dialog-initial-focus onClick={()=>void copyRecovery()}>Скопировать</button>{typeof navigator.share==='function'&&<button type="button" className="sheet-cancel" onClick={()=>void shareRecovery()}>Поделиться</button>}<label className="check-line"><input type="checkbox" checked={saved} onChange={(event)=>setSaved(event.target.checked)}/> Я сохранил ссылку</label>{error&&<p className="form-error" role="alert">{error}</p>}<button type="button" className="primary" disabled={!saved||busy} onClick={()=>void finish()}>{busy?'Проверяем…':'Завершить'}</button>{allowLater&&<button type="button" className="sheet-cancel" disabled={busy} onClick={close}>Позже</button>}</section></div>
+      ? 'Сохраните новую ссылку прежде чем продолжить: старая перестанет работать, а все прежние устройства будут отключены.'
+      : 'Старая ссылка сразу перестанет работать. Любой, у кого есть новая, получит полный доступ.'
+  return <div className="sheet-backdrop" onMouseDown={()=>{if(allowLater&&!busy)close()}}><section ref={dialogRef} className="bottom-sheet access-sheet" role="dialog" aria-modal="true" aria-labelledby="recovery-save-title" onMouseDown={(event)=>event.stopPropagation()}>
+    <div className="sheet-handle"/><h2 id="recovery-save-title">Сохраните ссылку доступа</h2><p className="sheet-copy">{warning}</p>
+    <div className="qr"><QRCodeSVG value={prepared.recoveryUrl} size={150}/></div>
+    {(feedbackError||error)&&<code className="access-link">{prepared.recoveryUrl}</code>}
+    {feedback&&<p className="inline-feedback" role={feedbackError?'alert':'status'}>{feedback}</p>}
+    {error&&<p className="form-error" role="alert">{error}</p>}
+    {canShare
+      ? <><button type="button" className="primary" data-dialog-initial-focus disabled={busy} onClick={()=>void shareRecovery()}>{busy?'Подтверждаем…':'Поделиться'}</button><button type="button" className="sheet-cancel" disabled={busy} onClick={()=>void copyRecovery()}>Скопировать</button></>
+      : <button type="button" className="primary" data-dialog-initial-focus disabled={busy} onClick={()=>void copyRecovery()}>{busy?'Подтверждаем…':'Скопировать'}</button>}
+    {error&&savedOnce&&<button type="button" className="sheet-cancel" disabled={busy} onClick={()=>void finish()}>Повторить</button>}
+    {allowLater&&<button type="button" className="sheet-cancel" disabled={busy} onClick={close}>Позже</button>}
+  </section></div>
 }
 
 function LegacyClaimFlow({ hydrate, cancel }: { hydrate: (session: SessionState) => Promise<void>; cancel: () => void }) {
   const [name,setName]=useState(''); const [pin,setPin]=useState(''); const [busy,setBusy]=useState(false); const [error,setError]=useState(''); const attempt=useRef<string>(generateAttemptToken())
   const claim=async(event: React.FormEvent)=>{event.preventDefault();if(!name.trim()||!pin.trim()){setError(!name.trim()?'Введите ваше имя.':'Введите общий PIN.');return}setBusy(true);setError('');try{await hydrate(await legacyClaim(pin,name.trim(),attempt.current))}catch(reason){setError(reason instanceof ApiError&&reason.code==='CLAIM_IN_PROGRESS'?'Перенос уже выполняется в другой вкладке.':'PIN не подошёл или попытка временно ограничена.')}finally{setBusy(false)}}
-  return <main className="empty-state"><div className="brand-mark">m</div><p className="eyebrow">Существующие расходы</p><h1>Перенести данные</h1><p>Укажите имя и действующий общий PIN. Затем нужно обязательно настроить восстановление.</p><form noValidate onSubmit={claim}><label>Ваше имя<input aria-invalid={Boolean(error&&!name.trim())} value={name} onChange={(event)=>{setError('');setName(event.target.value)}}/></label><label>Общий PIN<input aria-invalid={Boolean(error&&!pin.trim())} type="password" value={pin} onChange={(event)=>{setError('');setPin(event.target.value)}}/></label>{error&&<p className="form-error" role="alert">{error}</p>}<button className="primary" disabled={busy}>{busy?'Проверяем…':'Продолжить'}</button><button type="button" className="sheet-cancel" disabled={busy} onClick={cancel}>Назад</button></form></main>
+  return <main className="empty-state"><div className="brand-mark">m</div><p className="eyebrow">Существующие расходы</p><h1>Перенести данные</h1><p>Укажите имя и действующий общий PIN. Затем нужно будет сохранить ссылку доступа.</p><form noValidate onSubmit={claim}><label>Ваше имя<input aria-invalid={Boolean(error&&!name.trim())} value={name} onChange={(event)=>{setError('');setName(event.target.value)}}/></label><label>Общий PIN<input aria-invalid={Boolean(error&&!pin.trim())} type="password" value={pin} onChange={(event)=>{setError('');setPin(event.target.value)}}/></label>{error&&<p className="form-error" role="alert">{error}</p>}<button className="primary" disabled={busy}>{busy?'Проверяем…':'Продолжить'}</button><button type="button" className="sheet-cancel" disabled={busy} onClick={cancel}>Назад</button></form></main>
 }
 
 function RestrictedRecovery({ session, hydrate }: { session: AuthenticatedSession; hydrate: (session: SessionState) => Promise<void> }) {
   const [prepared,setPrepared]=useState<RecoveryPrepareResponse|null>(null); const [publicRecovery,setPublicRecovery]=useState(false); const [error,setError]=useState(''); const started=useRef(false)
-  useEffect(()=>{if(started.current)return;started.current=true;void prepareInitialOrManualRecovery().then(setPrepared,(reason)=>setError(reason instanceof ApiError?reason.message:'Не удалось подготовить восстановление'))},[])
+  useEffect(()=>{if(started.current)return;started.current=true;void prepareInitialOrManualRecovery().then(setPrepared,(reason)=>setError(reason instanceof ApiError?reason.message:'Не удалось подготовить ссылку доступа'))},[])
   if(prepared)return <RecoverySave key={prepared.completionToken} prepared={prepared} mode={publicRecovery?'public':'initial'} allowLater={false} close={()=>{}} complete={async()=>{
     const outcome=publicRecovery
       ?await completeRecoverySafely({prepared,targetUserId:session.user.id})
@@ -2424,16 +2451,16 @@ function RestrictedRecovery({ session, hydrate }: { session: AuthenticatedSessio
     if(outcome.status==='replacement-active-needs-recovery'){
       setPrepared(await prepareRecovery(outcome.replacementToken));setPublicRecovery(true);return false
     }
-    throw new Error(outcome.status==='rotation-stale'?'Параллельно была завершена другая настройка восстановления.':'Не удалось подтвердить сохранение ссылки. Не закрывайте экран и повторите попытку.')
+    throw new Error(outcome.status==='rotation-stale'?'Параллельно была сохранена другая ссылка доступа.':'Не удалось подтвердить ссылку. Не закрывайте экран и повторите попытку.')
   }}/>
-  return <main className="empty-state"><div className="brand-mark">m</div><h1>Защитите профиль</h1><p role={error?'alert':'status'}>{error||'Готовим ссылку восстановления…'}</p></main>
+  return <main className="empty-state"><div className="brand-mark">m</div><h1>Сохраните ссылку доступа</h1><p role={error?'alert':'status'}>{error||'Готовим ссылку доступа…'}</p></main>
 }
 
 export function CapabilityScreen({ intent, session, knownUserId, finish, close, resolveIdentityConflict }: {
   intent: CapabilityIntent
   session: SessionState | null
   knownUserId: string | null
-  finish: (session: SessionState, workspaceId?: string, offerRecovery?: boolean) => Promise<void>
+  finish: (session: SessionState, workspaceId?: string) => Promise<void>
   close: () => void
   resolveIdentityConflict: (targetUserId: string | null) => Promise<void>
 }) {
@@ -2461,23 +2488,23 @@ export function CapabilityScreen({ intent, session, knownUserId, finish, close, 
           const value=await previewInvitation(intent.token)
           if(!active)return
           setWorkspaceTarget(value.workspace.id);setCopy(`Присоединиться к «${value.workspace.name}»`)
-          if(knownUserId&&!session?.authenticated){setConflict(true);setError('В браузере сохранён другой профиль. Сначала восстановите его или явно удалите локальные данные.')}
+          if(knownUserId&&!session?.authenticated){setConflict(true);setError('На этом телефоне уже есть другой профиль. Сначала войдите в него по ссылке доступа или удалите его данные.')}
         }else if(intent.kind==='device'){
           const value=await previewDeviceLink(intent.token)
           if(!active)return
           setTargetUserId(value.targetUserId);setCopy(`Подключить устройство к профилю «${value.displayName}»`)
-          if(activeUserId&&activeUserId!==value.targetUserId){setConflict(true);setError('Ссылка относится к другому профилю. Для продолжения нужно выйти и удалить локальные данные текущего профиля.')}
+          if(activeUserId&&activeUserId!==value.targetUserId){setConflict(true);setError('Ссылка от другого профиля. Чтобы продолжить, нужно выйти из текущего — его данные удалятся с этого телефона.')}
         }else{
           const value=await previewRecovery(intent.token)
           if(!active)return
-          setTargetUserId(value.targetUserId);setCopy(`Восстановить профиль «${value.displayName}»`)
-          if(activeUserId&&activeUserId!==value.targetUserId){setConflict(true);setError('Ссылка относится к другому профилю. Для продолжения нужно выйти и удалить локальные данные текущего профиля.')}
+          setTargetUserId(value.targetUserId);setCopy(`Вернуть доступ к профилю «${value.displayName}»`)
+          if(activeUserId&&activeUserId!==value.targetUserId){setConflict(true);setError('Ссылка от другого профиля. Чтобы продолжить, нужно выйти из текущего — его данные удалятся с этого телефона.')}
         }
         if(active)setReady(true)
       }catch(reason){
         if(!active)return
         if(reason instanceof ApiError&&reason.code==='IDENTITY_CONFLICT'){
-          setConflict(true);setError('Ссылка относится к другому профилю. Для продолжения нужно подтвердить выход из текущего профиля.')
+          setConflict(true);setError('Ссылка от другого профиля. Чтобы продолжить, нужно выйти из текущего.')
         }else setError(reason instanceof ApiError&&isLinkInvalid(reason)?'Ссылка недействительна или больше не действует.':'Не удалось проверить ссылку.')
       }
     }
@@ -2492,10 +2519,9 @@ export function CapabilityScreen({ intent, session, knownUserId, finish, close, 
       if(intent.kind==='invite'){
         if(!workspaceTarget)throw new Error('Не удалось определить пространство')
         let current=session
-        const created=!current?.authenticated
         if(!current?.authenticated){current=await createIdentityWithProbe(name);allowWorkspaceMutations()}
         const accepted=await acceptInvitationWithProbe(intent.token,workspaceTarget)
-        await finish(accepted,workspaceTarget,created&&!accepted.user.recoveryConfigured)
+        await finish(accepted,workspaceTarget)
         return
       }
       if(intent.kind==='device'){
@@ -2507,7 +2533,7 @@ export function CapabilityScreen({ intent, session, knownUserId, finish, close, 
       setPrepared(await prepareRecovery(intent.token))
     }catch(reason){
       if((reason instanceof ApiError&&reason.code==='IDENTITY_CONFLICT')||(reason instanceof AccessFlowError&&reason.code==='IDENTITY_CONFLICT')){
-        setConflict(true);setError('Ссылка относится к другому профилю. Для продолжения нужно подтвердить выход из текущего профиля.')
+        setConflict(true);setError('Ссылка от другого профиля. Чтобы продолжить, нужно выйти из текущего.')
       }else setError(reason instanceof ApiError||reason instanceof Error?reason.message:'Не удалось продолжить')
     }
     finally{setBusy(false)}
@@ -2520,17 +2546,17 @@ export function CapabilityScreen({ intent, session, knownUserId, finish, close, 
     if(outcome.status==='replacement-active-needs-recovery'){
       const next=await prepareRecovery(outcome.replacementToken)
       setPrepared(next)
-      setError('Ответ был потерян. Сохраните показанную заменяющую ссылку и подтвердите её ещё раз.')
+      setError('Ответ сервера потерялся. Сохраните показанную новую ссылку и подтвердите её ещё раз.')
       return false
     }
     if(outcome.status==='rotation-stale')throw new Error('Параллельно была завершена другая замена ссылки. Используйте последнюю подтверждённую ссылку.')
-    throw new Error('Не удалось подтвердить восстановление. Не удаляйте показанную ссылку и повторите с активного устройства.')
+    throw new Error('Не удалось подтвердить ссылку. Не удаляйте показанную и повторите с активного устройства.')
   }
 
   if(prepared)return <RecoverySave key={prepared.completionToken} prepared={prepared} mode="public" allowLater={false} close={close} complete={completePublicRecovery}/>
-  return <><main className="empty-state"><div className="brand-mark">m</div><p className="eyebrow">Безопасная ссылка</p><h1>{intent.kind==='invite'?'Приглашение':intent.kind==='device'?'Новое устройство':'Восстановление'}</h1><p>{error||copy}</p>
-    {intent.kind==='invite'&&!session?.authenticated&&!conflict&&<label>Как вас называть<input aria-invalid={Boolean(error&&!name.trim())} value={name} onChange={(event)=>{setError('');setName(event.target.value)}}/></label>}
-    {conflict?<button type="button" className="primary danger" disabled={!online||busy} onClick={()=>void (async()=>{if(!await confirm({title:'Выйти из текущего профиля?',message:'Локальные данные текущего профиля будут удалены с этого устройства.',confirmLabel:'Выйти и продолжить',danger:true}))return;setBusy(true);void resolveIdentityConflict(targetUserId).catch((reason)=>setError(reason instanceof Error?reason.message:'Не удалось выйти')).finally(()=>setBusy(false))})()}>{busy?'Выходим…':'Выйти и продолжить'}</button>:<button type="button" className="primary" disabled={!ready||busy||intent.kind==='invite'&&!session?.authenticated&&!name.trim()} onClick={()=>void proceed()}>{busy?'Проверяем…':intent.kind==='invite'?'Присоединиться':intent.kind==='device'?'Подключить':'Восстановить доступ'}</button>}
+  return <><main className="empty-state"><div className="brand-mark">m</div><p className="eyebrow">Безопасная ссылка</p><h1>{intent.kind==='invite'?'Приглашение':intent.kind==='device'?'Новое устройство':'Ссылка доступа'}</h1><p>{error||copy}</p>
+    {intent.kind==='invite'&&!session?.authenticated&&!conflict&&<label>Как вас называть<input placeholder="Например, Ваня" aria-invalid={Boolean(error&&!name.trim())} value={name} onChange={(event)=>{setError('');setName(event.target.value)}}/></label>}
+    {conflict?<button type="button" className="primary danger" disabled={!online||busy} onClick={()=>void (async()=>{if(!await confirm({title:'Выйти из текущего профиля?',message:'Его данные удалятся с этого телефона.',confirmLabel:'Выйти и продолжить',danger:true}))return;setBusy(true);void resolveIdentityConflict(targetUserId).catch((reason)=>setError(reason instanceof Error?reason.message:'Не удалось выйти')).finally(()=>setBusy(false))})()}>{busy?'Выходим…':'Выйти и продолжить'}</button>:<button type="button" className="primary" disabled={!ready||busy||intent.kind==='invite'&&!session?.authenticated&&!name.trim()} onClick={()=>void proceed()}>{busy?'Проверяем…':intent.kind==='invite'?'Присоединиться':intent.kind==='device'?'Подключить':'Вернуть доступ'}</button>}
     <button className="sheet-cancel" disabled={busy} onClick={close}>Закрыть</button>
   </main>{confirmation}</>
 }
@@ -2643,7 +2669,7 @@ export default function App({ capability = null }: { capability?: CapabilityInte
           }
         }
         const locked=createAppState(capabilityRef.current);locked.knownUserId=known;locked.phase=capabilityRef.current?'capability':'known-user-locked';commitState(locked)
-        setError('Нет подключения: локальная сессия недоступна, истекла или ещё не содержит сохранённого пространства.')
+        setError('Нет связи с сервером, а сохранённых на этом телефоне данных нет.')
         return
       }
       const guest=createAppState(capabilityRef.current);guest.session=currentState.session?.authenticated?null:currentState.session;guest.phase=capabilityRef.current?'capability':'guest';commitState(guest)
@@ -2745,6 +2771,14 @@ export default function App({ capability = null }: { capability?: CapabilityInte
   const openReview=useCallback(()=>setReviewOpen(true),[])
   const reviewCount=reviewConnected?bybitStatus?.pendingCount??0:0
   const historyInbox=useMemo(()=>reviewCount?{count:reviewCount,onOpen:openReview}:null,[reviewCount,openReview])
+  // Ссылку доступа предлагаем спокойной карточкой над историей после первого расхода, а не тремя модалками при первом запуске.
+  const recoveryNeeded=Boolean(auth&&!auth.user.recoveryConfigured&&!auth.restrictedToRecovery)
+  const hasExpenses=Boolean(workspaceId&&state.runtimes[workspaceId]?.bootstrap?.expenses.some((expense)=>!expense.deletedAt))
+  const openRecoverySave=useCallback(async()=>{
+    try{setInitialRecovery(await prepareInitialOrManualRecovery())}
+    catch(reason){setError(reason instanceof ApiError?reason.message:'Не удалось подготовить ссылку доступа')}
+  },[])
+  const historyReminder=useMemo(()=>recoveryNeeded&&hasExpenses&&online?{onSave:()=>void openRecoverySave()}:null,[recoveryNeeded,hasExpenses,online,openRecoverySave])
 
   // A Bybit sync can change expenses server-side (declined operations void their expense); pull the
   // workspace again without the loading state so history and analytics reflect it immediately.
@@ -2834,26 +2868,18 @@ export default function App({ capability = null }: { capability?: CapabilityInte
       setCreateOpen(false);setSwitchOpen(false);setCurrentId(null);setTab('entry')
       setNotice(`Пространство «${name.trim()}» создано`)
       if(createdIdentity)coordinator.current?.announce(next.user.id,next.currentSessionId)
-      if(!next.user.recoveryConfigured){
-        try{setInitialRecovery(await prepareInitialOrManualRecovery())}
-        catch(reason){setError(`Пространство создано, но восстановление пока не настроено: ${reason instanceof ApiError?reason.message:'повторите в настройках'}`)}
-      }
     }catch(reason){setError(reason instanceof ApiError||reason instanceof Error?reason.message:'Не удалось создать пространство')}
   }
 
   const closeIntent=()=>{capabilityRef.current=null;updateState(closeCapability)}
-  const finishIntent=async(next:SessionState,targetWorkspaceId?:string,offerRecovery=false)=>{
+  const finishIntent=async(next:SessionState,targetWorkspaceId?:string)=>{
     const finishedKind=capabilityRef.current?.kind
     capabilityRef.current=null
     let built=await buildState(next,null)
     if(targetWorkspaceId)built=setActiveWorkspace(built,targetWorkspaceId)
     commitState(built)
     if(next.authenticated)coordinator.current?.announce(next.user.id,next.currentSessionId)
-    if(finishedKind==='recovery')setNotice('Доступ восстановлен. Старая ссылка больше не работает, все прежние устройства отключены. Храните новую ссылку.')
-    if(offerRecovery&&next.authenticated&&!next.user.recoveryConfigured){
-      try{setInitialRecovery(await prepareInitialOrManualRecovery())}
-      catch(reason){setError(reason instanceof ApiError?reason.message:'Настройте восстановление позже в настройках')}
-    }
+    if(finishedKind==='recovery')setNotice('Доступ возвращён. Старая ссылка больше не работает, прежние устройства отключены. Сохраните новую.')
   }
 
   const resolveIdentityConflict=async(targetUserId:string|null)=>{
@@ -2870,7 +2896,7 @@ export default function App({ capability = null }: { capability?: CapabilityInte
       const verifiedSession=current.session??await getSession()
       const pending=forgetKnownProfile(true,verifiedSession)
       const locked=createAppState(capabilityRef.current);locked.phase='capability';commitState(locked)
-      if(!await pending)throw new Error('Не удалось удалить локальный профиль')
+      if(!await pending)throw new Error('Не удалось удалить данные профиля')
     }
     coordinator.current?.announce(null,null)
     await hydrate(await getSession())
@@ -2891,17 +2917,17 @@ export default function App({ capability = null }: { capability?: CapabilityInte
   }
 
   const forgetCurrent=async()=>{
-    if(!await confirm({title:'Забыть локальный профиль?',message:'Профиль, офлайн-кэш и несинхронизированные изменения будут удалены с этого устройства.',confirmLabel:'Удалить профиль',danger:true}))return
+    if(!await confirm({title:'Начать заново?',message:'Данные этого профиля удалятся с телефона, включая расходы, которые не успели отправиться. Если ссылка доступа сохранена, лучше открыть её.',confirmLabel:'Начать заново',danger:true}))return
     const current=stateRef.current
-    if(!online||!current.session){setError('Подключитесь к интернету, чтобы безопасно удалить профиль с этого устройства.');return}
+    if(!online||!current.session){setError('Подключитесь к интернету, чтобы начать заново.');return}
     stopNetwork()
     const pending=forgetKnownProfile(online,current.session)
     capabilityRef.current=null;commitState(createLoggedOutState());coordinator.current?.announce(null,null)
     try{
       const forgotten=await pending
-      if(!forgotten){setError('Не удалось безопасно удалить профиль. Подключитесь к интернету и повторите.');return}
+      if(!forgotten){setError('Не удалось удалить данные профиля. Подключитесь к интернету и повторите.');return}
       await refresh()
-    }catch(reason){setError(reason instanceof Error?reason.message:'Не удалось удалить локальные данные. Повторите попытку.')}
+    }catch(reason){setError(reason instanceof Error?reason.message:'Не удалось удалить данные профиля. Повторите попытку.')}
   }
 
   const logoutUnexpected=async()=>{
@@ -2975,8 +3001,8 @@ if(Math.abs(node.scrollLeft-pagerTarget.current)>1)node.scrollLeft=pagerTarget.c
   if(state.phase==='checking')return <div className="splash"><div className="brand-mark">m</div>{error&&<p>{error}</p>}</div>
   if(state.capability)return <CapabilityScreen intent={state.capability} session={session} knownUserId={state.knownUserId} finish={finishIntent} close={closeIntent} resolveIdentityConflict={resolveIdentityConflict}/>
   if(state.phase==='legacy-claim')return <LegacyClaimFlow hydrate={(next)=>hydrate(next,true)} cancel={()=>updateState((value)=>({...value,phase:'guest'}))}/>
-  if(state.phase==='restricted-recovery'&&auth)return <RestrictedRecovery session={auth} hydrate={async(next)=>{await hydrate(next,true);setNotice('Перенос завершён. Новая ссылка восстановления сохранена, старый PIN больше не используется.')}}/>
-  if(state.phase==='guest'||state.phase==='no-workspaces'||state.phase==='known-user-locked')return <><main className="empty-state"><div className="brand-mark">m</div><p className="eyebrow">Общие расходы</p><h1>{state.phase==='known-user-locked'?'Нужно восстановить доступ':'Простой общий учёт расходов'}</h1><p>{state.phase==='known-user-locked'?'Локальные данные защищены. Откройте сохранённую ссылку восстановления или явно удалите профиль с этого устройства.':'Без регистрации, email и пароля.'}</p>{state.phase==='known-user-locked'?<>{state.conflictingSession&&<button type="button" className="primary" disabled={!online} onClick={()=>void logoutUnexpected().catch((reason)=>setError(reason instanceof Error?reason.message:'Не удалось выйти'))}>Выйти из другого профиля</button>}<button type="button" className="danger-link" disabled={!online||!state.session} onClick={()=>void forgetCurrent()}>Забыть локальный профиль</button>{(!online||!state.session)&&<p className="management-state" role="status">Удалить защищённый профиль можно после проверки соединения с сервером.</p>}</>:<><button type="button" className="primary" disabled={!online} onClick={()=>setCreateOpen(true)}>Создать пространство</button>{state.phase==='guest'&&session&&!session.authenticated&&session.legacyClaimAvailable&&<button type="button" className="sheet-cancel" onClick={()=>updateState(openLegacyClaim)}>Продолжить с существующими расходами</button>}</>}{createOpen&&<CreateWorkspaceSheet existing={Boolean(auth)} onClose={()=>setCreateOpen(false)} onCreate={create}/>} {error&&<p className="form-error" role="alert">{error}</p>}</main>{confirmation}</>
+  if(state.phase==='restricted-recovery'&&auth)return <RestrictedRecovery session={auth} hydrate={async(next)=>{await hydrate(next,true);setNotice('Перенос завершён. Ссылка доступа сохранена, старый PIN больше не нужен.')}}/>
+  if(state.phase==='guest'||state.phase==='no-workspaces'||state.phase==='known-user-locked')return <><main className="empty-state"><div className="brand-mark">m</div><p className="eyebrow">Общие расходы</p><h1>{state.phase==='known-user-locked'?'Вход истёк':'Простой общий учёт расходов'}</h1><p>{state.phase==='known-user-locked'?'Откройте ссылку доступа, которую сохраняли, — или начните заново.':'Без регистрации, email и пароля.'}</p>{state.phase==='known-user-locked'?<>{state.conflictingSession&&<button type="button" className="primary" disabled={!online} onClick={()=>void logoutUnexpected().catch((reason)=>setError(reason instanceof Error?reason.message:'Не удалось выйти'))}>Выйти из другого профиля</button>}<button type="button" className={state.conflictingSession?'danger-link':'primary danger'} disabled={!online||!state.session} onClick={()=>void forgetCurrent()}>Начать заново</button>{(!online||!state.session)&&<p className="management-state" role="status">Начать заново можно, когда появится связь с сервером.</p>}</>:<><button type="button" className="primary" disabled={!online} onClick={()=>setCreateOpen(true)}>Создать пространство</button>{state.phase==='guest'&&session&&!session.authenticated&&session.legacyClaimAvailable&&<button type="button" className="sheet-cancel" onClick={()=>updateState(openLegacyClaim)}>Продолжить с существующими расходами</button>}</>}{createOpen&&<CreateWorkspaceSheet existing={Boolean(auth)} onClose={()=>setCreateOpen(false)} onCreate={create}/>} {error&&<p className="form-error" role="alert">{error}</p>}</main>{confirmation}</>
 
   const runtime=workspaceId?state.runtimes[workspaceId]:undefined
   const bootstrap=runtime?.bootstrap
@@ -2987,11 +3013,11 @@ if(Math.abs(node.scrollLeft-pagerTarget.current)>1)node.scrollLeft=pagerTarget.c
   const issueCount=stats.conflicts+stats.failed
   const queuedCount=Math.max(0,stats.total-issueCount)
   return <div className={`app-shell${serverAvailable?'':' offline'}`} key={workspaceId}>
-    <header className="workspace-header"><button type="button" className="workspace-name-button" onClick={()=>setSwitchOpen(true)}><span>{workspace.name}</span><ChevronIcon/></button><div className="workspace-header-actions">{updateWaiting&&<button type="button" className="update-button" onClick={activateUpdate}>Обновить</button>}{issueCount?<button type="button" className="sync-status attention" onClick={()=>setIssuesOpen(true)} aria-label={`Не сохранено на сервере: ${issueCount}. Открыть список`}><span>Не сохранено · {issueCount}</span><i/></button>:serverAvailable&&stats.total?<div className="sync-status" role="status" aria-live="polite"><span>Отправляем · {stats.total}</span><i/></div>:null}</div></header>
-    {!serverAvailable&&<div className="offline-banner" role="status" aria-live="polite"><span><b>Офлайн</b>{queuedCount?` · ${queuedCount} ${pluralRu(queuedCount,['изменение','изменения','изменений'])} ${queuedCount===1?'ждёт':'ждут'} отправки`:' · изменения сохраняются на устройстве и отправятся при подключении'}</span><button type="button" onClick={()=>{void probeServer();setWorkspaceReloadEpoch((value)=>value+1)}}>Повторить</button></div>}
+    <header className="workspace-header"><button type="button" className="workspace-name-button" onClick={()=>setSwitchOpen(true)}><span>{workspace.name}</span><ChevronIcon/></button><div className="workspace-header-actions">{updateWaiting&&<button type="button" className="update-button" onClick={activateUpdate}>Обновить</button>}{issueCount?<button type="button" className="sync-status attention" onClick={()=>setIssuesOpen(true)} aria-label={`Не отправлено: ${issueCount}. Открыть список`}><span>Не отправлено · {issueCount}</span><i/></button>:serverAvailable&&stats.total?<div className="sync-status" role="status" aria-live="polite"><span>Отправляем · {stats.total}</span><i/></div>:null}</div></header>
+    {!serverAvailable&&<div className="offline-banner" role="status" aria-live="polite"><span><b>Офлайн</b>{queuedCount?` · ${queuedCount} ${pluralRu(queuedCount,['изменение','изменения','изменений'])} ${queuedCount===1?'ждёт':'ждут'} отправки`:' · отправим при подключении'}</span><button type="button" onClick={()=>{void probeServer();setWorkspaceReloadEpoch((value)=>value+1)}}>Повторить</button></div>}
     <main className="pager" ref={pager} onScroll={onPagerScroll} onPointerDown={()=>{stopPagerAnimation();pagerTarget.current=null}} onTouchStart={()=>{stopPagerAnimation();pagerTarget.current=null}}>
       <div className="page-slot" inert={tab!=='entry'} aria-hidden={tab!=='entry'}>{mountedTabs.includes('entry')&&<EntryView userId={auth.user.id} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} currentId={currentId} setCurrentId={setCurrentId} refreshPending={refreshPending} onDraftDirtyChange={setDraftDirty} active={tab==='entry'}/>}</div>
-      <div className="page-slot" inert={tab!=='history'} aria-hidden={tab!=='history'}>{mountedTabs.includes('history')&&<HistoryView userId={auth.user.id} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} edit={editExpense} createNew={createNewExpense} refreshPending={refreshPending} inbox={historyInbox}/>}</div>
+      <div className="page-slot" inert={tab!=='history'} aria-hidden={tab!=='history'}>{mountedTabs.includes('history')&&<HistoryView userId={auth.user.id} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} edit={editExpense} createNew={createNewExpense} refreshPending={refreshPending} inbox={historyInbox} reminder={historyReminder}/>}</div>
       <div className="page-slot" inert={tab!=='analytics'} aria-hidden={tab!=='analytics'}>{mountedTabs.includes('analytics')&&<AnalyticsView userId={auth.user.id} workspaceId={workspaceId} bootstrap={bootstrap} theme={theme} online={serverAvailable}/>}</div>
       <div className="page-slot" inert={tab!=='settings'} aria-hidden={tab!=='settings'}>{mountedTabs.includes('settings')&&<SettingsView user={auth} workspace={workspace} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} pendingCount={stats.total} refreshPending={refreshPending} onLogout={()=>void logoutCurrent()} theme={themePreference} onThemeChange={setThemePreference} onSession={(next)=>hydrate(next,false,settingsIdentityEpoch)} online={serverAvailable} bybitStatus={bybitStatus} onBybitStatus={(status)=>updateBybitStatus(status)} onBybitSynced={reloadWorkspaceData}/>}</div>
     </main>
@@ -2999,8 +3025,9 @@ if(Math.abs(node.scrollLeft-pagerTarget.current)>1)node.scrollLeft=pagerTarget.c
     {reviewOpen&&reviewConnected&&<ReviewOverlay onClose={()=>setReviewOpen(false)}><BybitReviewView workspaceId={workspaceId} categories={bootstrap.categories} currencies={bootstrap.currencies} tags={bootstrap.tags??[]} onTag={(tag)=>setWorkspaceData((data)=>({...data,tags:[tag,...(data.tags??[]).filter((item)=>item.id!==tag.id)]}))} online={serverAvailable} onStatus={updateBybitStatus} pendingCount={bybitStatus?.pendingCount??0} active onExpense={(expense)=>setWorkspaceData((data)=>({...data,expenses:[expense,...data.expenses.filter((item)=>item.id!==expense.id)]}))} onExpenseUndo={(expenseId)=>setWorkspaceData((data)=>({...data,expenses:data.expenses.filter((item)=>item.id!==expenseId)}))}/></ReviewOverlay>}
     {switchOpen&&<WorkspaceSwitcher items={auth.workspaces} active={workspaceId} runtimes={state.runtimes} online={serverAvailable} onSelect={(id)=>void switchWorkspace(id)} onCreate={()=>void openCreate()}/>} {createOpen&&<CreateWorkspaceSheet existing onClose={()=>setCreateOpen(false)} onCreate={create}/>} {issuesOpen&&<SyncIssuesSheet userId={auth.user.id} workspaceId={workspaceId} bootstrap={bootstrap} online={serverAvailable} onClose={()=>setIssuesOpen(false)} onRetry={retryIssue} onDiscard={discardIssues}/>} {initialRecovery&&<RecoverySave key={initialRecovery.completionToken} prepared={initialRecovery} mode="initial" close={()=>setInitialRecovery(null)} complete={async()=>{
       const outcome=await completeRotationSafely({prepared:initialRecovery,targetUserId:auth.user.id})
-      if(outcome.status!=='completed')throw new Error(outcome.status==='rotation-stale'?'Параллельно была завершена другая настройка восстановления.':'Не удалось подтвердить настройку. Повторите из настроек.')
+      if(outcome.status!=='completed')throw new Error(outcome.status==='rotation-stale'?'Параллельно была сохранена другая ссылка доступа.':'Не удалось подтвердить ссылку. Повторите из настроек.')
       await hydrate(outcome.session,true)
+      setNotice('Ссылка доступа сохранена')
     }}/>}
     {error && <Toast toast={{text:error,urgent:true}} onDismiss={()=>setError('')}/>}
     {notice&&<Toast toast={notice} onDismiss={hideNotice}/>} {confirmation}
