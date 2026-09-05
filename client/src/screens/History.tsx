@@ -2,7 +2,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { WorkspaceApiError as ApiError, includeExpense, submitExpenseOperation, submitExpenseOperations } from '../workspace-api'
 import { getWorkspacePreference, setWorkspacePreference } from '../app-state'
 import type { Category, Currency, Expense, Tag } from '../types'
-import { cachedDateTimeFormat, localDateKey, monthDateRange, shiftDateKey, weekdayFromDateKey } from '../utils'
+import { appTimeZone, cachedDateTimeFormat, localDateKey, monthDateRange, shiftDateKey, weekdayFromDateKey } from '../utils'
 import { HISTORY_PERIOD_LABELS, defaultHistoryPreferences, expenseTagNames, filterHistoryExpenses, historyTotals, parseHistoryPreferences } from '../history'
 import type { HistoryPeriod, HistoryPreferences } from '../history'
 import { ChevronIcon, LockIcon, MultiSelect, SearchIcon, Toast, TrashIcon, tap, useDialog, useOverflowHint, useToast } from '../ui'
@@ -205,7 +205,7 @@ export type HistoryReminder = { onSave: () => void; onLater: () => void; compact
 
 // Вкладка не размонтируется, пока открыто пространство, поэтому она не должна перерисовываться от чужих
 // изменений состояния приложения — только от своих данных и колбэков (все они стабильны у родителя).
-export const HistoryView = memo(function HistoryView({ userId, workspaceId, bootstrap, setBootstrap, edit, createNew, refreshPending, inbox = null, reminder = null }: {
+export const HistoryView = memo(function HistoryView({ userId, workspaceId, bootstrap, setBootstrap, edit, createNew, refreshPending, inbox = null, reminder = null, timeZone = appTimeZone() }: {
   userId: string
   workspaceId: string
   bootstrap: Bootstrap
@@ -215,6 +215,8 @@ export const HistoryView = memo(function HistoryView({ userId, workspaceId, boot
   refreshPending: () => void
   inbox?: HistoryInbox | null
   reminder?: HistoryReminder | null
+  /** Календарь телефона: дни истории и итоги пересчитываются, когда пояс меняется. */
+  timeZone?: string
 }) {
   const [filters, setFilters] = useState<HistoryPreferences>(() => parseHistoryPreferences(
     getWorkspacePreference(userId, workspaceId, 'history-filters'),
@@ -249,7 +251,7 @@ export const HistoryView = memo(function HistoryView({ userId, workspaceId, boot
     const expenses = filterHistoryExpenses(activeExpenses, filters).filter((item) => {
       // Текст для поиска собирается только при непустом запросе: он дорогой, а без запроса не нужен.
       if (!normalizedQuery) return true
-      const dateKey = localDateKey(item.occurredAt)
+      const dateKey = localDateKey(item.occurredAt, timeZone)
       const date = new Date(item.occurredAt)
       const searchText = [
         categoryMap.get(item.categoryId)?.name,
@@ -259,11 +261,11 @@ export const HistoryView = memo(function HistoryView({ userId, workspaceId, boot
         money(item.amountMinor, item.currency, bootstrap.currencies),
         String(item.amountMinor / 10 ** (bootstrap.currencies.find((currency) => currency.code === item.currency)?.decimals ?? 2)).replace('.', ','),
         formatHistoryDate(dateKey),
-        cachedDateTimeFormat('ru-RU', { timeZone: 'Europe/Belgrade' }).format(date),
+        cachedDateTimeFormat('ru-RU', { timeZone }).format(date),
       ].filter(Boolean).join(' ').toLocaleLowerCase('ru-RU')
       return searchText.includes(normalizedQuery)
     })
-    const grouped = expenses.reduce<Record<string, Expense[]>>((result, item) => { (result[localDateKey(item.occurredAt)] ||= []).push(item); return result }, {})
+    const grouped = expenses.reduce<Record<string, Expense[]>>((result, item) => { (result[localDateKey(item.occurredAt, timeZone)] ||= []).push(item); return result }, {})
     // Итог по показанным записям. В одной валюте — точная сумма; в нескольких — пересчёт в валюту аналитики и разбивка.
     const totalsTarget = (filters.currencies.length === 1 ? filters.currencies[0] : null) || getWorkspacePreference(userId, workspaceId, 'analytics-currency') || bootstrap.defaultAnalyticsCurrency || 'RSD'
     const sumLabel = (items: Expense[]) => {
@@ -278,7 +280,7 @@ export const HistoryView = memo(function HistoryView({ userId, workspaceId, boot
     const groups = Object.entries(grouped).map(([date, items]) => ({ date, items, total: sumLabel(items).label }))
     const { label: totalLabel, parts: totalParts, totals } = sumLabel(expenses)
     return { categoryMap, tags, activeExpenses, tagOptions, categoryOptions, currencyOptions, normalizedQuery, expenses, groups, totals, totalLabel, totalParts }
-  }, [bootstrap, filters, userId, workspaceId])
+  }, [bootstrap, filters, userId, workspaceId, timeZone])
   const { categoryMap, tags, activeExpenses, tagOptions, categoryOptions, currencyOptions, normalizedQuery, expenses, groups, totals, totalLabel, totalParts } = derived
   useEffect(() => {
     setWorkspacePreference(userId, workspaceId, 'history-filters', JSON.stringify(filters))

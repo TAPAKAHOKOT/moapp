@@ -3,21 +3,9 @@ import type { ExpenseRow } from "./expenses.js";
 import { convertMajor, ensureRates } from "./rates.js";
 import { hasWorkspaceMembership, noStore, sendWorkspaceNotFound, workspaceContext } from "./tenant-domain-guard.js";
 import { isCalendarDate, isCurrency, jsonError, minorDigits } from "./validation.js";
+import { localDateKey, requestTimeZone } from "./calendar.js";
 
 type Point = { amountMinor: number; count: number };
-
-const APP_TIME_ZONE = "Europe/Belgrade";
-
-function localDateKey(value: string | Date): string {
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: APP_TIME_ZONE,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit"
-  }).formatToParts(typeof value === "string" ? new Date(value) : value);
-  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
-  return `${values.year}-${values.month}-${values.day}`;
-}
 
 export async function registerAnalyticsRoutes(app: FastifyInstance): Promise<void> {
   app.get("/api/workspaces/:workspaceId/analytics", {
@@ -25,8 +13,9 @@ export async function registerAnalyticsRoutes(app: FastifyInstance): Promise<voi
     onSend: noStore
   }, async (request, reply) => {
     const { workspaceId, userId } = workspaceContext(request);
-    const q = request.query as { from?: string; to?: string; currency?: string; categoryId?: string };
-    const today = localDateKey(new Date());
+    const q = request.query as { from?: string; to?: string; currency?: string; categoryId?: string; tz?: string };
+    const timeZone = requestTimeZone(q.tz);
+    const today = localDateKey(new Date(), timeZone);
     const defaultFrom = `${today.slice(0, 8)}01`;
     const from = q.from ?? defaultFrom;
     const to = q.to ?? today;
@@ -46,14 +35,14 @@ export async function registerAnalyticsRoutes(app: FastifyInstance): Promise<voi
       return reply.code(400).send(jsonError("VALIDATION", "Category not found"));
     }
 
-    // Timestamps are UTC instants while filters are Europe/Belgrade calendar
-    // dates. SQL establishes tenant/deletion/category scope before the calendar
-    // conversion is applied in memory.
+    // Timestamps are UTC instants while filters are calendar dates in the
+    // client's zone. SQL establishes tenant/deletion/category scope before the
+    // calendar conversion is applied in memory.
     const rows = (app.db.prepare(`SELECT * FROM expenses
       WHERE workspace_id=? AND deleted_at IS NULL AND voided_at IS NULL ${categoryId ? "AND category_id=?" : ""}
       ORDER BY occurred_at`).all(...(categoryId ? [workspaceId, categoryId] : [workspaceId])) as ExpenseRow[])
       .filter((row) => {
-        const date = localDateKey(row.occurred_at);
+        const date = localDateKey(row.occurred_at, timeZone);
         return date >= from && date <= to;
       });
     const categories = new Map<string, Point>();
@@ -65,7 +54,7 @@ export async function registerAnalyticsRoutes(app: FastifyInstance): Promise<voi
     let oldestRateDate: string | undefined;
     const targetDigits = minorDigits(target);
     for (const row of rows) {
-      const date = localDateKey(row.occurred_at);
+      const date = localDateKey(row.occurred_at, timeZone);
       const sourceDigits = minorDigits(row.currency);
       const converted = convertMajor(app, row.amount_minor / 10 ** sourceDigits, row.currency, target, date);
       if (!converted) { missing.add(row.currency); continue; }
@@ -89,6 +78,7 @@ export async function registerAnalyticsRoutes(app: FastifyInstance): Promise<voi
       .all(workspaceId) as Array<{ id: string; name: string; color: string | null }>).map((category) => [category.id, category]));
     return {
       currency: target,
+      timeZone,
       from,
       to,
       totalMinor,

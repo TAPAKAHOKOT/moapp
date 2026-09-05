@@ -282,3 +282,38 @@ test("tenant mutations reject non-object JSON bodies without a server error", as
   assert.equal(malformed.statusCode, 400, malformed.body);
   assert.equal(malformed.json().error.code, "REQUEST_ERROR");
 });
+
+test("analytics and daily rates follow the client's calendar when it sends its time zone", async () => {
+  // 16:30Z is 18:30 in Belgrade on the 10th and already 01:30 on the 11th in Tokyo.
+  const workspaceC = randomUUID();
+  const expenseId = randomUUID();
+  app.db.transaction(() => {
+    app.db.prepare(`INSERT INTO workspaces(id,name,owner_user_id,version,created_at,updated_at) VALUES (?,?,?,1,?,?)`).run(workspaceC, "C", identityA.user.id, now, now);
+    app.db.prepare(`INSERT INTO memberships(workspace_id,user_id,joined_at,added_by_user_id) VALUES (?,?,?,NULL)`).run(workspaceC, identityA.user.id, now);
+    seedWorkspaceCategories(app.db, workspaceC);
+    app.db.prepare(`INSERT INTO expenses(workspace_id,id,amount_minor,currency,category_id,occurred_at,note,version,created_at,updated_at)
+      VALUES (?,?,?,?,?,?,NULL,1,?,?)`).run(workspaceC, expenseId, 4_000, "RSD", "products", "2026-08-10T16:30:00.000Z", now, now);
+    const insertRate = app.db.prepare(`INSERT INTO exchange_rates(rate_date,base_currency,quote_currency,rate,fetched_at) VALUES (?,'EUR',?,?,?)`);
+    for (const date of ["2026-08-10", "2026-08-11"]) { insertRate.run(date, "RSD", 117, now); insertRate.run(date, "EUR", 1, now); }
+  })();
+  const query = (tz: string | null, day: string) => app.inject({
+    method: "GET",
+    url: `/api/workspaces/${workspaceC}/analytics?from=${day}&to=${day}&currency=RSD${tz === null ? "" : `&tz=${encodeURIComponent(tz)}`}`,
+    headers: identityA.headers
+  });
+  const tokyo = await query("Asia/Tokyo", "2026-08-11");
+  assert.equal(tokyo.statusCode, 200, tokyo.body);
+  assert.equal(tokyo.json().timeZone, "Asia/Tokyo");
+  assert.equal(tokyo.json().expenseCount, 1, "the purchase happened on the 11th in Tokyo");
+  assert.equal((await query("Asia/Tokyo", "2026-08-10")).json().expenseCount, 0);
+  assert.equal((await query(null, "2026-08-10")).json().expenseCount, 1, "no tz → Belgrade calendar");
+  const bogus = await query("Mars/Olympus_Mons", "2026-08-10");
+  assert.equal(bogus.statusCode, 200, bogus.body);
+  assert.equal(bogus.json().timeZone, "Europe/Belgrade", "unknown zones fall back instead of failing");
+  assert.equal(bogus.json().expenseCount, 1);
+
+  const bootstrap = await app.inject({ method: "GET", url: `/api/workspaces/${workspaceC}/bootstrap?tz=Asia/Tokyo`, headers: identityA.headers });
+  assert.equal(bootstrap.statusCode, 200, bootstrap.body);
+  assert.deepEqual(Object.keys(bootstrap.json().rates.daily), ["2026-08-11"], "daily rates are keyed by the client's calendar day");
+  assert.equal(bootstrap.json().timeZone, "Asia/Tokyo");
+});

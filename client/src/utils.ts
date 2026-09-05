@@ -1,6 +1,20 @@
 import type { Currency, Expense, RateSnapshot } from './types'
 
-export const APP_TIME_ZONE = 'Europe/Belgrade'
+export const DEFAULT_TIME_ZONE = 'Europe/Belgrade'
+
+// Календарь телефона: по нему считаются день покупки, «сегодня» и курс дня. Пояс перечитывается не реже раза в
+// секунду, чтобы после переезда или смены часового пояса в настройках всё пересчиталось без перезапуска —
+// включая старые записи, которые могут перейти на соседний день.
+let zoneCache = { value: '', at: 0 }
+export function appTimeZone(): string {
+  const now = Date.now()
+  if (!zoneCache.value || now - zoneCache.at > 1000) {
+    let value = DEFAULT_TIME_ZONE
+    try { value = Intl.DateTimeFormat().resolvedOptions().timeZone || DEFAULT_TIME_ZONE } catch { /* нет Intl — остаёмся на поясе по умолчанию */ }
+    zoneCache = { value, at: now }
+  }
+  return zoneCache.value
+}
 export const MAX_AMOUNT_INTEGER_DIGITS = 12
 
 const MAX_SAFE_MINOR = BigInt(Number.MAX_SAFE_INTEGER)
@@ -98,17 +112,17 @@ export function cachedNumberFormat(locale: string, options: Intl.NumberFormatOpt
   return formatter
 }
 
-function dateParts(date: Date, timeZone = APP_TIME_ZONE) {
+function dateParts(date: Date, timeZone = appTimeZone()) {
   const parts = cachedDateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(date)
   return Object.fromEntries(parts.map((part) => [part.type, part.value])) as Record<string, string>
 }
 
-export function isoToLocalInput(iso: string, timeZone = APP_TIME_ZONE) {
+export function isoToLocalInput(iso: string, timeZone = appTimeZone()) {
   const parts = dateParts(new Date(iso), timeZone)
   return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}`
 }
 
-export function localInputToIso(value: string, timeZone = APP_TIME_ZONE) {
+export function localInputToIso(value: string, timeZone = appTimeZone()) {
   const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(value)
   if (!match) throw new Error('Invalid local date and time')
   const [, year, month, day, hour, minute] = match.map(Number)
@@ -122,7 +136,7 @@ export function localInputToIso(value: string, timeZone = APP_TIME_ZONE) {
   return new Date(guess).toISOString()
 }
 
-export function localDateKey(value: string | Date, timeZone = APP_TIME_ZONE) {
+export function localDateKey(value: string | Date, timeZone = appTimeZone()) {
   const parts = dateParts(typeof value === 'string' ? new Date(value) : value, timeZone)
   return `${parts.year}-${parts.month}-${parts.day}`
 }

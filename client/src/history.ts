@@ -1,5 +1,5 @@
 import type { Category, Currency, Expense, RateSnapshot, Tag } from './types'
-import { convertExpense, hasRate, localDateKey, monthDateRange, weekDateRange } from './utils'
+import { appTimeZone, convertExpense, hasRate, localDateKey, monthDateRange, weekDateRange } from './utils'
 
 // Относительные пресеты считаются от сегодняшнего дня при каждом применении, поэтому сохранённый фильтр не устаревает.
 export const HISTORY_PERIODS = ['all', 'today', 'this-week', 'this-month', 'range'] as const
@@ -95,7 +95,7 @@ export function buildHistoryCsv(expenses: Expense[], categories: Category[], cur
   const rows = expenses.map((expense) => {
     const date = localDateKey(expense.occurredAt)
     const time = new Date(expense.occurredAt).toLocaleTimeString('en-GB', {
-      timeZone: 'Europe/Belgrade', hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+      timeZone: appTimeZone(), hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
     })
     return [
       expense.occurredAt,

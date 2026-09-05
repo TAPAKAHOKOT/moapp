@@ -1,4 +1,5 @@
 import { cacheBootstrap, queueMutation, queueMutations, readCachedBootstrap, readOutbox, removeMutation } from './workspace-offline'
+import { appTimeZone } from './utils'
 import type {
   AnalyticsData, AuthenticatedSession, BybitCardStatus, BybitCardTransaction, BybitRegion, Category, DeviceLinkMetadata, DeviceLinkPreview, DeviceSession, Expense, InvitationMetadata,
   InvitationPreview, Participant, RecoveryPrepareResponse, RecoveryPreview, SessionState, SyncResult, UserProfile, WorkspaceBootstrap,
@@ -221,7 +222,8 @@ export async function legacyClaim(pin: string, displayName: string, attemptToken
 export async function getBootstrap(workspaceId: string, signal?: AbortSignal): Promise<{ data: WorkspaceBootstrap; offline: boolean }> {
   const snapshot = context
   try {
-    const data = await request<WorkspaceBootstrap>(workspacePath(workspaceId, '/bootstrap'), { signal })
+    // Курсы по дням и «сегодня» сервер считает по календарю телефона.
+    const data = await request<WorkspaceBootstrap>(workspacePath(workspaceId, `/bootstrap?tz=${encodeURIComponent(appTimeZone())}`), { signal })
     assertCurrentContext(snapshot)
     if (data.workspaceId !== workspaceId) throw new WorkspaceApiError(409, 'WORKSPACE_RESPONSE_MISMATCH', 'Ответ сервера относится к другому пространству')
     if (snapshot) {
@@ -265,7 +267,7 @@ export function reorderTags(workspaceId: string, ids: string[], signal?: AbortSi
 export async function deleteTag(workspaceId: string, tagId: string, version: number, signal?: AbortSignal): Promise<void> { assertMutationsAllowed(); return request<void>(workspacePath(workspaceId, `/tags/${encodeURIComponent(tagId)}`), { method: 'DELETE', body: JSON.stringify({ version }), signal }) }
 export function reorderCategories(workspaceId: string, ids: string[], signal?: AbortSignal) { assertMutationsAllowed(); return request<{ categories: Category[] }>(workspacePath(workspaceId, '/categories/order'), { method: 'PUT', body: JSON.stringify({ ids }), signal }) }
 export function getAnalytics(workspaceId: string, from: string, to: string, currency: string, categoryId?: string, signal?: AbortSignal) {
-  const query = new URLSearchParams({ from, to, currency }); if (categoryId) query.set('categoryId', categoryId)
+  const query = new URLSearchParams({ from, to, currency, tz: appTimeZone() }); if (categoryId) query.set('categoryId', categoryId)
   return request<AnalyticsData>(workspacePath(workspaceId, `/analytics?${query}`), { signal })
 }
 
