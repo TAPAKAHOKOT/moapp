@@ -133,12 +133,12 @@ describe('expense card swipe', () => {
 
     fireEvent.pointerDown(entry, { pointerType: 'mouse', button: 0, clientX: 100, clientY: 20 })
     fireEvent.pointerMove(entry, { pointerType: 'mouse', clientX: 200, clientY: 20 })
-    expect(track.style.transform).toBe('translateX(100px)')
+    expect(track.style.transform).toBe('translate3d(100px,0,0)')
 
     fireEvent.pointerCancel(entry, { pointerType: 'mouse' })
     act(() => vi.runAllTimers())
 
-    expect(track.style.transform).toBe('')
+    expect(track.style.transform).toBe('translate3d(0px,0,0)')
     expect(setCurrentId).not.toHaveBeenCalled()
   })
 

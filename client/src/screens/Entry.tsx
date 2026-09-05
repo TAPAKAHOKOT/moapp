@@ -197,7 +197,7 @@ export function EntryView({ userId, workspaceId, bootstrap, setBootstrap, curren
       swapped.current = false
       committing.current = false
       const node = trackRef.current
-      if (node) { node.style.transition = 'none'; node.style.transform = ''; offset.current = 0 }
+      if (node) { node.style.transition = 'none'; node.style.transform = 'translate3d(0px,0,0)'; offset.current = 0 }
     }
     // При свайпе новое состояние уже достигнуто анимацией; при удалении и открытии из истории кнопка мягко гаснет или проявляется сама.
     setActionsPresence(currentId ? 1 : 0, didSwap ? 0 : 180)
@@ -337,7 +337,9 @@ export function EntryView({ userId, workspaceId, bootstrap, setBootstrap, curren
     const span = node.clientWidth + CARD_GAP
     const easing = 'cubic-bezier(.25,.8,.3,1)'
     node.style.transition = duration ? `transform ${duration}ms ${easing}` : 'none'
-    node.style.transform = dx ? `translateX(${dx}px)` : ''
+    // Покой — тоже трансформация (translate3d), а не её отсутствие: переход к `none` Safari доводит через
+    // пересборку слоя, и карточка на кадр пропадает.
+    node.style.transform = `translate3d(${dx}px,0,0)`
     offset.current = dx
 
     const sourcePresence = current ? 1 : 0
