@@ -26,12 +26,9 @@ export default defineConfig({
   }],
   server: {
     port: 5173,
-    proxy: {
-      '/api': 'http://localhost:3000',
-      '/mcp': 'http://localhost:3000',
-      '/oauth': 'http://localhost:3000',
-      '/.well-known': 'http://localhost:3000',
-    },
+    // MOAPP_API_URL lets a second dev pair run next to the default one, e.g. for a phone on the same Wi‑Fi:
+    // MOAPP_API_URL=http://localhost:3100 vite --host --port 5180 (the API then needs APP_ORIGIN=http://<lan-ip>:5180).
+    proxy: Object.fromEntries(['/api', '/mcp', '/oauth', '/.well-known'].map((path) => [path, process.env.MOAPP_API_URL ?? 'http://localhost:3000'])),
   },
   build: { sourcemap: true },
 })
