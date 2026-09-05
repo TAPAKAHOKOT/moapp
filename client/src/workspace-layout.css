@@ -1469,6 +1469,26 @@ textarea,
   margin-top: 14px;
 }
 
+/* Хвост списка: сколько записей ещё есть до окна первичной загрузки и кнопка подгрузить их. */
+.history-older {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: -6px 16px 20px;
+  padding: 0 5px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.history-older .text-button {
+  flex: 0 0 auto;
+  padding: 7px 4px;
+  color: var(--sage);
+  font-size: 12px;
+  font-weight: 700;
+}
+
 .history-date {
   align-items: baseline;
 }

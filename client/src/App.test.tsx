@@ -247,6 +247,15 @@ describe('history discovery', () => {
     expect(onSave).toHaveBeenCalledTimes(1)
   })
 
+  it('offers to load expenses older than the bootstrap window', () => {
+    const bootstrap = expenseBootstrap({ expenses: [{ id: 'a', amountMinor: 1_000, currency: 'RSD', categoryId: 'products', note: null, occurredAt: '2026-08-31T09:37:00.000Z', createdAt: '2026-08-31T09:37:00.000Z', updatedAt: '2026-08-31T09:37:00.000Z', version: 1, deletedAt: null }], expensesSince: '2025-09-01', olderExpenses: 12 })
+    const load = vi.fn()
+    render(<HistoryView userId="user-a" workspaceId="workspace-a" bootstrap={bootstrap} setBootstrap={vi.fn()} edit={vi.fn()} createNew={vi.fn()} refreshPending={vi.fn()} older={{ count: 12, since: '2025-09-01', busy: false, load }}/>)
+    expect(screen.getByText('Ещё 12 записей до сентября 2025')).not.toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Показать' }))
+    expect(load).toHaveBeenCalledTimes(1)
+  })
+
   it('offers a first-expense action instead of a useless empty search field', () => {
     const createNew = vi.fn()
     render(<HistoryView userId="user-a" workspaceId="workspace-a" bootstrap={expenseBootstrap()} setBootstrap={vi.fn()} edit={vi.fn()} createNew={createNew} refreshPending={vi.fn()}/>)

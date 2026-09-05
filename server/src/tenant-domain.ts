@@ -7,7 +7,7 @@ import { buildRateLookup, registerRateRoutes } from "./rates.js";
 import { registerSyncRoutes } from "./sync.js";
 import { noStore, workspaceContext } from "./tenant-domain-guard.js";
 import { jsonError } from "./validation.js";
-import { localDateKey, requestTimeZone } from "./calendar.js";
+import { bootstrapWindowStart, localDateKey, requestTimeZone } from "./calendar.js";
 import { getWorkspaceSummary } from "./workspaces.js";
 
 function availableCurrencies() {
@@ -80,8 +80,12 @@ async function registerBootstrapRoute(app: FastifyInstance): Promise<void> {
     if (!workspace) return reply.code(404).send(jsonError("WORKSPACE_NOT_FOUND", "Workspace not found"));
     const categories = app.db.prepare(`SELECT * FROM categories WHERE workspace_id=?
       ORDER BY CASE placement WHEN 'main' THEN 0 ELSE 1 END,sort_order,name`).all(workspaceId) as CategoryRow[];
-    const expenses = app.db.prepare(`${EXPENSE_SELECT}
+    // Первичная загрузка отдаёт последние 12 месяцев по календарю клиента; более ранние записи считаются и
+    // подгружаются с экрана истории по запросу (GET /expenses?to=…), чтобы стартовый ответ не рос вместе с историей.
+    const allExpenses = app.db.prepare(`${EXPENSE_SELECT}
       WHERE e.workspace_id=? AND e.deleted_at IS NULL ORDER BY e.occurred_at DESC,e.id DESC`).all(workspaceId) as ExpenseRow[];
+    const expensesSince = bootstrapWindowStart(localDateKey(new Date(), timeZone));
+    const expenses = allExpenses.filter((row) => localDateKey(row.occurred_at, timeZone) >= expensesSince);
     const tags = app.db.prepare(TAGS_ORDERED).all(workspaceId) as TagRow[];
     return {
       workspaceId,
@@ -89,6 +93,8 @@ async function registerBootstrapRoute(app: FastifyInstance): Promise<void> {
       categories: categories.map(categoryJson),
       tags: tags.map(tagJson),
       expenses: expenses.map(expenseJson),
+      expensesSince,
+      olderExpenses: allExpenses.length - expenses.length,
       currencies: currencyList(),
       rates: { ...bootstrapRates(app.db), daily: dailyRates(app, expenses, timeZone) },
       timeZone,

@@ -64,6 +64,11 @@ export function PeriodSheet({ value, onClose, onSelect }: { value: HistoryPeriod
   </div>
 }
 
+// «до сентября 2025»: месяц в родительном падеже через формат с днём, из которого день убирается.
+function formatMonthYear(dateKey: string) {
+  return new Date(`${dateKey}T12:00:00Z`).toLocaleDateString('ru-RU', { timeZone: 'UTC', day: 'numeric', month: 'long', year: 'numeric' }).replace(/^\d+\s/, '').replace(' г.', '')
+}
+
 export const ROW_ACTION_WIDTH = 84
 
 export const LONG_PRESS_MS = 450
@@ -203,9 +208,12 @@ export type HistoryInbox = { count: number; onOpen: () => void }
 
 export type HistoryReminder = { onSave: () => void; onLater: () => void; compact: boolean }
 
+/** Записи старше окна первичной загрузки: сколько их, с какого дня начинается окно и как их подгрузить. */
+export type HistoryOlder = { count: number; since: string; busy: boolean; load: () => void }
+
 // Вкладка не размонтируется, пока открыто пространство, поэтому она не должна перерисовываться от чужих
 // изменений состояния приложения — только от своих данных и колбэков (все они стабильны у родителя).
-export const HistoryView = memo(function HistoryView({ userId, workspaceId, bootstrap, setBootstrap, edit, createNew, refreshPending, inbox = null, reminder = null, timeZone = appTimeZone() }: {
+export const HistoryView = memo(function HistoryView({ userId, workspaceId, bootstrap, setBootstrap, edit, createNew, refreshPending, inbox = null, reminder = null, timeZone = appTimeZone(), older = null }: {
   userId: string
   workspaceId: string
   bootstrap: Bootstrap
@@ -217,6 +225,7 @@ export const HistoryView = memo(function HistoryView({ userId, workspaceId, boot
   reminder?: HistoryReminder | null
   /** Календарь телефона: дни истории и итоги пересчитываются, когда пояс меняется. */
   timeZone?: string
+  older?: HistoryOlder | null
 }) {
   const [filters, setFilters] = useState<HistoryPreferences>(() => parseHistoryPreferences(
     getWorkspacePreference(userId, workspaceId, 'history-filters'),
@@ -431,6 +440,7 @@ export const HistoryView = memo(function HistoryView({ userId, workspaceId, boot
       : <div className="history-inbox history-reminder"><span className="reminder-mark"><LockIcon/></span><span><b>Сохраните ссылку доступа</b><small>Иначе без этого телефона расходы не вернуть</small></span><span className="reminder-actions"><button type="button" className="reminder-action" onClick={reminder.onSave}>Сохранить</button><button type="button" className="text-button reminder-later" onClick={reminder.onLater}>Позже</button></span></div>)}
     {inbox && inbox.count > 0 && !selected.size && <button type="button" className="history-inbox" onClick={inbox.onOpen}><span className="bybit-mark">B</span><span><b>{inbox.count} {pluralRu(inbox.count, ['операция с карты ждёт', 'операции с карты ждут', 'операций с карты ждут'])} разбора</b><small>Выбрать категории</small></span><ChevronIcon/></button>}
     <div className={`history-list${selected.size ? ' selecting' : ''}`}>{groups.map(({ date, items, total }) => <div key={date} className="history-day"><div className="history-date"><span>{formatHistoryDate(date)}</span>{total && <b>{total}</b>}</div>{items.map((expense) => <HistoryRow key={expense.id} expense={expense} category={categoryMap.get(expense.categoryId)} tags={tags} currencies={bootstrap.currencies} checked={selected.has(expense.id)} selecting={selected.size > 0} open={openRow === expense.id} disabled={deleting} onOpen={setOpenRow} onToggle={toggle} onEdit={editRow} onDelete={deleteRow} onVoided={setVoided}/>)}</div>)}</div>
+    {older && (filters.period === 'all' || filters.period === 'range') && !selected.size && <div className="history-older"><span>{older.count === 1 ? 'Ещё одна запись' : `Ещё ${older.count} ${pluralRu(older.count, ['запись', 'записи', 'записей'])}`} до {formatMonthYear(older.since)}</span><button type="button" className="text-button" disabled={older.busy} onClick={older.load}>{older.busy ? 'Загружаем…' : 'Показать'}</button></div>}
     {!groups.length && <div className="list-empty" role="status"><span>{filtersActive ? 'Ничего не найдено' : 'История пока пуста'}</span><p>{filtersActive ? 'Измените фильтры или сбросьте их.' : 'Добавьте первый расход — он сразу появится здесь.'}</p>{!filtersActive && <button type="button" className="primary history-empty-action" onClick={createNew}>Добавить первый расход</button>}</div>}
     {calendar && <CalendarSheet
       from={filters.period === 'range' ? filters.from : ''}
