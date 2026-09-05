@@ -192,7 +192,14 @@ export type RecoveryPrepareResponse = { recoveryUrl: string; completionToken: st
 export type WorkspaceBootstrap = {
   workspaceId: string
   workspace: WorkspaceSummary
+  /** The last twelve months of expenses; earlier ones are counted in `olderExpenses` and loaded on demand. */
   expenses: Expense[]
+  /** First calendar day (client zone) covered by `expenses`. */
+  expensesSince?: string
+  /** Non-deleted expenses before `expensesSince` that are not included. */
+  olderExpenses?: number
+  /** The calendar the server used for days and daily rates. */
+  timeZone?: string
   categories: Category[]
   tags?: Tag[]
   currencies: Currency[]

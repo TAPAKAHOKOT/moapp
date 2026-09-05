@@ -3,7 +3,7 @@ import { QRCodeSVG } from 'qrcode.react'
 import { WorkspaceApiError as ApiError, connectBybitCard, createCategory, createDeviceLink, createInvitation, createTag, deleteTag, disconnectBybitCard, getSession, leaveWorkspace, listInvitations, listMembers, listSessions, prepareInitialOrManualRecovery, removeMember, renameWorkspace, reorderCategories, reorderTags, revokeInvitation, revokeSession, syncBybitCard, transferOwnership, updateCategory, updateProfile, updateTag } from '../workspace-api'
 import { clearWorkspaceOfflineData } from '../workspace-offline'
 import { completeRotationSafely } from '../recovery-flow'
-import type { AuthenticatedSession, BybitCardStatus, BybitRegion, Category, RecoveryPrepareResponse, SessionState, Tag, WorkspaceSummary } from '../types'
+import type { AuthenticatedSession, BybitCardStatus, BybitRegion, Category, Expense, RecoveryPrepareResponse, SessionState, Tag, WorkspaceSummary } from '../types'
 import { localDateKey } from '../utils'
 import { buildHistoryCsv } from '../history'
 import { ChevronIcon, ListSheet, Select, SelectSheet, TextSheet, Toast, copyText, tap, useConfirm, useDialog, useToast } from '../ui'
@@ -399,7 +399,7 @@ export type SettingsSheet = 'categories' | 'tags' | 'bybit' | 'theme' | null
 
 // Настройки — плоский список в три группы: «что это за пространство», «кто я», «что на этом телефоне».
 // Без сегментов и вложенных заголовков: строка = одно понятие, всё, что требует экрана, открывается шитом.
-export function SettingsView({ user, workspace, workspaceId, bootstrap, setBootstrap, pendingCount, refreshPending, onLogout, theme, onThemeChange, onSession, online, bybitStatus=null, onBybitStatus=()=>{}, onBybitSynced=()=>{} }: { user: AuthenticatedSession; workspace:WorkspaceSummary; workspaceId:string; bootstrap:Bootstrap; setBootstrap:React.Dispatch<React.SetStateAction<Bootstrap>>; pendingCount:number; refreshPending:()=>void;onLogout:()=>void;theme:ThemePreference;onThemeChange:(theme:ThemePreference)=>void;onSession:(session:SessionState)=>Promise<void>;online:boolean;bybitStatus?:BybitCardStatus|null;onBybitStatus?:(status:BybitCardStatus)=>void;onBybitSynced?:()=>void }) {
+export function SettingsView({ user, workspace, workspaceId, bootstrap, setBootstrap, pendingCount, refreshPending, onLogout, theme, onThemeChange, onSession, online, bybitStatus=null, onBybitStatus=()=>{}, onBybitSynced=()=>{}, loadOlderExpenses }: { user: AuthenticatedSession; workspace:WorkspaceSummary; workspaceId:string; bootstrap:Bootstrap; setBootstrap:React.Dispatch<React.SetStateAction<Bootstrap>>; pendingCount:number; refreshPending:()=>void;onLogout:()=>void;theme:ThemePreference;onThemeChange:(theme:ThemePreference)=>void;onSession:(session:SessionState)=>Promise<void>;online:boolean;bybitStatus?:BybitCardStatus|null;onBybitStatus?:(status:BybitCardStatus)=>void;onBybitSynced?:()=>void;loadOlderExpenses?:()=>Promise<Expense[]> }) {
   const [sheet,setSheet]=useState<SettingsSheet>(null)
   const [editing,setEditing]=useState<Category|null>(null)
   const [adding,setAdding]=useState(false)
@@ -485,7 +485,11 @@ export function SettingsView({ user, workspace, workspaceId, bootstrap, setBoots
     </AccessSettings>
     <div className="settings-list" role="group" aria-labelledby="settings-device"><h2 id="settings-device">Этот телефон</h2><div className="settings-rows">
       <SettingsRow label="Тема" value={THEME_OPTIONS.find((option)=>option.value===theme)?.label} onClick={()=>setSheet('theme')}/>
-      <SettingsRow label="Экспорт в CSV" onClick={()=>{try{setNotice(`Экспортировано расходов: ${exportHistoryCsv(bootstrap)}`)}catch{setNotice('Не удалось подготовить файл экспорта',undefined,true)}}}/>
+      <SettingsRow label="Экспорт в CSV" onClick={()=>{void (async()=>{
+        // В файл идёт вся история: записи старше окна первичной загрузки сначала подтягиваются с сервера.
+        try{const expenses=bootstrap.olderExpenses&&loadOlderExpenses?await loadOlderExpenses():bootstrap.expenses;setNotice(`Экспортировано расходов: ${exportHistoryCsv({...bootstrap,expenses})}`)}
+        catch(reason){setNotice(reason instanceof ApiError?reason.message:'Не удалось подготовить файл экспорта',undefined,true)}
+      })()}}/>
       <SettingsRow label="Выйти" tone="danger" disabled={accessBusy||reordering} onClick={onLogout}/>
     </div></div>
     {sheet==='categories'&&<ListSheet title="Категории" onClose={()=>setSheet(null)}>

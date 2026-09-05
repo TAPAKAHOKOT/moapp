@@ -242,7 +242,15 @@ export async function getBootstrap(workspaceId: string, signal?: AbortSignal): P
     throw error
   }
 }
-export function listExpenses(workspaceId: string, signal?: AbortSignal) { return request<{ expenses: Expense[] }>(workspacePath(workspaceId, '/expenses'), { signal }) }
+// Страница записей новее → старше; `to` — ISO-момент включительно, `cursor` — nextCursor прошлой страницы.
+export function listExpenses(workspaceId: string, options: { to?: string; cursor?: string; limit?: number } = {}, signal?: AbortSignal) {
+  const query = new URLSearchParams()
+  if (options.to) query.set('to', options.to)
+  if (options.cursor) query.set('cursor', options.cursor)
+  if (options.limit) query.set('limit', String(options.limit))
+  const suffix = query.size ? `?${query}` : ''
+  return request<{ expenses: Expense[]; nextCursor: string | null }>(workspacePath(workspaceId, `/expenses${suffix}`), { signal })
+}
 export function getExpense(workspaceId: string, expenseId: string, signal?: AbortSignal) { return request<Expense>(workspacePath(workspaceId, `/expenses/${encodeURIComponent(expenseId)}`), { signal }) }
 export function createExpense(workspaceId: string, expense: Omit<Expense, 'createdAt' | 'updatedAt' | 'version' | 'deletedAt' | 'pending'>, signal?: AbortSignal) { assertMutationsAllowed(); return request<Expense>(workspacePath(workspaceId, '/expenses'), { method: 'POST', body: JSON.stringify(expense), signal }) }
 export function updateExpense(workspaceId: string, expenseId: string, update: Partial<Expense> & Pick<Expense, 'version'>, signal?: AbortSignal) { assertMutationsAllowed(); return request<Expense>(workspacePath(workspaceId, `/expenses/${encodeURIComponent(expenseId)}`), { method: 'PATCH', body: JSON.stringify(update), signal }) }

@@ -32,3 +32,11 @@ export function localDateKey(value: string | Date, timeZone = DEFAULT_TIME_ZONE)
   const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
   return `${values.year}-${values.month}-${values.day}`;
 }
+
+// Начало окна первичной загрузки: первый день месяца на `months` месяцев раньше месяца сегодняшнего дня.
+// Более ранние записи клиент подгружает отдельно по запросу.
+export function bootstrapWindowStart(today: string, months = 12): string {
+  const [year, month] = today.split("-").map(Number) as [number, number, number];
+  const shifted = new Date(Date.UTC(year, month - 1 - months, 1));
+  return `${shifted.getUTCFullYear()}-${String(shifted.getUTCMonth() + 1).padStart(2, "0")}-01`;
+}

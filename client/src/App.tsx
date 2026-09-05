@@ -1,13 +1,13 @@
 import { startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { appTimeZone } from './utils'
-import { WorkspaceApiError as ApiError, allowWorkspaceMutations, blockWorkspaceMutations, discardOutboxIssues, getBootstrap, getBybitCardStatus, getSession, logoutExpected, prepareInitialOrManualRecovery, probeServer, retryOutboxIssue, setSessionContext, syncAllWorkspaces } from './workspace-api'
+import { appTimeZone, localInputToIso } from './utils'
+import { WorkspaceApiError as ApiError, allowWorkspaceMutations, blockWorkspaceMutations, discardOutboxIssues, getBootstrap, getBybitCardStatus, getSession, listExpenses, logoutExpected, prepareInitialOrManualRecovery, probeServer, retryOutboxIssue, setSessionContext, syncAllWorkspaces } from './workspace-api'
 import { cacheBootstrap, migrateLegacyOfflineData, outboxStats, readCachedProfile, waitForWorkspaceOfflineWrites } from './workspace-offline'
 import { REMINDER_COMPACT_AFTER, applyMembershipLoss, beginLogout, chooseCachedWorkspace, closeCapability, createAppState, createIdentityCoordinator, createLoggedOutState, forgetKnownProfile, hydrateAppState, openLegacyClaim, readReminderMemory, reminderSnoozed, setActiveWorkspace, settlePendingLogout, snoozeReminder, updateWorkspace, writeReminderMemory } from './app-state'
 import type { AppState, ReminderMemory } from './app-state'
 import { createIdentityWithProbe, createWorkspaceWithProbe } from './access-flow'
 import { completeRotationSafely } from './recovery-flow'
 import { monitorServiceWorkerUpdates } from './service-worker-update'
-import type { BybitCardStatus, CapabilityIntent, RecoveryPrepareResponse, SessionState } from './types'
+import type { BybitCardStatus, CapabilityIntent, Expense, RecoveryPrepareResponse, SessionState } from './types'
 import { ChevronIcon, Toast, prefersReducedMotion, tap, useConfirm, useInputModality, useOnlineStatus, useToast } from './ui'
 import type { Theme } from './ui'
 import { pluralRu } from './format'
@@ -381,6 +381,30 @@ export default function App({ capability = null }: { capability?: CapabilityInte
     setReminderMemory((current)=>{const next=snoozeReminder(current);writeReminderMemory(reminderUserId,next);return next})
   },[reminderUserId])
   const historyReminder=useMemo(()=>reminderEligible&&!reminderSnoozed(reminderMemory)?{onSave:()=>void openRecoverySave(),onLater:postponeReminder,compact:reminderMemory.shows>REMINDER_COMPACT_AFTER}:null,[reminderEligible,reminderMemory,openRecoverySave,postponeReminder])
+  // Записи старше окна первичной загрузки подтягиваются по запросу с экрана истории (и перед экспортом CSV):
+  // страницами по 200 до конца, затем сливаются в bootstrap; возвращается полный список для вызывающего.
+  const loadOlderExpenses=useCallback(async():Promise<Expense[]>=>{
+    const id=stateRef.current.activeWorkspaceId;const session=stateRef.current.session
+    const data=id?stateRef.current.runtimes[id]?.bootstrap:undefined
+    if(!id||!session?.authenticated||!data)return data?.expenses??[]
+    if(!data.olderExpenses||!data.expensesSince)return data.expenses
+    const userId=session.user.id,sessionId=session.currentSessionId
+    const to=new Date(Date.parse(localInputToIso(`${data.expensesSince}T00:00`))-1).toISOString()
+    const older:Expense[]=[]
+    let cursor:string|undefined
+    do{const page=await listExpenses(id,{to,cursor,limit:200});older.push(...page.expenses);cursor=page.nextCursor??undefined}while(cursor)
+    const merge=(expenses:Expense[])=>{const known=new Set(expenses.map((expense)=>expense.id));return [...expenses,...older.filter((expense)=>!known.has(expense.id))]}
+    updateState((current)=>{
+      if(!current.session?.authenticated||current.session.user.id!==userId||current.session.currentSessionId!==sessionId||!current.runtimes[id]?.bootstrap)return current
+      return updateWorkspace(current,id,(runtime)=>({...runtime,bootstrap:{...runtime.bootstrap!,expenses:merge(runtime.bootstrap!.expenses),olderExpenses:0}}))
+    })
+    return merge(stateRef.current.runtimes[id]?.bootstrap?.expenses??data.expenses)
+  },[updateState])
+  const [olderBusy,setOlderBusy]=useState(false)
+  const activeBootstrap=workspaceId?state.runtimes[workspaceId]?.bootstrap:undefined
+  const olderCount=activeBootstrap?.olderExpenses??0
+  const olderSince=activeBootstrap?.expensesSince??null
+  const historyOlder=useMemo(()=>olderCount&&olderSince?{count:olderCount,since:olderSince,busy:olderBusy,load:()=>{setOlderBusy(true);loadOlderExpenses().catch((reason)=>setError(reason instanceof ApiError?reason.message:'Не удалось загрузить ранние записи')).finally(()=>setOlderBusy(false))}}:null,[olderCount,olderSince,olderBusy,loadOlderExpenses])
 
   // A Bybit sync can change expenses server-side (declined operations void their expense); pull the
   // workspace again without the loading state so history and analytics reflect it immediately.
@@ -624,9 +648,9 @@ if(Math.abs(node.scrollLeft-pagerTarget.current)>1)node.scrollLeft=pagerTarget.c
     <header className="workspace-header"><button type="button" className="workspace-name-button" onClick={()=>setSwitchOpen(true)}><span>{workspace.name}</span><ChevronIcon/></button><div className="workspace-header-actions">{updateWaiting&&<button type="button" className="update-button" onClick={activateUpdate}>Обновить</button>}{syncPill}</div></header>
     <main className="pager" ref={pager} onScroll={onPagerScroll} onPointerDown={()=>{stopPagerAnimation();pagerTarget.current=null}} onTouchStart={()=>{stopPagerAnimation();pagerTarget.current=null}}>
       <div className="page-slot" inert={tab!=='entry'} aria-hidden={tab!=='entry'}>{mountedTabs.includes('entry')&&<EntryView userId={auth.user.id} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} currentId={currentId} setCurrentId={setCurrentId} refreshPending={refreshPending} onDraftDirtyChange={setDraftDirty} active={tab==='entry'}/>}</div>
-      <div className="page-slot" inert={tab!=='history'} aria-hidden={tab!=='history'}>{mountedTabs.includes('history')&&<HistoryView userId={auth.user.id} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} edit={editExpense} createNew={createNewExpense} refreshPending={refreshPending} inbox={historyInbox} reminder={historyReminder} timeZone={timeZone}/>}</div>
+      <div className="page-slot" inert={tab!=='history'} aria-hidden={tab!=='history'}>{mountedTabs.includes('history')&&<HistoryView userId={auth.user.id} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} edit={editExpense} createNew={createNewExpense} refreshPending={refreshPending} inbox={historyInbox} reminder={historyReminder} timeZone={timeZone} older={historyOlder}/>}</div>
       <div className="page-slot" inert={tab!=='analytics'} aria-hidden={tab!=='analytics'}>{mountedTabs.includes('analytics')&&<AnalyticsView userId={auth.user.id} workspaceId={workspaceId} bootstrap={bootstrap} theme={theme} online={serverAvailable} timeZone={timeZone}/>}</div>
-      <div className="page-slot" inert={tab!=='settings'} aria-hidden={tab!=='settings'}>{mountedTabs.includes('settings')&&<SettingsView user={auth} workspace={workspace} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} pendingCount={stats.total} refreshPending={refreshPending} onLogout={()=>void logoutCurrent()} theme={themePreference} onThemeChange={setThemePreference} onSession={(next)=>hydrate(next,false,settingsIdentityEpoch)} online={serverAvailable} bybitStatus={bybitStatus} onBybitStatus={(status)=>updateBybitStatus(status)} onBybitSynced={reloadWorkspaceData}/>}</div>
+      <div className="page-slot" inert={tab!=='settings'} aria-hidden={tab!=='settings'}>{mountedTabs.includes('settings')&&<SettingsView user={auth} workspace={workspace} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} pendingCount={stats.total} refreshPending={refreshPending} onLogout={()=>void logoutCurrent()} theme={themePreference} onThemeChange={setThemePreference} onSession={(next)=>hydrate(next,false,settingsIdentityEpoch)} online={serverAvailable} bybitStatus={bybitStatus} onBybitStatus={(status)=>updateBybitStatus(status)} onBybitSynced={reloadWorkspaceData} loadOlderExpenses={loadOlderExpenses}/>}</div>
     </main>
     <nav className="bottom-nav" aria-label="Основная навигация">{navigationTabs.map((item)=><button type="button" key={item.id} aria-current={tab===item.id?'page':undefined} aria-label={item.id==='history'&&reviewCount?`История: ${reviewCount} операций с карты ждут разбора`:item.label} className={tab===item.id?'active':''} onClick={()=>{if(tab!==item.id)tap(4);setTab(item.id)}}><span><NavIcon tab={item.id}/>{item.id==='history'&&reviewCount>0&&<b className="nav-badge">{reviewCount>99?'99+':reviewCount}</b>}</span><small>{item.label}</small></button>)}</nav>
     {reviewOpen&&reviewConnected&&<ReviewOverlay onClose={()=>setReviewOpen(false)}><BybitReviewView workspaceId={workspaceId} categories={bootstrap.categories} currencies={bootstrap.currencies} tags={bootstrap.tags??[]} onTag={(tag)=>setWorkspaceData((data)=>({...data,tags:[tag,...(data.tags??[]).filter((item)=>item.id!==tag.id)]}))} online={serverAvailable} onStatus={updateBybitStatus} pendingCount={bybitStatus?.pendingCount??0} active onExpense={(expense)=>setWorkspaceData((data)=>({...data,expenses:[expense,...data.expenses.filter((item)=>item.id!==expense.id)]}))} onExpenseUndo={(expenseId)=>setWorkspaceData((data)=>({...data,expenses:data.expenses.filter((item)=>item.id!==expenseId)}))}/></ReviewOverlay>}

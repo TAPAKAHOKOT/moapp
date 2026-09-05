@@ -317,3 +317,34 @@ test("analytics and daily rates follow the client's calendar when it sends its t
   assert.deepEqual(Object.keys(bootstrap.json().rates.daily), ["2026-08-11"], "daily rates are keyed by the client's calendar day");
   assert.equal(bootstrap.json().timeZone, "Asia/Tokyo");
 });
+
+test("bootstrap covers the last twelve months and older expenses are counted and fetchable", async () => {
+  const workspaceD = randomUUID();
+  const recentId = randomUUID();
+  const oldId = randomUUID();
+  app.db.transaction(() => {
+    app.db.prepare(`INSERT INTO workspaces(id,name,owner_user_id,version,created_at,updated_at) VALUES (?,?,?,1,?,?)`).run(workspaceD, "D", identityA.user.id, now, now);
+    app.db.prepare(`INSERT INTO memberships(workspace_id,user_id,joined_at,added_by_user_id) VALUES (?,?,?,NULL)`).run(workspaceD, identityA.user.id, now);
+    seedWorkspaceCategories(app.db, workspaceD);
+    const insert = app.db.prepare(`INSERT INTO expenses(workspace_id,id,amount_minor,currency,category_id,occurred_at,note,version,created_at,updated_at)
+      VALUES (?,?,?,?,?,?,NULL,1,?,?)`);
+    insert.run(workspaceD, recentId, 1_000, "RSD", "products", new Date(Date.now() - 86_400_000).toISOString(), now, now);
+    insert.run(workspaceD, oldId, 2_000, "RSD", "products", "2024-01-15T10:00:00.000Z", now, now);
+  })();
+  const bootstrap = await app.inject({ method: "GET", url: `/api/workspaces/${workspaceD}/bootstrap?tz=Europe/Belgrade`, headers: identityA.headers });
+  assert.equal(bootstrap.statusCode, 200, bootstrap.body);
+  const body = bootstrap.json();
+  assert.deepEqual(body.expenses.map((row: { id: string }) => row.id), [recentId], "only the last twelve months ship with bootstrap");
+  assert.equal(body.olderExpenses, 1);
+  assert.match(body.expensesSince, /^\d{4}-\d{2}-01$/);
+  const monthsBack = (Number(body.expensesSince.slice(0, 4)) * 12 + Number(body.expensesSince.slice(5, 7)));
+  const currentMonth = new Date().getUTCFullYear() * 12 + new Date().getUTCMonth() + 1;
+  assert.ok(currentMonth - monthsBack === 12 || currentMonth - monthsBack === 11, "window starts twelve months before the current month");
+
+  // The client asks for everything before the window start (local midnight as an instant).
+  const before = new Date(Date.parse(`${body.expensesSince}T00:00:00.000Z`) - 1).toISOString();
+  const older = await app.inject({ method: "GET", url: `/api/workspaces/${workspaceD}/expenses?to=${encodeURIComponent(before)}&limit=200`, headers: identityA.headers });
+  assert.equal(older.statusCode, 200, older.body);
+  assert.deepEqual(older.json().expenses.map((row: { id: string }) => row.id), [oldId]);
+  assert.equal(older.json().nextCursor, null);
+});
