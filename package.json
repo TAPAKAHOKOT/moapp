@@ -10,9 +10,17 @@
     "build": "npm run build --workspace=client && npm run build --workspace=server",
     "dev:bybit-mock": "npm run dev:bybit-mock --workspace=server",
     "test": "npm run test --workspace=client && npm run test --workspace=server",
-    "typecheck": "npm run typecheck --workspace=client && npm run typecheck --workspace=server"
+    "typecheck": "npm run typecheck --workspace=client && npm run typecheck --workspace=server",
+    "e2e:shots": "node client/e2e/regress.mjs",
+    "e2e:swipe": "node client/e2e/swipe.mjs",
+    "e2e:analytics": "node client/e2e/analytics.mjs"
   },
   "engines": {
     "node": ">=22"
+  },
+  "devDependencies": {
+    "pixelmatch": "^7.2.0",
+    "playwright": "^1.63.0",
+    "pngjs": "^7.0.0"
   }
 }
