@@ -476,12 +476,14 @@ export function SettingsView({ user, workspace, workspaceId, bootstrap, setBoots
     setReordering(false)
   }
   const bybitValue=bybitStatus===null?(online?'…':'нужна сеть'):bybitStatus.connected?(bybitStatus.status==='error'?'нужно обновить':'подключена'):'не подключена'
+  // Подключать карту может только владелец; участнику строка нужна, лишь когда карта уже подключена.
+  const bybitRow=workspace.role==='owner'||Boolean(bybitStatus?.connected)
   const categoryRow=(category:Category)=><><i style={{background:category.color??'#a9afa5'}}/><button type="button" className="category-name" disabled={!online||reordering} onClick={()=>setEditing(category)}>{category.name}</button></>
   return <section className="page settings-page">
     <AccessSettings user={user} workspace={workspace} pendingCount={pendingCount} online={online} onSession={onSession} onNotice={accessNotice} onBusyChange={setAccessBusy}>
       <SettingsRow label="Категории" value={String(activeCategories.length)} onClick={()=>setSheet('categories')}/>
       <SettingsRow label="Теги" value={tags.length?String(tags.length):'нет'} onClick={()=>setSheet('tags')}/>
-      <SettingsRow label="Карта Bybit" value={bybitValue} onClick={()=>setSheet('bybit')}/>
+      {bybitRow&&<SettingsRow label="Карта Bybit" value={bybitValue} onClick={()=>setSheet('bybit')}/>}
     </AccessSettings>
     <div className="settings-list" role="group" aria-labelledby="settings-device"><h2 id="settings-device">Этот телефон</h2><div className="settings-rows">
       <SettingsRow label="Тема" value={THEME_OPTIONS.find((option)=>option.value===theme)?.label} onClick={()=>setSheet('theme')}/>
@@ -506,7 +508,7 @@ export function SettingsView({ user, workspace, workspaceId, bootstrap, setBoots
       <p className="sheet-copy">{tags.length?'Тег — короткая пометка поверх категории, например «отпуск». Один расход может нести несколько тегов.':'Тегов пока нет. Тег — короткая пометка поверх категории, например «отпуск» или «вдвоём».'}</p>
       <button type="button" className="primary sheet-action" disabled={!online} onClick={()=>setAddingTag(true)}>Новый тег</button>
     </ListSheet>}
-    {sheet==='bybit'&&<BybitSheet workspace={workspace} workspaceId={workspaceId} status={bybitStatus} online={online} onStatus={onBybitStatus} onSynced={onBybitSynced} onClose={()=>setSheet(null)}/>}
+    {sheet==='bybit'&&bybitRow&&<BybitSheet workspace={workspace} workspaceId={workspaceId} status={bybitStatus} online={online} onStatus={onBybitStatus} onSynced={onBybitSynced} onClose={()=>setSheet(null)}/>}
     {sheet==='theme'&&<SelectSheet title="Тема" value={theme} options={THEME_OPTIONS} searchable={false} onClose={()=>setSheet(null)} onSelect={(value)=>{setSheet(null);onThemeChange(value as ThemePreference)}}/>}
     {(editing||adding)&&<CategoryEditor category={editing} mainCount={mainCategories.length} onClose={()=>{setEditing(null);setAdding(false)}} onSave={save}/>}
     {(editingTag||addingTag)&&<TagEditor tag={editingTag} onClose={()=>{setEditingTag(null);setAddingTag(false)}} onSave={saveTag} onDelete={editingTag?()=>removeTag(editingTag):undefined}/>}

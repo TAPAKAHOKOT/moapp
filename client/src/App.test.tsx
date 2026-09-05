@@ -207,6 +207,17 @@ describe('expense editing and saving', () => {
     expect(submit.mock.calls[0]?.[3]).toEqual(expect.objectContaining({ categoryId: archived.id }))
   })
 
+  it('starts a new expense in the workspace\'s usual currency when none was chosen by hand', () => {
+    const euro = (id: string, occurredAt: string) => ({ id, amountMinor: 1_000, currency: 'EUR', categoryId: 'products', note: null, occurredAt, createdAt: occurredAt, updatedAt: occurredAt, version: 1, deletedAt: null })
+    const bootstrap = expenseBootstrap({
+      currencies: [{ code: 'RSD', name: 'Сербский динар', symbol: 'дин.', decimals: 2 }, { code: 'EUR', name: 'Евро', symbol: '€', decimals: 2 }],
+      expenses: [euro('a', '2026-08-08T12:00:00.000Z'), euro('b', '2026-08-09T12:00:00.000Z'), { ...euro('c', '2026-08-10T12:00:00.000Z'), currency: 'RSD' }],
+    })
+    render(<EntryView userId="user-a" workspaceId="workspace-a" workspace={bootstrap.workspace} bootstrap={bootstrap} setBootstrap={vi.fn()} currentId={null} setCurrentId={vi.fn()} refreshPending={vi.fn()} onDraftDirtyChange={vi.fn()} active/>)
+    expect(screen.getByRole('button', { name: 'EUR' })).not.toBeNull()
+    expect(screen.queryByRole('button', { name: 'RSD' })).toBeNull()
+  })
+
   // Первый сохранённый расход объясняется один раз: владельцу — где позвать домашних, участнику — что запись видна всем.
   it('explains the very first saved expense once and then goes back to the short toast', async () => {
     vi.spyOn(workspaceApi, 'submitExpenseOperation').mockResolvedValue(null)
@@ -670,6 +681,20 @@ describe('settings identity transitions', () => {
     // Сервер не ходит в Bybit чаще раза в минуту; молчание выглядело бы как сломанная кнопка.
     await screen.findByText('Уже актуально: обновлялось меньше минуты назад')
     expect(sync).toHaveBeenCalledWith(workspace.id)
+  })
+
+  it('shows the Bybit card row to a member only once the card is connected', () => {
+    vi.spyOn(workspaceApi, 'listMembers').mockResolvedValue({ members: [] })
+    vi.spyOn(workspaceApi, 'listSessions').mockResolvedValue({ sessions: [] })
+    const member = { ...expenseBootstrap().workspace, role: 'member' as const }
+    const user: AuthenticatedSession = { authenticated: true, user: { id: 'user-a', displayName: 'Аня', recoveryConfigured: true, recoveryGeneration: 1 }, currentSessionId: 'session-a', currentSessionExpiresAt: '2030-01-01T00:00:00.000Z', serverTime: '2026-08-10T14:00:00.000Z', restrictedToRecovery: false, workspaces: [member], legacyWorkspaceId: null }
+    const settings = (connected: boolean) => <SettingsView user={user} workspace={member} workspaceId={member.id} bootstrap={expenseBootstrap({ workspace: member })} setBootstrap={vi.fn()} pendingCount={0} refreshPending={vi.fn()} onLogout={vi.fn()} theme="system" onThemeChange={vi.fn()} onSession={vi.fn()} online bybitStatus={{ connected, canManage: false, pendingCount: 0 }}/>
+    const disconnected = render(settings(false))
+    expect(screen.queryByRole('button', { name: /Карта Bybit/ })).toBeNull()
+    disconnected.unmount()
+
+    render(settings(true))
+    expect(screen.getByRole('button', { name: /Карта Bybit/ }).textContent).toContain('подключена')
   })
 
   it('prevents logout while a settings mutation can still return a session', async () => {

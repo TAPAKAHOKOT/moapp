@@ -36,6 +36,21 @@ function amountAsMinor(value: string, decimals: number) {
   return minor
 }
 
+// Валюта нового расхода, когда человек ещё ни разу не выбирал её сам: та, в которой в пространстве записывали чаще всего.
+// Удалённые записи не считаются; при равенстве побеждает валюта более свежей покупки. Пустой список — null.
+export function mostFrequentCurrency(expenses: readonly Pick<Expense, 'currency' | 'deletedAt' | 'occurredAt'>[]): string | null {
+  const seen = new Map<string, { count: number; latest: string }>()
+  for (const expense of expenses) {
+    if (expense.deletedAt) continue
+    const entry = seen.get(expense.currency)
+    if (!entry) seen.set(expense.currency, { count: 1, latest: expense.occurredAt })
+    else { entry.count += 1; if (expense.occurredAt > entry.latest) entry.latest = expense.occurredAt }
+  }
+  let best: { code: string; count: number; latest: string } | null = null
+  for (const [code, entry] of seen) if (!best || entry.count > best.count || (entry.count === best.count && entry.latest > best.latest)) best = { code, ...entry }
+  return best?.code ?? null
+}
+
 export function swipeDirection(dx: number) {
   return dx > 0 ? 'older' as const : 'newer' as const
 }
