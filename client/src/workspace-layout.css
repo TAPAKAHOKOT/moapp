@@ -7,15 +7,15 @@
   padding-top: env(safe-area-inset-top);
 }
 
-/* Blurring the whole page behind a fixed bar is noticeably expensive while
- * scrolling on iOS. A solid surface gives the same visual separation here. */
 @media (max-width: 599px) {
+  /* Blurring the whole page behind a fixed bar is noticeably expensive while * scrolling on iOS. A solid surface gives the same visual separation here. */
   .bottom-nav,
   :root[data-theme="dark"] .bottom-nav {
     background: var(--paper);
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
   }
+
 }
 
 /* Mobile polish: readable controls, predictable sheets and explicit states. */
@@ -31,28 +31,30 @@ html {
   --focus: #b1cfa3;
 }
 
-:where(button, input, select, textarea, [tabindex]):focus-visible {
+:where(button,
+input,
+select,
+textarea,
+[tabindex]):focus-visible {
   outline: 3px solid var(--focus);
   outline-offset: 2px;
   box-shadow: 0 0 0 4px color-mix(in srgb, var(--paper) 72%, transparent);
 }
 
-:where(.search, .note-block input, .edit-fields input, .editor input, .editor select, .pin-form input, .empty-state input) {
+:where(.search,
+.editor input,
+.editor select,
+.empty-state input) {
   border-color: var(--control-line);
 }
 
-.record-count,
 .icon-danger,
-.icon-add,
 .date-chip,
 .amount-row button,
 .amount-row .review-currency,
-.note-block .text-button,
 .danger-link,
 .date-presets button,
-.currency-pins button,
 .currency-choice,
-.add-button,
 .analytics-period button,
 .week-navigator button,
 .colors button,
@@ -60,14 +62,11 @@ html {
   min-height: 44px;
 }
 
-.record-count,
 .icon-danger,
-.icon-add,
 .colors button {
   min-width: 44px;
 }
 
-.record-count,
 .icon-danger {
   width: 44px;
   height: 44px;
@@ -109,23 +108,12 @@ html {
   padding: 9px 12px;
 }
 
-.note-block .text-button,
 .danger-link {
   padding-block: 0;
 }
 
-.note-block .text-button {
-  width: 100%;
-}
-
-.note-block {
-  scroll-margin-bottom: 28dvh;
-}
-
 .date-presets button,
-.currency-pins button,
-.currency-choice,
-.add-button {
+.currency-choice {
   height: 44px;
 }
 
@@ -205,12 +193,9 @@ html {
 .expense-check span,
 .week-navigator,
 .currency-choice,
-.add-button,
 .date-presets button,
-.currency-pins button,
 .main-categories button,
 .category-grid button,
-.pin-keypad button,
 .icon-danger {
   border-color: var(--control-line);
 }
@@ -256,17 +241,6 @@ html {
 
 .toast {
   z-index: 90;
-}
-
-.check-line {
-  min-height: 44px;
-  padding-block: 6px;
-}
-
-.check-line input {
-  flex: 0 0 auto;
-  width: 22px;
-  height: 22px;
 }
 
 /* Header controls share one row without covering the workspace name. */
@@ -380,24 +354,17 @@ html {
 }
 
 /* Shared placeholders used by lazy charts and network-backed lists. */
-.chart-placeholder,
 .chart-skeleton,
-.loading-state,
-.sheet-state,
 .list-empty,
 .sheet-empty,
 .management-state,
-.history-empty,
-.currency-empty,
-.category-empty,
-.analytics-error {
+.history-empty {
   color: var(--muted);
   font-size: 11px;
   line-height: 1.5;
   text-align: center;
 }
 
-.chart-placeholder,
 .chart-skeleton {
   width: 100%;
   min-height: 100%;
@@ -407,24 +374,14 @@ html {
   animation: chart-shimmer 1.25s ease-in-out infinite;
 }
 
-.loading-state,
-.sheet-state,
 .list-empty,
 .sheet-empty,
 .management-state,
-.history-empty,
-.currency-empty,
-.category-empty,
-.analytics-error {
+.history-empty {
   display: grid;
   min-height: 88px;
   place-items: center;
   padding: 20px;
-}
-
-.analytics-error button,
-.sheet-state button {
-  min-height: 44px;
 }
 
 .sheet-empty,
@@ -821,13 +778,10 @@ html {
   border-color: #5a4a2c;
 }
 
-@keyframes chart-shimmer {
-  from { background-position: 100% 0; }
-  to { background-position: -100% 0; }
-}
+@keyframes chart-shimmer { from { background-position: 100% 0; } to { background-position: -100% 0; } }
 
-/* Four primary choices remain visible at 320 px without shrinking tap areas. */
 @media (max-width: 420px) {
+  /* Four primary choices remain visible at 320 px without shrinking tap areas. */
   .main-categories {
     grid-template-columns: repeat(auto-fit, minmax(44px, 1fr));
     gap: 6px;
@@ -853,10 +807,11 @@ html {
   .bybit-review-page .review-operation {
     min-height: 98px;
   }
+
 }
 
-/* 320 × 568 and similar compact phones: the category row stays above nav. */
 @media (max-width: 420px) and (max-height: 700px) {
+  /* 320 × 568 and similar compact phones: the category row stays above nav. */
   .entry-view {
     min-height: 431px;
   }
@@ -944,20 +899,6 @@ html {
     font-size: 10px;
   }
 
-  .note-block {
-    height: 52px;
-    padding: 4px 16px;
-  }
-
-  .note-block:focus-within {
-    height: 76px;
-  }
-
-  .note-block input {
-    min-height: 44px;
-    padding-block: 9px;
-  }
-
   .page.bybit-review-page {
     padding: 8px 12px 6px;
   }
@@ -972,18 +913,6 @@ html {
     border-radius: 14px;
   }
 
-  .bybit-review-page .review-tags {
-    margin-top: 6px;
-  }
-
-  .bybit-review-page .review-comment {
-    margin-top: 4px;
-  }
-
-  .page.bybit-review-page .review-comment input {
-    height: 38px;
-  }
-
   .bybit-review-page .review-save {
     margin-top: 6px;
   }
@@ -991,6 +920,7 @@ html {
   .bybit-review-page .review-secondary {
     margin-top: 2px;
   }
+
 }
 
 @media (max-height: 520px) and (orientation: landscape) {
@@ -1025,20 +955,13 @@ html {
     min-height: 52px;
   }
 
-  .entry-view .entry-save,
-  .entry-view .note-block {
+  .entry-view .entry-save {
     grid-column: 1;
   }
 
   .entry-view .entry-save {
     grid-row: 3;
     padding-top: 4px;
-  }
-
-  .entry-view .note-block {
-    grid-row: 4;
-    height: 52px;
-    padding-block: 4px;
   }
 
   .sheet-backdrop {
@@ -1084,6 +1007,7 @@ html {
   .toast {
     bottom: max(10px, env(safe-area-inset-bottom));
   }
+
 }
 
 @media (min-width: 700px) {
@@ -1106,6 +1030,7 @@ html {
   .entry-view {
     max-width: 100%;
   }
+
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1113,11 +1038,11 @@ html {
     scroll-behavior: auto;
   }
 
-  .chart-placeholder,
   .chart-skeleton {
     animation: none;
     background: var(--soft);
   }
+
 }
 
 /* Four fixed destinations; the card queue is an inbox card on History, not a tab. */
@@ -1172,25 +1097,13 @@ html {
   font-size: 12px;
 }
 
-.review-deferred {
-  border-radius: 10px;
-  background: var(--soft);
-  padding: 7px 9px;
-  color: var(--muted);
-  font-size: 9px;
-  font-weight: 700;
-}
-
-/* Строка суммы разбора живёт по метрикам расхода (.amount-row + .amount-row button), чтобы общая
-   формула ширины и общие пороги data-size работали одинаково; своя тут только горизонтальная
-   вставка, потому что боковые поля уже заданы самой странице. */
+/* Строка суммы разбора живёт по метрикам расхода (.amount-row + .amount-row button), чтобы общая формула ширины и общие пороги data-size работали одинаково; своя тут только горизонтальная вставка, потому что боковые поля уже заданы самой странице. */
 .bybit-review-page .amount-row {
   flex: 0 0 auto;
   padding-inline: 4px;
 }
 
-/* Мерчант и предупреждение об открытой авторизации делят слот постоянной высоты: очередь
-   разбирают пачкой, и «Сохранить расход» не должен уезжать из-под пальца. */
+/* Мерчант и предупреждение об открытой авторизации делят слот постоянной высоты: очередь разбирают пачкой, и «Сохранить расход» не должен уезжать из-под пальца. */
 .review-operation {
   flex: 0 0 auto;
   display: flex;
@@ -1229,8 +1142,7 @@ html {
   white-space: nowrap;
 }
 
-/* Главное предупреждение экрана: та же геометрия, что у строки-подсказки расхода (.categories > p),
-   цвет — «ожидает». Переносы разрешены, обрезать его нельзя. */
+/* Главное предупреждение экрана: та же геометрия, что у строки-подсказки расхода (.categories > p), цвет — «ожидает». Переносы разрешены, обрезать его нельзя. */
 .review-pending-note {
   margin: 6px 4px 0;
   color: var(--pending);
@@ -1239,9 +1151,7 @@ html {
   line-height: 15px;
 }
 
-/* Единственное отступление от модели расхода: на самых низких экранах (320×568) средняя полоса —
-   мерчант, категории, теги и комментарий — сжимается и прокручивается, а строка суммы сверху и
-   действия снизу остаются на месте. Выше 568 px она не прокручивается ни разу. */
+/* Единственное отступление от модели расхода: на самых низких экранах (320×568) средняя полоса — мерчант, категории, теги и комментарий — сжимается и прокручивается, а строка суммы сверху и действия снизу остаются на месте. Выше 568 px она не прокручивается ни разу. */
 .review-scroll {
   flex: 0 1 auto;
   display: flex;
@@ -1257,28 +1167,7 @@ html {
   display: none;
 }
 
-.bybit-review-page .review-comment {
-  flex: 0 0 auto;
-  display: block;
-  position: relative;
-  margin: 7px 1px 0;
-}
-
-.bybit-review-page .review-comment > span {
-  float: right;
-}
-
-.bybit-review-page .review-comment input {
-  display: block;
-  clear: both;
-  width: 100%;
-  height: 40px;
-  margin-top: 5px;
-}
-
-/* Ряд категорий — те же .categories / .main-categories, что на расходе: собственных правил нет,
-   поэтому и лестница медиазапросов по высоте применяется к разбору сама. Боковые поля уже
-   заданы странице, вертикальные приходят из общих правил. */
+/* Ряд категорий — те же .categories / .main-categories, что на расходе: собственных правил нет, поэтому и лестница медиазапросов по высоте применяется к разбору сама. Боковые поля уже заданы странице, вертикальные приходят из общих правил. */
 .bybit-review-page .categories {
   padding-inline: 0;
 }
@@ -1310,177 +1199,875 @@ html {
   margin-top: 12px;
 }
 
-/* Совсем низкий экран (iPhone SE в браузере с панелями): всё ужимается ещё сильнее, но остаётся без прокрутки. */
 @media (max-height: 600px) {
-  .swipe-area { min-height: 84px; }
-  .keypad { min-height: 130px; gap: 4px; padding: 3px 12px; }
-  .categories { padding-top: 6px; }
-  .main-categories button { min-height: 54px; gap: 5px; }
-  .tag-strip { padding-top: 2px; }
-  .note-block { height: 44px; padding: 2px 16px; }
-  .note-block:focus-within { height: 72px; }
-  .entry-save { flex-basis: 50px; min-height: 50px; padding: 2px 16px 6px; }
-  .entry-save .primary, .entry-save .sheet-cancel { min-height: 40px; }
-  .page.bybit-review-page { padding: 6px 12px 4px; }
-  /* Полоса забирает всю свободную высоту, поэтому «Сохранить расход» стоит на одном месте
-     и с закрытой операцией, и с открытой авторизацией, которой нужна лишняя строка. */
-  .bybit-review-page .review-scroll { flex-grow: 1; }
-  .bybit-review-page .review-operation { min-height: 0; }
-  .bybit-review-page .review-merchant { min-height: 0; padding: 6px 10px; }
-  .bybit-review-page .review-tags { margin-top: 4px; gap: 3px; }
-  .page.bybit-review-page .review-comment input { height: 36px; }
-  .bybit-review-page .review-save { min-height: 44px; margin-top: 4px; }
-  .bybit-review-page .review-secondary button { min-height: 36px; }
+  /* Совсем низкий экран (iPhone SE в браузере с панелями): всё ужимается ещё сильнее, но остаётся без прокрутки. */
+  .swipe-area {
+    min-height: 84px;
+  }
+
+  .keypad {
+    min-height: 130px;
+    gap: 4px;
+    padding: 3px 12px;
+  }
+
+  .categories {
+    padding-top: 6px;
+  }
+
+  .main-categories button {
+    min-height: 54px;
+    gap: 5px;
+  }
+
+  .tag-strip {
+    padding-top: 2px;
+  }
+
+  .entry-save {
+    flex-basis: 50px;
+    min-height: 50px;
+    padding: 2px 16px 6px;
+  }
+
+  .entry-save .primary,
+  .entry-save .sheet-cancel {
+    min-height: 40px;
+  }
+
+  .page.bybit-review-page {
+    padding: 6px 12px 4px;
+  }
+
+  /* Полоса забирает всю свободную высоту, поэтому «Сохранить расход» стоит на одном месте и с закрытой операцией, и с открытой авторизацией, которой нужна лишняя строка. */
+  .bybit-review-page .review-scroll {
+    flex-grow: 1;
+  }
+
+  .bybit-review-page .review-operation {
+    min-height: 0;
+  }
+
+  .bybit-review-page .review-merchant {
+    min-height: 0;
+    padding: 6px 10px;
+  }
+
+  .bybit-review-page .review-save {
+    min-height: 44px;
+    margin-top: 4px;
+  }
+
+  .bybit-review-page .review-secondary button {
+    min-height: 36px;
+  }
+
 }
 
 /* Одна кнопка сохранения на расходе и в разборе: выключенная выглядит выключенной, а не «второй тёмной». */
-.primary:disabled { opacity: 1; background: var(--soft); color: var(--muted); box-shadow: none; }
-:root[data-theme="dark"] .primary:disabled { background: #242525; color: var(--text-tertiary); }
-.entry-save .sheet-cancel { color: var(--muted); }
-.categories { padding-top: 10px; }
+.primary:disabled {
+  opacity: 1;
+  background: var(--soft);
+  color: var(--muted);
+  box-shadow: none;
+}
 
-/* Ряд под категориями: заметка первой и всегда на месте, дальше теги как категории, остальные за чипом «Ещё N».
-   Прокручивается только полоса тегов, поэтому заметку ничего не выталкивает за край. */
-.extras-row { display: flex; align-items: center; gap: 6px; margin: 0 16px; padding: 10px 4px 0; }
-.extras-row .tag-strip { flex: 1 1 0; min-width: 0; margin: 0; padding: 0; }
-.extras-row .extra-add { flex: 0 0 auto; width: auto; min-height: 30px; padding: 0 11px; border-radius: 999px; font-size: 11px; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.extras-row .extra-note { max-width: 46%; }
-.extras-row .extra-add.filled { border-style: solid; border-color: var(--line); color: var(--ink); background: var(--card); }
-.review-scroll .extras-row { margin: 0 -1px; }
+:root[data-theme="dark"] .primary:disabled {
+  background: #242525;
+  color: var(--text-tertiary);
+}
+
+.entry-save .sheet-cancel {
+  color: var(--muted);
+}
+
+.categories {
+  padding-top: 10px;
+}
+
+/* Ряд под категориями: заметка первой и всегда на месте, дальше теги как категории, остальные за чипом «Ещё N». Прокручивается только полоса тегов, поэтому заметку ничего не выталкивает за край. */
+.extras-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 16px;
+  padding: 10px 4px 0;
+}
+
+.extras-row .tag-strip {
+  flex: 1 1 0;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+}
+
+.extras-row .extra-add {
+  flex: 0 0 auto;
+  width: auto;
+  min-height: 30px;
+  padding: 0 11px;
+  border-radius: 999px;
+  font-size: 11px;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.extras-row .extra-note {
+  max-width: 46%;
+}
+
+.extras-row .extra-add.filled {
+  border-style: solid;
+  border-color: var(--line);
+  color: var(--ink);
+  background: var(--card);
+}
+
+.review-scroll .extras-row {
+  margin: 0 -1px;
+}
 
 /* Плитка «Ещё N» читается как вход в список, а не как ещё одна категория. */
-.main-categories .grid-icon { width: 16px; height: 16px; border-radius: 0; background: none; display: grid; place-items: center; color: var(--muted); }
-.main-categories .grid-icon svg { display: block; }
-.main-categories button.selected .grid-icon { color: var(--sage); }
+.main-categories .grid-icon {
+  width: 16px;
+  height: 16px;
+  border-radius: 0;
+  background: none;
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+}
+
+.main-categories .grid-icon svg {
+  display: block;
+}
+
+.main-categories button.selected .grid-icon {
+  color: var(--sage);
+}
 
 /* Валюты: сначала знакомые, остальные за одной строкой. */
-.currency-more { margin-top: 10px; border: 1px solid var(--line); border-radius: 13px; color: var(--ink); }
-.currency-list button svg { color: var(--sage); }
-.note-sheet label { display: block; margin: 8px 0 13px; }
+.currency-more {
+  margin-top: 10px;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  color: var(--ink);
+}
+
+.currency-list button svg {
+  color: var(--sage);
+}
+
+.note-sheet label {
+  display: block;
+  margin: 8px 0 13px;
+}
 
 /* История начинается с содержимого: строка чипов вместо четырёх селектов, поиск по иконке, итог одной строкой. */
-.history-toolbar { display: flex; flex-direction: column; gap: 10px; padding: 14px 16px 0; }
-.history-chips { position: relative; display: flex; align-items: center; gap: 6px; }
-.history-chip-strip { display: flex; flex: 1 1 auto; align-items: center; gap: 6px; min-width: 0; overflow-x: auto; scrollbar-width: none; padding-bottom: 2px; }
-.history-chip-strip::-webkit-scrollbar { display: none; }
-.filter-chip { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 4px; min-height: 36px; padding: 0 12px; border: 1px solid var(--control-line); border-radius: 999px; background: var(--card); color: var(--ink); font-size: 12px; font-weight: 600; max-width: 190px; text-align: left; }
-.filter-chip > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.filter-chip .chevron { width: 12px; height: 12px; color: var(--muted); }
-.filter-chip.active { background: var(--sage); border-color: var(--sage); color: var(--on-ink); }
-.filter-chip.active .chevron, .filter-chip.active svg { color: inherit; }
-.filter-chip[aria-expanded="true"] { border-color: var(--sage); }
-.filter-chip.chip-icon { width: 36px; padding: 0; justify-content: center; }
-.history-toolbar > .search { width: 100%; margin: 0; }
-.history-total-line { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-height: 24px; color: var(--muted); font-size: 11px; }
-.history-total-line .history-total { border: 0; background: none; padding: 0; color: var(--ink); font-size: 15px; font-weight: 750; letter-spacing: -.01em; }
-.history-total-line .history-reset { margin-left: auto; min-height: 32px; border: 0; background: none; padding: 0 4px; color: var(--sage); font-size: 11px; font-weight: 700; }
-.history-total-parts { margin: -4px 16px 0; color: var(--text-tertiary); font-size: 10px; }
-.history-selectbar { display: flex; align-items: center; gap: 12px; min-height: 36px; font-size: 12px; font-weight: 600; }
-.history-selectbar .danger-link { margin: 0 0 0 auto; font-size: 12px; }
-.history-selectbar .text-button { font-size: 12px; }
-.history-page .history-list { margin-top: 14px; }
-.history-date { align-items: baseline; }
-.history-date b { padding: 0; background: none; color: var(--ink); font-size: 11px; letter-spacing: 0; text-transform: none; font-variant-numeric: tabular-nums; }
-.history-row b { display: block; min-width: 0; overflow: hidden; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
-.history-row small { font-size: 11px; }
+.history-toolbar {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px 0;
+}
+
+.history-chips {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.history-chip-strip {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+  padding-bottom: 2px;
+}
+
+.history-chip-strip::-webkit-scrollbar {
+  display: none;
+}
+
+.filter-chip {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--control-line);
+  border-radius: 999px;
+  background: var(--card);
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 600;
+  max-width: 190px;
+  text-align: left;
+}
+
+.filter-chip > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.filter-chip .chevron {
+  width: 12px;
+  height: 12px;
+  color: var(--muted);
+}
+
+.filter-chip.active {
+  background: var(--sage);
+  border-color: var(--sage);
+  color: var(--on-ink);
+}
+
+.filter-chip.active .chevron,
+.filter-chip.active svg {
+  color: inherit;
+}
+
+.filter-chip[aria-expanded="true"] {
+  border-color: var(--sage);
+}
+
+.filter-chip.chip-icon {
+  width: 36px;
+  padding: 0;
+  justify-content: center;
+}
+
+.history-toolbar > .search {
+  width: 100%;
+  margin: 0;
+}
+
+.history-total-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-height: 24px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.history-total-line .history-total {
+  border: 0;
+  background: none;
+  padding: 0;
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 750;
+  letter-spacing: -.01em;
+}
+
+.history-total-line .history-reset {
+  margin-left: auto;
+  min-height: 32px;
+  border: 0;
+  background: none;
+  padding: 0 4px;
+  color: var(--sage);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.history-total-parts {
+  margin: -4px 16px 0;
+  color: var(--text-tertiary);
+  font-size: 10px;
+}
+
+.history-selectbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 36px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.history-selectbar .danger-link {
+  margin: 0 0 0 auto;
+  font-size: 12px;
+}
+
+.history-selectbar .text-button {
+  font-size: 12px;
+}
+
+.history-page .history-list {
+  margin-top: 14px;
+}
+
+.history-date {
+  align-items: baseline;
+}
+
+.history-date b {
+  padding: 0;
+  background: none;
+  color: var(--ink);
+  font-size: 11px;
+  letter-spacing: 0;
+  text-transform: none;
+  font-variant-numeric: tabular-nums;
+}
+
+.history-row b {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.history-row small {
+  font-size: 11px;
+}
 
 /* Очередь операций с карты — входящие поверх истории, а не пятая вкладка. */
-.history-inbox { display: grid; grid-template-columns: 38px minmax(0, 1fr) 14px; gap: 11px; align-items: center; width: calc(100% - 32px); margin: 14px 16px 0; padding: 11px 12px; border: 1px solid var(--line); border-radius: 17px; background: var(--card); color: var(--ink); text-align: left; }
-.history-inbox b { display: block; font-size: 12px; }
-.history-inbox small { display: block; margin-top: 2px; color: var(--muted); font-size: 10px; }
-.history-inbox .chevron { transform: rotate(-90deg); color: var(--muted); }
-.review-overlay { position: fixed; inset: 0; z-index: 40; display: flex; flex-direction: column; width: min(100%, 680px); margin: 0 auto; background: var(--paper); animation: slideUp .25s cubic-bezier(.22,.75,.25,1); }
-.review-overlay-head { display: grid; grid-template-columns: 44px minmax(0, 1fr) 44px; align-items: center; height: calc(48px + env(safe-area-inset-top)); padding: env(safe-area-inset-top) 6px 0; border-bottom: 1px solid var(--line); }
-.review-overlay-head h2 { margin: 0; font-size: 14px; text-align: center; }
-.review-overlay .bybit-review-page { flex: 1 1 auto; height: auto; min-height: 0; padding-bottom: calc(12px + env(safe-area-inset-bottom)); }
-@media (min-width: 700px) { .review-overlay { border-inline: 1px solid var(--line); } }
+.history-inbox {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr) 14px;
+  gap: 11px;
+  align-items: center;
+  width: calc(100% - 32px);
+  margin: 14px 16px 0;
+  padding: 11px 12px;
+  border: 1px solid var(--line);
+  border-radius: 17px;
+  background: var(--card);
+  color: var(--ink);
+  text-align: left;
+}
+
+.history-inbox b {
+  display: block;
+  font-size: 12px;
+}
+
+.history-inbox small {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.history-inbox .chevron {
+  transform: rotate(-90deg);
+  color: var(--muted);
+}
+
+.review-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  width: min(100%, 680px);
+  margin: 0 auto;
+  background: var(--paper);
+  animation: slideUp .25s cubic-bezier(.22,.75,.25,1);
+}
+
+.review-overlay-head {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr) 44px;
+  align-items: center;
+  height: calc(48px + env(safe-area-inset-top));
+  padding: env(safe-area-inset-top) 6px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.review-overlay-head h2 {
+  margin: 0;
+  font-size: 14px;
+  text-align: center;
+}
+
+.review-overlay .bybit-review-page {
+  flex: 1 1 auto;
+  height: auto;
+  min-height: 0;
+  padding-bottom: calc(12px + env(safe-area-inset-bottom));
+}
+
+@media (min-width: 700px) {
+  .review-overlay {
+    border-inline: 1px solid var(--line);
+  }
+
+}
 
 /* Аналитика: число без кода валюты (он в кнопке рядом), ⓘ о пересчёте только когда пересчёт был. */
-.rate-info { display: inline-grid; place-items: center; width: 22px; height: 22px; border: 1px solid var(--control-line); border-radius: 50%; background: transparent; color: var(--muted); font-size: 12px; font-weight: 700; font-style: italic; letter-spacing: 0; }
-.rate-info[aria-expanded="true"] { border-color: var(--sage); color: var(--sage); }
-.analytics .rate-caption[role="note"] { margin-top: -2px; }
+.rate-info {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--control-line);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  font-style: italic;
+  letter-spacing: 0;
+}
+
+.rate-info[aria-expanded="true"] {
+  border-color: var(--sage);
+  color: var(--sage);
+}
+
+.analytics .rate-caption[role="note"] {
+  margin-top: -2px;
+}
+
 /* Легенда: строка в фокусе показывает × вместо стрелки, а внизу — путь обратно ко всем категориям. */
-.legend-close { width: 12px; color: var(--text-tertiary); font-size: 14px; line-height: 1; text-align: center; }
-.legend-all { justify-self: start; min-height: 40px; margin-top: 4px; padding: 0; border: 0; background: transparent; color: var(--sage); font-size: 11px; font-weight: 700; }
+.legend-close {
+  width: 12px;
+  color: var(--text-tertiary);
+  font-size: 14px;
+  line-height: 1;
+  text-align: center;
+}
+
+.legend-all {
+  justify-self: start;
+  min-height: 40px;
+  margin-top: 4px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--sage);
+  font-size: 11px;
+  font-weight: 700;
+}
 
 /* Настройки — плоский список: группа = подпись и карточка со строками «понятие · значение ›». */
-.settings-page { padding: 0 0 28px; }
-.settings-list { margin: 12px 16px 0; }
-.settings-list h2 { margin: 0 0 5px; padding: 0 6px; color: var(--text-tertiary); font-size: 10px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; }
-.settings-rows { overflow: hidden; border: 1px solid var(--line); border-radius: 17px; background: var(--card); }
-.settings-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; min-height: 48px; padding: 0 12px 0 14px; border: 0; border-bottom: 1px solid var(--line); background: transparent; color: var(--ink); font-size: 13px; font-weight: 600; text-align: left; transition: background-color .15s ease; }
-.settings-row:last-child { border-bottom: 0; }
-.settings-row > span:first-child { min-width: 0; }
-.settings-row-value { display: inline-flex; flex: 0 1 auto; align-items: center; gap: 4px; min-width: 0; max-width: 58%; color: var(--muted); font-size: 12px; font-weight: 500; }
-.settings-row-value > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.settings-row-value .chevron { flex: 0 0 auto; width: 13px; height: 13px; color: var(--text-tertiary); transform: rotate(-90deg); }
-.settings-row.warn .settings-row-value { color: var(--pending); font-weight: 600; }
-.settings-row.danger { justify-content: center; color: var(--danger); }
-button.settings-row:active:not(:disabled) { background: var(--soft); }
-button.settings-row:disabled { opacity: 1; color: var(--text-tertiary); }
-button.settings-row:disabled .settings-row-value { color: var(--text-disabled); }
-@media (hover: hover) { button.settings-row:hover:not(:disabled) { background: color-mix(in srgb, var(--soft) 55%, transparent); } }
+.settings-page {
+  padding: 0 0 28px;
+}
+
+.settings-list {
+  margin: 12px 16px 0;
+}
+
+.settings-list h2 {
+  margin: 0 0 5px;
+  padding: 0 6px;
+  color: var(--text-tertiary);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+}
+
+.settings-rows {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 17px;
+  background: var(--card);
+}
+
+.settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  min-height: 48px;
+  padding: 0 12px 0 14px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 600;
+  text-align: left;
+  transition: background-color .15s ease;
+}
+
+.settings-row:last-child {
+  border-bottom: 0;
+}
+
+.settings-row > span:first-child {
+  min-width: 0;
+}
+
+.settings-row-value {
+  display: inline-flex;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 58%;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.settings-row-value > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-row-value .chevron {
+  flex: 0 0 auto;
+  width: 13px;
+  height: 13px;
+  color: var(--text-tertiary);
+  transform: rotate(-90deg);
+}
+
+.settings-row.warn .settings-row-value {
+  color: var(--pending);
+  font-weight: 600;
+}
+
+.settings-row.danger {
+  justify-content: center;
+  color: var(--danger);
+}
+
+button.settings-row:active:not(:disabled) {
+  background: var(--soft);
+}
+
+button.settings-row:disabled {
+  opacity: 1;
+  color: var(--text-tertiary);
+}
+
+button.settings-row:disabled .settings-row-value {
+  color: var(--text-disabled);
+}
+
+@media (hover: hover) {
+  button.settings-row:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--soft) 55%, transparent);
+  }
+
+}
 
 /* Шиты списков и пояснения в них. */
-.list-sheet { max-height: calc(100dvh - max(8px, env(safe-area-inset-top))); }
-.list-sheet h3 { margin: 12px 4px 4px; color: var(--text-tertiary); font-size: 10px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; }
-.sheet-copy { margin: 4px 0 12px; color: var(--muted); font-size: 12px; line-height: 1.5; }
-.sheet-copy.centered { text-align: center; }
-.sheet-action { margin-top: 12px; }
-.danger-link.sheet-action { margin-top: 14px; }
-.list-sheet .management-row { min-height: 56px; padding: 8px 4px; }
-.list-sheet .management-row > span:first-child { min-width: 0; font-size: 13px; font-weight: 600; }
-.list-sheet .management-row button { min-height: 40px; }
-.list-sheet .integration-title { margin: 4px 0 8px; }
+.list-sheet {
+  max-height: calc(100dvh - max(8px, env(safe-area-inset-top)));
+}
+
+.list-sheet h3 {
+  margin: 12px 4px 4px;
+  color: var(--text-tertiary);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+}
+
+.sheet-copy {
+  margin: 4px 0 12px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.sheet-copy.centered {
+  text-align: center;
+}
+
+.sheet-action {
+  margin-top: 12px;
+}
+
+.danger-link.sheet-action {
+  margin-top: 14px;
+}
+
+.list-sheet .management-row {
+  min-height: 56px;
+  padding: 8px 4px;
+}
+
+.list-sheet .management-row > span:first-child {
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.list-sheet .management-row button {
+  min-height: 40px;
+}
+
+.list-sheet .integration-title {
+  margin: 4px 0 8px;
+}
 
 /* Перетаскивание за ручку ≡: поднятая строка едет за пальцем, остальные расступаются. */
-.drag-list { position: relative; }
-.drag-row { display: grid; grid-template-columns: 16px minmax(0, 1fr) 44px; align-items: center; gap: 7px; min-height: 52px; border-bottom: 1px solid var(--line); background: var(--paper); }
-.drag-row > i { width: 12px; height: 34px; border-radius: 6px; }
-.drag-row .category-name { min-height: 44px; padding: 0; border: 0; background: none; color: var(--ink); font-size: 13px; font-weight: 600; text-align: left; }
-.drag-row.lifted { position: relative; z-index: 2; border-radius: 12px; border-bottom-color: transparent; background: var(--card); box-shadow: 0 6px 18px rgb(0 0 0 / 16%); }
-.drag-handle { display: grid; place-items: center; width: 44px; height: 44px; color: var(--text-tertiary); font-size: 20px; line-height: 1; cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none; }
-.drag-handle[aria-disabled="true"] { opacity: .4; cursor: default; }
-.drag-row.lifted .drag-handle { cursor: grabbing; }
-:root[data-theme="dark"] .drag-row { background: #181919; }
-:root[data-theme="dark"] .drag-row.lifted { background: #242525; }
+.drag-list {
+  position: relative;
+}
+
+.drag-row {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) 44px;
+  align-items: center;
+  gap: 7px;
+  min-height: 52px;
+  border-bottom: 1px solid var(--line);
+  background: var(--paper);
+}
+
+.drag-row > i {
+  width: 12px;
+  height: 34px;
+  border-radius: 6px;
+}
+
+.drag-row .category-name {
+  min-height: 44px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 600;
+  text-align: left;
+}
+
+.drag-row.lifted {
+  position: relative;
+  z-index: 2;
+  border-radius: 12px;
+  border-bottom-color: transparent;
+  background: var(--card);
+  box-shadow: 0 6px 18px rgb(0 0 0 / 16%);
+}
+
+.drag-handle {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  color: var(--text-tertiary);
+  font-size: 20px;
+  line-height: 1;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.drag-handle[aria-disabled="true"] {
+  opacity: .4;
+  cursor: default;
+}
+
+.drag-row.lifted .drag-handle {
+  cursor: grabbing;
+}
+
+:root[data-theme="dark"] .drag-row {
+  background: #181919;
+}
+
+:root[data-theme="dark"] .drag-row.lifted {
+  background: #242525;
+}
 
 /* Переключатель в редакторе категории. */
-.editor .switch-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 8px 0 14px; color: var(--ink); }
-.editor .switch-row > span { display: flex; flex-direction: column; gap: 2px; min-width: 0; font-size: 13px; }
-.editor .switch-row small { color: var(--muted); font-size: 11px; line-height: 1.35; }
-.editor .switch-row input { position: relative; display: inline-block; flex: 0 0 auto; width: 46px; height: 28px; margin: 0; padding: 0; border: 0; border-radius: 999px; background: var(--line); appearance: none; -webkit-appearance: none; cursor: pointer; transition: background-color .2s ease; }
-.editor .switch-row input::after { content: ""; position: absolute; top: 3px; left: 3px; width: 22px; height: 22px; border-radius: 50%; background: var(--card); box-shadow: 0 1px 3px rgb(0 0 0 / 25%); transition: transform .2s ease; }
-.editor .switch-row input:checked { background: var(--sage); }
-.editor .switch-row input:checked::after { transform: translateX(18px); }
+.editor .switch-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 8px 0 14px;
+  color: var(--ink);
+}
+
+.editor .switch-row > span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  font-size: 13px;
+}
+
+.editor .switch-row small {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.editor .switch-row input {
+  position: relative;
+  display: inline-block;
+  flex: 0 0 auto;
+  width: 46px;
+  height: 28px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: var(--line);
+  appearance: none;
+  -webkit-appearance: none;
+  cursor: pointer;
+  transition: background-color .2s ease;
+}
+
+.editor .switch-row input::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--card);
+  box-shadow: 0 1px 3px rgb(0 0 0 / 25%);
+  transition: transform .2s ease;
+}
+
+.editor .switch-row input:checked {
+  background: var(--sage);
+}
+
+.editor .switch-row input:checked::after {
+  transform: translateX(18px);
+}
 
 /* Напоминание о ссылке доступа — та же карточка, что входящие с карты, с кнопкой вместо стрелки. */
-.history-reminder { grid-template-columns: 38px minmax(0, 1fr) auto; }
-.reminder-mark { display: grid; place-items: center; width: 38px; height: 38px; border-radius: 12px; background: color-mix(in srgb, var(--pending) 16%, var(--card)); color: var(--pending); }
-.reminder-action { min-height: 36px; padding: 0 12px; border: 0; border-radius: 11px; background: var(--ink); color: var(--on-ink); font-size: 12px; font-weight: 700; }
-.access-sheet > h2 { margin: 6px 0 8px; font-size: 18px; }
-.access-sheet .qr { margin-block: 8px; }
+.history-reminder {
+  grid-template-columns: 38px minmax(0, 1fr) auto;
+}
+
+.reminder-mark {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--pending) 16%, var(--card));
+  color: var(--pending);
+}
+
+.reminder-action {
+  min-height: 36px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 11px;
+  background: var(--ink);
+  color: var(--on-ink);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.access-sheet > h2 {
+  margin: 6px 0 8px;
+  font-size: 18px;
+}
+
+.access-sheet .qr {
+  margin-block: 8px;
+}
 
 /* Состояние выбора не меняет метрики текста: строка легенды держит место под процент, пока категория в фокусе. */
-.legend-value small.ghost { visibility: hidden; }
-
-/* На широком экране шит — центрированный диалог, а не лист, выезжающий из-под нижнего края окна. */
-@media (min-width: 700px) {
-  .sheet-backdrop { align-items: center; padding: 24px; }
-  .bottom-sheet, .access-sheet { max-width: 520px; max-height: calc(100dvh - 48px); border-radius: 24px; padding-bottom: 22px; animation: dialog-in .22s cubic-bezier(.22, .75, .25, 1); }
-  .bottom-sheet.tall { height: min(78dvh, 640px); max-height: calc(100dvh - 48px); }
-  .sheet-handle { display: none; }
-  .sheet-backdrop.closing .bottom-sheet, .sheet-backdrop.closing .access-sheet { animation: dialog-out .16s ease forwards; }
+.legend-value small.ghost {
+  visibility: hidden;
 }
+
+@media (min-width: 700px) {
+  /* На широком экране шит — центрированный диалог, а не лист, выезжающий из-под нижнего края окна. */
+  .sheet-backdrop {
+    align-items: center;
+    padding: 24px;
+  }
+
+  .bottom-sheet,
+  .access-sheet {
+    max-width: 520px;
+    max-height: calc(100dvh - 48px);
+    border-radius: 24px;
+    padding-bottom: 22px;
+    animation: dialog-in .22s cubic-bezier(.22, .75, .25, 1);
+  }
+
+  .bottom-sheet.tall {
+    height: min(78dvh, 640px);
+    max-height: calc(100dvh - 48px);
+  }
+
+  .sheet-handle {
+    display: none;
+  }
+
+  .sheet-backdrop.closing .bottom-sheet,
+  .sheet-backdrop.closing .access-sheet {
+    animation: dialog-out .16s ease forwards;
+  }
+
+}
+
 @keyframes dialog-in { from { transform: translateY(12px) scale(.98); opacity: 0; } }
+
 @keyframes dialog-out { to { transform: translateY(8px) scale(.98); opacity: 0; } }
 
-/* Прокручиваемая полоса чипов сама не говорит, что справа есть ещё: пока она не доехала до конца, край затухает.
-   Это накладка поверх полосы, а не mask на ней — маска на прокручиваемом контейнере ломала отрисовку в iOS. */
-.history-chips.more::after, .extras-row.more::after { content: ""; position: absolute; top: 0; bottom: 2px; right: 42px; width: 28px; background: linear-gradient(to right, transparent, var(--paper)); pointer-events: none; }
-.extras-row { position: relative; }
-.extras-row.more::after { top: 10px; bottom: 0; right: 4px; }
-.select-sheet .sheet-done { margin-top: 12px; }
+/* Прокручиваемая полоса чипов сама не говорит, что справа есть ещё: пока она не доехала до конца, край затухает. Это накладка поверх полосы, а не mask на ней — маска на прокручиваемом контейнере ломала отрисовку в iOS. */
+.history-chips.more::after,
+.extras-row.more::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 2px;
+  right: 42px;
+  width: 28px;
+  background: linear-gradient(to right, transparent, var(--paper));
+  pointer-events: none;
+}
+
+.extras-row {
+  position: relative;
+}
+
+.extras-row.more::after {
+  top: 10px;
+  bottom: 0;
+  right: 4px;
+}
+
+.select-sheet .sheet-done {
+  margin-top: 12px;
+}
 
 /* Диагностика жеста на телефоне (?debug=swipe): что видит браузер, поверх всего, касаний не ловит. */
-.swipe-debug { position: fixed; left: 8px; right: 8px; bottom: calc(76px + env(safe-area-inset-bottom)); z-index: 95; margin: 0; padding: 6px 8px; border-radius: 8px; background: rgba(0, 0, 0, .74); color: #e7f1de; font: 10px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; word-break: break-all; pointer-events: none; }
+.swipe-debug {
+  position: fixed;
+  left: 8px;
+  right: 8px;
+  bottom: calc(76px + env(safe-area-inset-bottom));
+  z-index: 95;
+  margin: 0;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, .74);
+  color: #e7f1de;
+  font: 10px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: pre-wrap;
+  word-break: break-all;
+  pointer-events: none;
+}
