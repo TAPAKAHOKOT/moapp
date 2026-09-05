@@ -7,6 +7,7 @@ import { buildRateLookup, registerRateRoutes } from "./rates.js";
 import { registerSyncRoutes } from "./sync.js";
 import { noStore, workspaceContext } from "./tenant-domain-guard.js";
 import { jsonError } from "./validation.js";
+import { localDateKey, requestTimeZone } from "./calendar.js";
 import { getWorkspaceSummary } from "./workspaces.js";
 
 function availableCurrencies() {
@@ -21,24 +22,17 @@ function availableCurrencies() {
   });
 }
 
-const APP_TIME_ZONE = "Europe/Belgrade";
-
-function localDateKey(value: string): string {
-  const parts = new Intl.DateTimeFormat("en-CA", { timeZone: APP_TIME_ZONE, year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(new Date(value));
-  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
-  return `${values.year}-${values.month}-${values.day}`;
-}
-
 /*
  * Rates for every day that has an expense, in the same "to RSD" shape as the latest snapshot. The client converts
  * history totals and its offline analytics by the rate of the purchase day, exactly like the server's analytics,
- * so both screens show one number. Codes cover the expense currencies and the usual analytics targets.
+ * so both screens show one number. Codes cover the expense currencies and the usual analytics targets. Days are
+ * the client's calendar days (?tz=…), the same ones the analytics endpoint groups by.
  */
-function dailyRates(app: FastifyInstance, expenses: ExpenseRow[]) {
+function dailyRates(app: FastifyInstance, expenses: ExpenseRow[], timeZone: string) {
   const codes = new Set(["RSD", "EUR", "USD", app.config.defaultAnalyticsCurrency, ...expenses.map((row) => row.currency)]);
   const lookup = buildRateLookup(app, codes);
   const daily: Record<string, Record<string, number>> = {};
-  for (const date of new Set(expenses.map((row) => localDateKey(row.occurred_at)))) {
+  for (const date of new Set(expenses.map((row) => localDateKey(row.occurred_at, timeZone)))) {
     const rsd = lookup("RSD", date);
     if (!rsd) continue;
     const table: Record<string, number> = { RSD: 1 };
@@ -81,6 +75,7 @@ async function registerBootstrapRoute(app: FastifyInstance): Promise<void> {
     onSend: noStore
   }, async (request, reply) => {
     const { workspaceId, userId } = workspaceContext(request);
+    const timeZone = requestTimeZone((request.query as { tz?: string }).tz);
     const workspace = getWorkspaceSummary(app.db, workspaceId, userId);
     if (!workspace) return reply.code(404).send(jsonError("WORKSPACE_NOT_FOUND", "Workspace not found"));
     const categories = app.db.prepare(`SELECT * FROM categories WHERE workspace_id=?
@@ -95,7 +90,8 @@ async function registerBootstrapRoute(app: FastifyInstance): Promise<void> {
       tags: tags.map(tagJson),
       expenses: expenses.map(expenseJson),
       currencies: currencyList(),
-      rates: { ...bootstrapRates(app.db), daily: dailyRates(app, expenses) },
+      rates: { ...bootstrapRates(app.db), daily: dailyRates(app, expenses, timeZone) },
+      timeZone,
       defaultAnalyticsCurrency: app.config.defaultAnalyticsCurrency,
       serverTime: new Date().toISOString()
     };

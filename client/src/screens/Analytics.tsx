@@ -2,7 +2,7 @@ import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react'
 import { WorkspaceApiError as ApiError, getAnalytics } from '../workspace-api'
 import { getWorkspacePreference, setWorkspacePreference } from '../app-state'
 import type { AnalyticsData, Expense } from '../types'
-import { cachedNumberFormat, convertExpense, countCalendarWeekdays, hasRate, localDateKey, monthDateRange, shiftDateKey, weekDateRange, weekdayFromDateKey } from '../utils'
+import { appTimeZone, cachedNumberFormat, convertExpense, countCalendarWeekdays, hasRate, localDateKey, monthDateRange, shiftDateKey, weekDateRange, weekdayFromDateKey } from '../utils'
 import { expenseTagNames } from '../history'
 import { ChevronIcon, CurrencySheet, prefersReducedMotion, tap } from '../ui'
 import type { Theme } from '../ui'
@@ -15,7 +15,7 @@ export type AnalyticsPeriod = 'week' | 'month'
 
 export const CHART_COLOR = '#758d69'
 
-export function AnalyticsView({ userId, workspaceId, bootstrap, theme, online }: { userId: string; workspaceId: string; bootstrap: Bootstrap; theme: Theme; online: boolean }) {
+export function AnalyticsView({ userId, workspaceId, bootstrap, theme, online, timeZone = appTimeZone() }: { userId: string; workspaceId: string; bootstrap: Bootstrap; theme: Theme; online: boolean; timeZone?: string }) {
   const [target, setTarget] = useState(getWorkspacePreference(userId, workspaceId, 'analytics-currency') || 'RSD')
   const [period, setPeriod] = useState<AnalyticsPeriod>('week')
   const [weekOffset, setWeekOffset] = useState(0)
@@ -31,7 +31,7 @@ export function AnalyticsView({ userId, workspaceId, bootstrap, theme, online }:
   const [analyticsLoading,setAnalyticsLoading]=useState(online)
   const [analyticsError,setAnalyticsError]=useState<string|null>(null)
   const [retryEpoch,setRetryEpoch]=useState(0)
-  const today=localDateKey(new Date())
+  const today=localDateKey(new Date(),timeZone)
   const selectedWeek=weekDateRange(today,weekOffset)
   const selectedMonth=monthDateRange(today,monthOffset)
   const categoryId=focusedCategoryId&&bootstrap.categories.some((category)=>category.id===focusedCategoryId)?focusedCategoryId:null
@@ -46,7 +46,7 @@ export function AnalyticsView({ userId, workspaceId, bootstrap, theme, online }:
   const previousSameDays=shiftDateKey(previousRange.from,periodDays-1)
   const previousTo=partial&&previousSameDays<previousRange.to?previousSameDays:previousRange.to
   const expenseRevision=bootstrap.expenses.map((expense)=>`${expense.id}:${expense.version}:${expense.updatedAt}:${expense.deletedAt||''}:${expense.voidedAt||''}:${expense.amountMinor}:${expense.currency}:${expense.categoryId}:${expense.occurredAt}`).join('|')
-  const requestKey=`${expenseRevision}:${from}:${analyticsTo}:${target}:${period}:${categoryId??'all'}`
+  const requestKey=`${expenseRevision}:${from}:${analyticsTo}:${target}:${period}:${categoryId??'all'}:${timeZone}`
   const fallback=useMemo(()=>fallbackAnalytics(bootstrap,target,from,analyticsTo,categoryId),[bootstrap,target,from,analyticsTo,categoryId])
   const previousFallback=useMemo(()=>fallbackAnalytics(bootstrap,target,previousRange.from,previousTo,categoryId),[bootstrap,target,previousRange.from,previousTo,categoryId])
   // Ответы сервера запоминаются по ключу периода: возврат к уже виденной неделе не ждёт сети. Пока ответа нет,

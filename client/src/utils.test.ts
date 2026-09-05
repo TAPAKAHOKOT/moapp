@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { amountToMinor, applyKeypad, convertExpense, countCalendarWeekdays, formatAmountInput, isoToLocalInput, localDateKey, localInputToIso, monthDateRange, shiftDateKey, startOfWeekDateKey, swipeDirection, weekdayFromDateKey, weekDateRange } from './utils'
+import { amountToMinor, appTimeZone, applyKeypad, convertExpense, countCalendarWeekdays, formatAmountInput, isoToLocalInput, localDateKey, localInputToIso, monthDateRange, shiftDateKey, startOfWeekDateKey, swipeDirection, weekDateRange, weekdayFromDateKey } from './utils'
 import type { Currency, Expense } from './types'
 
 const currencies: Currency[] = [
@@ -78,6 +78,13 @@ describe('Belgrade date helpers', () => {
   it('groups a late UTC expense by Belgrade day', () => {
     expect(localDateKey('2026-08-03T22:30:00.000Z')).toBe('2026-08-04')
     expect(weekdayFromDateKey('2026-08-03')).toBe(0)
+  })
+  it('follows the device calendar and accepts another zone explicitly', () => {
+    expect(appTimeZone()).toBe('Europe/Belgrade')
+    expect(localDateKey('2026-08-03T16:30:00.000Z', 'Asia/Tokyo')).toBe('2026-08-04')
+    expect(localDateKey('2026-08-03T16:30:00.000Z', 'America/New_York')).toBe('2026-08-03')
+    expect(isoToLocalInput('2026-08-03T16:30:00.000Z', 'Asia/Tokyo')).toBe('2026-08-04T01:30')
+    expect(localInputToIso('2026-08-04T01:30', 'Asia/Tokyo')).toBe('2026-08-03T16:30:00.000Z')
   })
   it('finds a Monday-to-Sunday budget week', () => {
     expect(startOfWeekDateKey('2026-08-09')).toBe('2026-08-03')
