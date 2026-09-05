@@ -349,12 +349,61 @@ function SelectSheet({ title, value, options, searchable, onClose, onSelect }: {
   </div>
 }
 
+// Полоса с прокруткой не показывает, что справа есть ещё: пока содержимое не доехало до конца, край затухает.
+function useOverflowHint(ref: React.RefObject<HTMLElement | null>) {
+  const [more, setMore] = useState(false)
+  useLayoutEffect(() => {
+    const node = ref.current
+    if (!node) return
+    const update = () => setMore(node.scrollWidth - node.clientWidth - node.scrollLeft > 1)
+    update()
+    node.addEventListener('scroll', update, { passive: true })
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(update)
+    observer?.observe(node)
+    return () => { node.removeEventListener('scroll', update); observer?.disconnect() }
+  })
+  return more
+}
+
+// Чип фильтра с несколькими значениями: без выбора он называет фильтр, с одним — само значение, с несколькими — счёт.
+function MultiSelect({ label, title, placeholder, values, options, onChange, allLabel, count, className = 'filter-chip' }: { label: string; title: string; placeholder: string; values: string[]; options: SelectOption[]; onChange: (values: string[]) => void; allLabel: string; count: (n: number) => string; className?: string }) {
+  const [open, setOpen] = useState(false)
+  const text = values.length === 0 ? placeholder : values.length === 1 ? options.find((option) => option.value === values[0])?.label ?? placeholder : count(values.length)
+  return <>
+    <button type="button" className={`${className}${values.length ? ' active' : ''}`} aria-label={label} aria-haspopup="dialog" aria-expanded={open} onClick={() => setOpen(true)}><span>{text}</span><ChevronIcon/></button>
+    {open && <MultiSelectSheet title={title} values={values} options={options} allLabel={allLabel} onClose={() => setOpen(false)} onChange={onChange}/>}
+  </>
+}
+
+// Шит выбора нескольких значений: галочки, «Все …» снимает выбор, закрывает «Готово».
+function MultiSelectSheet({ title, values, options, allLabel, onClose, onChange }: { title: string; values: string[]; options: SelectOption[]; allLabel: string; onClose: () => void; onChange: (values: string[]) => void }) {
+  const [query, setQuery] = useState('')
+  const dialogRef = useDialog(onClose)
+  const titleId = useId()
+  const searchable = options.length > 8
+  const normalized = query.trim().toLowerCase()
+  const filtered = normalized ? options.filter((option) => `${option.label} ${option.hint ?? ''}`.toLowerCase().includes(normalized)) : options
+  const toggle = (value: string) => { tap(4); onChange(values.includes(value) ? values.filter((item) => item !== value) : [...values, value]) }
+  return <div className="sheet-backdrop" onMouseDown={onClose}>
+    <section ref={dialogRef} className={`bottom-sheet select-sheet${searchable ? ' tall' : ''}`} role="dialog" aria-modal="true" aria-labelledby={titleId} onMouseDown={(event) => event.stopPropagation()}>
+      <div className="sheet-handle"/><div className="sheet-title"><h2 id={titleId}>{title}</h2><button type="button" className="icon-button" data-dialog-initial-focus onClick={onClose} aria-label="Закрыть">×</button></div>
+      {searchable && <input className="search" type="search" placeholder="Поиск" aria-label={`Поиск: ${title}`} value={query} onChange={(event) => setQuery(event.target.value)}/>}
+      <div className="select-options" role="listbox" aria-label={title} aria-multiselectable="true">
+        {!normalized && <button type="button" role="option" aria-selected={values.length === 0} className="select-option" onClick={() => { if (values.length) { tap(4); onChange([]) } }}><span><b>{allLabel}</b></span>{values.length === 0 && <CheckIcon/>}</button>}
+        {filtered.map((option) => { const active = values.includes(option.value); return <button type="button" role="option" key={option.value} aria-selected={active} aria-label={option.hint ? `${option.label}, ${option.hint}` : undefined} className="select-option" onClick={() => toggle(option.value)}><span><b>{option.label}</b>{option.hint && <small>{option.hint}</small>}</span>{active && <CheckIcon/>}</button> })}
+      </div>
+      {!filtered.length && <p className="sheet-empty" role="status">По запросу «{query}» ничего не найдено.</p>}
+      <button type="button" className="primary sheet-done" onClick={onClose}>Готово</button>
+    </section>
+  </div>
+}
+
 const MAX_EXPENSE_TAGS = 20
 
 // Тег — короткая плашка поверх категории. Один расход может нести несколько тегов, любой тег подходит любой категории.
-function TagChip({ name, color = null, selected = false, onToggle, disabled = false }: { name: string; color?: string | null; selected?: boolean; onToggle?: () => void; disabled?: boolean }) {
+function TagChip({ name, color = null, selected = false, onToggle, disabled = false, inert = false }: { name: string; color?: string | null; selected?: boolean; onToggle?: () => void; disabled?: boolean; inert?: boolean }) {
   if (!onToggle) return <span className="tag-chip" style={tagStyle({ color })}>{name}</span>
-  return <button type="button" className="tag-chip" style={tagStyle({ color })} aria-pressed={selected} disabled={disabled} onClick={onToggle}>{name}</button>
+  return <button type="button" className="tag-chip" style={tagStyle({ color })} aria-pressed={selected} disabled={disabled} tabIndex={inert ? -1 : undefined} onClick={onToggle}>{name}</button>
 }
 
 const TAG_COLORS = ['#819978', '#d98f70', '#d2ad62', '#7d9db4', '#aa8aaf', '#797d72']
@@ -369,14 +418,22 @@ function tagStyle(tag: Pick<Tag, 'color'>) {
   return tag.color ? { '--tag': tag.color } as React.CSSProperties : undefined
 }
 
-// Ряд «Дополнительно»: выбранные теги, «＋ Тег» и «＋ Заметка» одним стилем. Полный список тегов — в шите.
+// Сколько тегов лежит на самом экране расхода до чипа «Ещё N». Выбранные видны всегда.
+const VISIBLE_TAGS = 5
+
+// Ряд под категориями: заметка первой и всегда на месте, дальше теги как категории — по порядку из настроек,
+// остальные за «Ещё N». Полный список с поиском и созданием — в шите.
 function ExtrasRow({ tags, selected, note, onChange, onNote, onCreate, disabled = false, online = true, inert = false }: { tags: Tag[]; selected: string[]; note: string; onChange: (ids: string[]) => void; onNote: () => void; onCreate?: (name: string) => Promise<Tag | null>; disabled?: boolean; online?: boolean; inert?: boolean }) {
   const [open, setOpen] = useState(false)
   const stripRef = useRef<HTMLDivElement>(null)
-  const chosen = sortTags(tags.filter((tag) => selected.includes(tag.id)))
+  const sorted = sortTags(tags)
+  // Порядок стабилен: выбранный чип не переезжает под пальцем в начало, а тег из хвоста списка встаёт в конец ряда.
+  const shown = sorted.filter((tag, index) => index < VISIBLE_TAGS || selected.includes(tag.id))
+  const hidden = sorted.length - shown.length
   const tabIndex = inert ? -1 : undefined
-  // Ряд — единственное место экрана ввода, где разрешён горизонтальный пан. Пока чипам хватает ширины, ему нечего
-  // листать, и браузер отдавал жест пейджеру вкладок: страница отъезжала и возвращалась. Без переполнения пан запрещён.
+  const more = useOverflowHint(stripRef)
+  // Полоса тегов — единственное место экрана ввода, где разрешён горизонтальный пан. Пока чипам хватает ширины, ей
+  // нечего листать, и браузер отдавал жест пейджеру вкладок: страница отъезжала и возвращалась. Без переполнения пан запрещён.
   useLayoutEffect(() => {
     const node = stripRef.current
     if (!node) return
@@ -387,15 +444,20 @@ function ExtrasRow({ tags, selected, note, onChange, onNote, onCreate, disabled 
     observer.observe(node)
     return () => observer.disconnect()
   })
-  const remove = (id: string) => { tap(4); onChange(selected.filter((item) => item !== id)) }
+  const toggle = (id: string) => {
+    tap(4)
+    if (selected.includes(id)) onChange(selected.filter((item) => item !== id))
+    else if (selected.length < MAX_EXPENSE_TAGS) onChange([...selected, id])
+  }
   // Шторка рендерится рядом с рядом, а не внутри него: iOS Safari удерживает position:fixed внутри прокручиваемого
   // контейнера, и подложка оказывалась обрезанной полосой и под футером.
   return <>
-    <div className="tag-strip extras-row" role="group" aria-label="Дополнительно" ref={stripRef}>
-      <span className="extras-label" aria-hidden="true">Дополнительно</span>
-      {chosen.map((tag) => <TagChip key={tag.id} name={tag.name} color={tag.color} selected disabled={disabled || inert} onToggle={() => remove(tag.id)}/>)}
-      <button type="button" className="tag-add extra-add" disabled={disabled} tabIndex={tabIndex} onClick={() => setOpen(true)} aria-label={chosen.length ? 'Добавить или создать тег' : 'Добавить тег'}>＋ Тег</button>
-      <button type="button" className={`tag-add extra-add${note ? ' filled' : ''}`} disabled={disabled} tabIndex={tabIndex} onClick={onNote} aria-label={note ? `Заметка: ${note}` : 'Добавить заметку'}>{note ? `✎ ${note}` : '＋ Заметка'}</button>
+    <div className={`extras-row${more ? ' more' : ''}`} role="group" aria-label="Заметка и теги">
+      <button type="button" className={`tag-add extra-add extra-note${note ? ' filled' : ''}`} disabled={disabled} tabIndex={tabIndex} onClick={onNote} aria-label={note ? `Заметка: ${note}` : 'Добавить заметку'}>{note ? `✎ ${note}` : '＋ Заметка'}</button>
+      <div className="tag-strip" ref={stripRef} role="group" aria-label="Теги">
+        {shown.map((tag) => <TagChip key={tag.id} name={tag.name} color={tag.color} selected={selected.includes(tag.id)} disabled={disabled} inert={inert} onToggle={() => toggle(tag.id)}/>)}
+        <button type="button" className="tag-add extra-add" disabled={disabled} tabIndex={tabIndex} onClick={() => setOpen(true)} aria-label={hidden ? `Ещё ${hidden} ${pluralRu(hidden, ['тег', 'тега', 'тегов'])}, все теги` : tags.length ? 'Все теги' : 'Добавить тег'}>{hidden ? `Ещё ${hidden}` : '＋ Тег'}</button>
+      </div>
     </div>
     {open && <TagSheet tags={tags} selected={selected} online={online} onClose={() => setOpen(false)} onChange={onChange} onCreate={onCreate}/>}
   </>
@@ -1183,7 +1245,7 @@ const LONG_PRESS_MS = 450
 const ROW_DRAG_START = 8
 
 // Строка истории: тап открывает запись, долгое нажатие включает выбор нескольких, свайп влево открывает удаление.
-// Главной строкой идёт то, что человек написал сам (заметка); без заметки — категория. Теги — точками цвета.
+// Заголовок — всегда категория; второй строкой — то, что человек написал сам, и теги текстом: «Maxi · #вдвоём».
 // Строк в истории сотни, и все они живут в дереве постоянно. Мемоизация с колбэками, принимающими запись,
 // даёт перерисовку только тех строк, чьё состояние (выбор, открытый свайп) действительно изменилось.
 const HistoryRow = memo(function HistoryRow({ expense, category, tags, currencies, checked, selecting, open, disabled, onOpen, onToggle, onEdit, onDelete, onVoided }: {
@@ -1241,12 +1303,11 @@ const HistoryRow = memo(function HistoryRow({ expense, category, tags, currencie
   const translate = dragOffset ?? (open ? -ROW_ACTION_WIDTH : 0)
   const tagList = expense.tagIds?.length ? sortTags(tags.filter((tag) => expense.tagIds?.includes(tag.id))) : []
   const categoryName = category?.name || 'Скрытая категория'
-  const title = expense.note || categoryName
-  const subtitle = expense.note ? categoryName : ''
+  const details = [expense.note, tagList.map((tag) => `#${tag.name}`).join(' ')].filter(Boolean).join(' · ')
   return <div className={`history-expense${checked ? ' selected' : ''}${open ? ' open' : ''}`} onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={(event) => finish(true, event.clientX)} onPointerCancel={() => finish(false)}>
     <div className="history-swipe" style={{ transform: translate ? `translateX(${translate}px)` : undefined, transition: dragOffset === null ? undefined : 'none', willChange: dragOffset === null ? undefined : 'transform' }}>
       <label className="expense-check" aria-label={`Выбрать расход ${categoryName}`}><input type="checkbox" tabIndex={selecting ? 0 : -1} checked={checked} onChange={() => onToggle(expense.id)}/><span/></label>
-      <button type="button" className={`history-row${expense.voidedAt ? ' voided' : ''}`} aria-pressed={selecting ? checked : undefined} onClick={click}><i style={{backgroundColor:category?.color ?? '#a9afa5'}}/><span><b><span>{title}</span>{tagList.length ? <span className="tag-dots" aria-label={`Теги: ${tagList.map((tag) => tag.name).join(', ')}`}>{tagList.map((tag) => <i key={tag.id} style={{ background: tag.color ?? 'var(--sage)' }}/>)}</span> : null}</b>{subtitle && <small>{subtitle}</small>}</span><strong>{money(expense.amountMinor,expense.currency,currencies)}</strong>{expense.voidedAt ? <em className="voided-badge" aria-label="Платёж не прошёл, не учитывается">{expense.voidReason?.kind === 'reversed' ? 'Возврат' : 'Не прошёл'}</em> : expense.pending && <em aria-label="Ожидает отправки">●</em>}</button>
+      <button type="button" className={`history-row${expense.voidedAt ? ' voided' : ''}`} aria-pressed={selecting ? checked : undefined} onClick={click}><i style={{backgroundColor:category?.color ?? '#a9afa5'}}/><span><b>{categoryName}</b>{details && <small>{details}</small>}</span><strong>{money(expense.amountMinor,expense.currency,currencies)}</strong>{expense.voidedAt ? <em className="voided-badge" aria-label="Платёж не прошёл, не учитывается">{expense.voidReason?.kind === 'reversed' ? 'Возврат' : 'Не прошёл'}</em> : expense.pending && <em aria-label="Ожидает отправки">●</em>}</button>
     </div>
     <button type="button" className="history-swipe-delete" tabIndex={open ? 0 : -1} aria-hidden={!open} disabled={disabled} onClick={() => onDelete(expense)}><TrashIcon/><span>Удалить</span></button>
   </div>
@@ -1292,14 +1353,13 @@ export const HistoryView = memo(function HistoryView({ userId, workspaceId, boot
     const categoryMap = new Map(bootstrap.categories.map((category) => [category.id, category]))
     const tags = bootstrap.tags ?? []
     const activeExpenses = bootstrap.expenses.filter((item) => !item.deletedAt)
-    const tagOptions = tags
-      .filter((tag) => tag.id === filters.tagId || activeExpenses.some((expense) => expense.tagIds?.includes(tag.id)))
-      .sort((left, right) => left.name.localeCompare(right.name, 'ru-RU'))
+    // Варианты фильтров идут в том же порядке, что на экране расхода и в настройках, а не по алфавиту.
+    const tagOptions = sortTags(tags.filter((tag) => filters.tagIds.includes(tag.id) || activeExpenses.some((expense) => expense.tagIds?.includes(tag.id))))
     const categoryOptions = bootstrap.categories
-      .filter((category) => category.id === filters.categoryId || activeExpenses.some((expense) => expense.categoryId === category.id))
-      .sort((left, right) => left.name.localeCompare(right.name, 'ru-RU'))
+      .filter((category) => filters.categoryIds.includes(category.id) || activeExpenses.some((expense) => expense.categoryId === category.id))
+      .sort((left, right) => Number(left.placement === 'additional') - Number(right.placement === 'additional') || left.sortOrder - right.sortOrder || left.name.localeCompare(right.name, 'ru-RU'))
     const currencyOptions = bootstrap.currencies
-      .filter((currency) => currency.code === filters.currency || activeExpenses.some((expense) => expense.currency === currency.code))
+      .filter((currency) => filters.currencies.includes(currency.code) || activeExpenses.some((expense) => expense.currency === currency.code))
       .sort((left, right) => left.code.localeCompare(right.code))
     const normalizedQuery = filters.query.trim().toLocaleLowerCase('ru-RU')
     const expenses = filterHistoryExpenses(activeExpenses, filters).filter((item) => {
@@ -1321,7 +1381,7 @@ export const HistoryView = memo(function HistoryView({ userId, workspaceId, boot
     })
     const grouped = expenses.reduce<Record<string, Expense[]>>((result, item) => { (result[localDateKey(item.occurredAt)] ||= []).push(item); return result }, {})
     // Итог по показанным записям. В одной валюте — точная сумма; в нескольких — пересчёт в валюту аналитики и разбивка.
-    const totalsTarget = filters.currency || getWorkspacePreference(userId, workspaceId, 'analytics-currency') || bootstrap.defaultAnalyticsCurrency || 'RSD'
+    const totalsTarget = (filters.currencies.length === 1 ? filters.currencies[0] : null) || getWorkspacePreference(userId, workspaceId, 'analytics-currency') || bootstrap.defaultAnalyticsCurrency || 'RSD'
     const sumLabel = (items: Expense[]) => {
       const totals = historyTotals(items, bootstrap.currencies, bootstrap.rates, totalsTarget)
       if (!items.length) return { label: null as string | null, parts: '', totals }
@@ -1349,7 +1409,9 @@ export const HistoryView = memo(function HistoryView({ userId, workspaceId, boot
     else next.add(id)
     return next
   }), [])
-  const filtersActive = Boolean(normalizedQuery || filters.categoryId || filters.tagId || filters.currency || filters.period !== 'all')
+  const filtersActive = Boolean(normalizedQuery || filters.categoryIds.length || filters.tagIds.length || filters.currencies.length || filters.period !== 'all')
+  const chipStrip = useRef<HTMLDivElement>(null)
+  const chipsMore = useOverflowHint(chipStrip)
   const resetFilters = () => {
     setFilters(defaultHistoryPreferences(localDateKey(new Date())))
     setSelected(new Set())
@@ -1455,12 +1517,12 @@ export const HistoryView = memo(function HistoryView({ userId, workspaceId, boot
     {activeExpenses.length > 0 && <div className="history-toolbar">
       {selected.size > 0
         ? <div className="history-selectbar" role="toolbar" aria-label="Выбранные расходы"><span>Выбрано {selected.size}</span><button type="button" className="danger-link" onClick={removeSelected} disabled={deleting} aria-label={`Удалить выбранные расходы: ${selected.size}`}>Удалить</button><button type="button" className="text-button" onClick={() => setSelected(new Set())}>Отмена</button></div>
-        : <div className="history-chips">
-          <div className="history-chip-strip">
+        : <div className={`history-chips${chipsMore ? ' more' : ''}`}>
+          <div className="history-chip-strip" ref={chipStrip}>
           <button type="button" className={`filter-chip${filters.period !== 'all' ? ' active' : ''}`} aria-label="Период истории" aria-haspopup="dialog" aria-expanded={periodOpen} onClick={() => setPeriodOpen(true)}><span>{periodLabel}</span><ChevronIcon/></button>
-          <Select className="filter-chip" label="Категория истории" title="Категория" placeholder="Категория" value={filters.categoryId} onChange={(value) => updateFilters({ categoryId: value })} options={[{ value: '', label: 'Все категории' }, ...categoryOptions.map((category) => ({ value: category.id, label: category.name, ...(category.archivedAt ? { hint: 'скрыта' } : {}) }))]}/>
-          {(currencyOptions.length > 1 || filters.currency) && <Select className="filter-chip" label="Валюта истории" title="Валюта" placeholder="Валюта" value={filters.currency} onChange={(value) => updateFilters({ currency: value })} options={[{ value: '', label: 'Все валюты' }, ...currencyOptions.map((currency) => ({ value: currency.code, label: currency.code, hint: currency.name }))]}/>}
-          {(tagOptions.length > 0 || filters.tagId) && <Select className="filter-chip" label="Тег истории" title="Тег" placeholder="Тег" value={filters.tagId} onChange={(value) => updateFilters({ tagId: value })} options={[{ value: '', label: 'Все теги' }, ...tagOptions.map((tag) => ({ value: tag.id, label: tag.name }))]}/>}
+          <MultiSelect label="Категория истории" title="Категории" placeholder="Категория" allLabel="Все категории" values={filters.categoryIds} onChange={(values) => updateFilters({ categoryIds: values })} count={(n) => `${n} ${pluralRu(n, ['категория', 'категории', 'категорий'])}`} options={categoryOptions.map((category) => ({ value: category.id, label: category.name, ...(category.archivedAt ? { hint: 'скрыта' } : {}) }))}/>
+          {(currencyOptions.length > 1 || filters.currencies.length > 0) && <MultiSelect label="Валюта истории" title="Валюты" placeholder="Валюта" allLabel="Все валюты" values={filters.currencies} onChange={(values) => updateFilters({ currencies: values })} count={(n) => `${n} ${pluralRu(n, ['валюта', 'валюты', 'валют'])}`} options={currencyOptions.map((currency) => ({ value: currency.code, label: currency.code, hint: currency.name }))}/>}
+          {(tagOptions.length > 0 || filters.tagIds.length > 0) && <MultiSelect label="Тег истории" title="Теги" placeholder="Тег" allLabel="Все теги" values={filters.tagIds} onChange={(values) => updateFilters({ tagIds: values })} count={(n) => `${n} ${pluralRu(n, ['тег', 'тега', 'тегов'])}`} options={tagOptions.map((tag) => ({ value: tag.id, label: tag.name }))}/>}
           </div>
           <button type="button" className={`filter-chip chip-icon${searchOpen || filters.query ? ' active' : ''}`} aria-label="Поиск" aria-pressed={searchOpen} onClick={() => { if (searchOpen) updateFilters({ query: '' }); setSearchOpen((value) => !value) }}><SearchIcon/></button>
         </div>}

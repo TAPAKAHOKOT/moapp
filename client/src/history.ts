@@ -8,10 +8,11 @@ export const HISTORY_PERIOD_LABELS: Record<HistoryPeriod, string> = {
   all: 'Все даты', today: 'Сегодня', 'this-week': 'Эта неделя', 'this-month': 'Этот месяц', range: 'Выбрать даты',
 }
 
+// Фильтры по категории, тегу и валюте принимают несколько значений: внутри одного фильтра — «или», между фильтрами — «и».
 export type HistoryFilters = {
-  categoryId: string
-  tagId: string
-  currency: string
+  categoryIds: string[]
+  tagIds: string[]
+  currencies: string[]
   period: HistoryPeriod
   from: string
   to: string
@@ -20,21 +21,26 @@ export type HistoryFilters = {
 export type HistoryPreferences = HistoryFilters & { query: string }
 
 export function defaultHistoryPreferences(today: string): HistoryPreferences {
-  return { query: '', categoryId: '', tagId: '', currency: '', period: 'all', from: `${today.slice(0, 8)}01`, to: today }
+  return { query: '', categoryIds: [], tagIds: [], currencies: [], period: 'all', from: `${today.slice(0, 8)}01`, to: today }
 }
 
 export function parseHistoryPreferences(raw: string | null, today: string): HistoryPreferences {
   const defaults = defaultHistoryPreferences(today)
   if (!raw) return defaults
   try {
-    const saved = JSON.parse(raw) as Partial<Record<keyof HistoryPreferences, unknown>>
+    const saved = JSON.parse(raw) as Partial<Record<keyof HistoryPreferences | 'categoryId' | 'tagId' | 'currency', unknown>>
     const date = (value: unknown, fallback: string) => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : fallback
     const period = (HISTORY_PERIODS as readonly unknown[]).includes(saved.period) ? saved.period as HistoryPeriod : defaults.period
+    // Старые настройки хранили одно значение строкой; оно становится списком из одного элемента.
+    const ids = (list: unknown, single: unknown, valid: (value: string) => boolean) => {
+      const raw = Array.isArray(list) ? list : typeof single === 'string' && single ? [single] : []
+      return [...new Set(raw.filter((value): value is string => typeof value === 'string' && value.length > 0 && valid(value)))].slice(0, 50)
+    }
     return {
       query: typeof saved.query === 'string' ? saved.query.slice(0, 200) : defaults.query,
-      categoryId: typeof saved.categoryId === 'string' ? saved.categoryId.slice(0, 100) : defaults.categoryId,
-      tagId: typeof saved.tagId === 'string' ? saved.tagId.slice(0, 100) : defaults.tagId,
-      currency: typeof saved.currency === 'string' && /^[A-Z]{3}$/.test(saved.currency) ? saved.currency : defaults.currency,
+      categoryIds: ids(saved.categoryIds, saved.categoryId, (value) => value.length <= 100),
+      tagIds: ids(saved.tagIds, saved.tagId, (value) => value.length <= 100),
+      currencies: ids(saved.currencies, saved.currency, (value) => /^[A-Z]{3}$/.test(value)),
       period,
       from: date(saved.from, defaults.from),
       to: date(saved.to, defaults.to),
@@ -57,9 +63,9 @@ export function filterHistoryExpenses(expenses: Expense[], filters: HistoryFilte
   const { from, to } = historyDateRange(filters, today)
   return expenses.filter((expense) => {
     if (expense.deletedAt) return false
-    if (filters.categoryId && expense.categoryId !== filters.categoryId) return false
-    if (filters.tagId && !(expense.tagIds ?? []).includes(filters.tagId)) return false
-    if (filters.currency && expense.currency !== filters.currency) return false
+    if (filters.categoryIds.length && !filters.categoryIds.includes(expense.categoryId)) return false
+    if (filters.tagIds.length && !(expense.tagIds ?? []).some((id) => filters.tagIds.includes(id))) return false
+    if (filters.currencies.length && !filters.currencies.includes(expense.currency)) return false
     const date = localDateKey(expense.occurredAt)
     return (!from || date >= from) && (!to || date <= to)
   }).sort((left, right) => right.occurredAt.localeCompare(left.occurredAt))

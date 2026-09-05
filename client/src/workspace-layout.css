@@ -1339,11 +1339,13 @@ html {
 .entry-save .sheet-cancel { color: var(--muted); }
 .categories { padding-top: 10px; }
 
-/* Ряд «Дополнительно»: выбранные теги, «＋ Тег», «＋ Заметка» одним стилем; полный список тегов — в шите. */
-.extras-row { padding-top: 10px; gap: 6px; }
-.extras-label { font-size: 9px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--text-tertiary); padding-right: 2px; }
-.tag-strip .extra-add { width: auto; min-height: 30px; padding: 0 11px; border-radius: 999px; font-size: 11px; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tag-strip .extra-add.filled { border-style: solid; border-color: var(--line); color: var(--ink); background: var(--card); }
+/* Ряд под категориями: заметка первой и всегда на месте, дальше теги как категории, остальные за чипом «Ещё N».
+   Прокручивается только полоса тегов, поэтому заметку ничего не выталкивает за край. */
+.extras-row { display: flex; align-items: center; gap: 6px; margin: 0 16px; padding: 10px 4px 0; }
+.extras-row .tag-strip { flex: 1 1 0; min-width: 0; margin: 0; padding: 0; }
+.extras-row .extra-add { flex: 0 0 auto; width: auto; min-height: 30px; padding: 0 11px; border-radius: 999px; font-size: 11px; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.extras-row .extra-note { max-width: 46%; }
+.extras-row .extra-add.filled { border-style: solid; border-color: var(--line); color: var(--ink); background: var(--card); }
 .review-scroll .extras-row { margin: 0 -1px; }
 
 /* Плитка «Ещё N» читается как вход в список, а не как ещё одна категория. */
@@ -1358,7 +1360,7 @@ html {
 
 /* История начинается с содержимого: строка чипов вместо четырёх селектов, поиск по иконке, итог одной строкой. */
 .history-toolbar { display: flex; flex-direction: column; gap: 10px; padding: 14px 16px 0; }
-.history-chips { display: flex; align-items: center; gap: 6px; }
+.history-chips { position: relative; display: flex; align-items: center; gap: 6px; }
 .history-chip-strip { display: flex; flex: 1 1 auto; align-items: center; gap: 6px; min-width: 0; overflow-x: auto; scrollbar-width: none; padding-bottom: 2px; }
 .history-chip-strip::-webkit-scrollbar { display: none; }
 .filter-chip { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 4px; min-height: 36px; padding: 0 12px; border: 1px solid var(--control-line); border-radius: 999px; background: var(--card); color: var(--ink); font-size: 12px; font-weight: 600; max-width: 190px; text-align: left; }
@@ -1379,10 +1381,8 @@ html {
 .history-page .history-list { margin-top: 14px; }
 .history-date { align-items: baseline; }
 .history-date b { padding: 0; background: none; color: var(--ink); font-size: 11px; letter-spacing: 0; text-transform: none; font-variant-numeric: tabular-nums; }
-.history-row b { display: flex; align-items: center; min-width: 0; }
-.history-row b > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tag-dots { display: inline-flex; flex: 0 0 auto; gap: 3px; margin-left: 6px; }
-.tag-dots i { display: inline-block; width: 7px; height: 7px; border-radius: 50%; }
+.history-row b { display: block; min-width: 0; overflow: hidden; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.history-row small { font-size: 11px; }
 
 /* Очередь операций с карты — входящие поверх истории, а не пятая вкладка. */
 .history-inbox { display: grid; grid-template-columns: 38px minmax(0, 1fr) 14px; gap: 11px; align-items: center; width: calc(100% - 32px); margin: 14px 16px 0; padding: 11px 12px; border: 1px solid var(--line); border-radius: 17px; background: var(--card); color: var(--ink); text-align: left; }
@@ -1474,3 +1474,10 @@ button.settings-row:disabled .settings-row-value { color: var(--text-disabled); 
 }
 @keyframes dialog-in { from { transform: translateY(12px) scale(.98); opacity: 0; } }
 @keyframes dialog-out { to { transform: translateY(8px) scale(.98); opacity: 0; } }
+
+/* Прокручиваемая полоса чипов сама не говорит, что справа есть ещё: пока она не доехала до конца, край затухает.
+   Это накладка поверх полосы, а не mask на ней — маска на прокручиваемом контейнере ломала отрисовку в iOS. */
+.history-chips.more::after, .extras-row.more::after { content: ""; position: absolute; top: 0; bottom: 2px; right: 42px; width: 28px; background: linear-gradient(to right, transparent, var(--paper)); pointer-events: none; }
+.extras-row { position: relative; }
+.extras-row.more::after { top: 10px; bottom: 0; right: 4px; }
+.select-sheet .sheet-done { margin-top: 12px; }
