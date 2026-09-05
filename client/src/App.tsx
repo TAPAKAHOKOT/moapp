@@ -76,6 +76,23 @@ function SwipeDebug() {
     const describe = (target: EventTarget | null) => target instanceof Element ? `${target.tagName.toLowerCase()}${target.className && typeof target.className === 'string' ? `.${target.className.split(' ').filter(Boolean).slice(0, 2).join('.')}` : ''}` : '?'
     let startX = 0, startY = 0
     const track = () => document.querySelector<HTMLElement>('.entry-track')?.style.transform || '0'
+    // После отпускания — как лента доезжает до покоя: вычисленный translateX по кадрам. Если карточка «пропадает»,
+    // тут будет видно, прыгает ли трансформация (или она ровная, и мигает сам компоузер Safari).
+    const translateOf = (matrix: string) => { const match = /matrix(?:3d)?\(([^)]*)\)/.exec(matrix); if (!match) return matrix === 'none' ? '0' : matrix; const parts = match[1].split(',').map((part) => Number(part.trim())); return String(Math.round(parts.length === 16 ? parts[12]! : parts[4]!)) }
+    let settleFrame = 0
+    const sampleSettle = () => {
+      const node = document.querySelector<HTMLElement>('.entry-track')
+      if (!node) return
+      const values: string[] = []
+      const step = () => {
+        values.push(translateOf(getComputedStyle(node).transform))
+        if (++settleFrame < 18) { requestAnimationFrame(step); return }
+        const card = document.querySelector<HTMLElement>('.entry-card:not(.aside)')
+        push(`settle ${values.join(',')} card=${card ? `${getComputedStyle(card).visibility}/${getComputedStyle(card).opacity}/${Math.round(card.getBoundingClientRect().left)}` : 'нет'}`)
+      }
+      settleFrame = 0
+      requestAnimationFrame(step)
+    }
     // Что вокруг касания: заблокированные предки, состояние полосы тегов и слоя превью — то, что ломается «до перезагрузки».
     const surroundings = (target: EventTarget | null) => {
       const blocked = target instanceof Element ? target.closest('[inert], [aria-hidden="true"]') : null
@@ -101,7 +118,8 @@ function SwipeDebug() {
       if (!touch) return
       push(`move dx${Math.round(touch.clientX - startX)} dy${Math.round(touch.clientY - startY)} pager=${pager?.scrollLeft ?? '-'} track=${track()}${event.defaultPrevented ? ' prevented' : ''} ${viewport()}`, true)
     }
-    const onEnd = (event: TouchEvent) => push(`${event.type} pager=${pager?.scrollLeft ?? '-'} track=${track()} ${viewport()}`)
+    const onEnd = (event: TouchEvent) => { push(`${event.type} pager=${pager?.scrollLeft ?? '-'} track=${track()} ${viewport()}`); sampleSettle() }
+    const onClick = (event: MouseEvent) => push(`click ${describe(event.target)}`)
     const onScroll = () => push(`pager scrolled to ${pager?.scrollLeft}`)
     const onPointerCancel = (event: PointerEvent) => push(`pointercancel ${event.pointerType} ${describe(event.target)}`)
     const onWindow = (event: Event) => push(`${event.type} ${viewport()} inner=${window.innerWidth}x${window.innerHeight}`)
@@ -110,6 +128,7 @@ function SwipeDebug() {
     document.addEventListener('touchend', onEnd, { passive: true })
     document.addEventListener('touchcancel', onEnd, { passive: true })
     document.addEventListener('pointercancel', onPointerCancel, { passive: true })
+    document.addEventListener('click', onClick, { passive: true, capture: true })
     pager?.addEventListener('scroll', onScroll, { passive: true })
     for (const type of ['resize', 'scroll', 'pagehide', 'pageshow', 'popstate', 'blur']) window.addEventListener(type, onWindow, { passive: true })
     window.visualViewport?.addEventListener('resize', onWindow); window.visualViewport?.addEventListener('scroll', onWindow)
@@ -117,6 +136,7 @@ function SwipeDebug() {
       document.removeEventListener('touchstart', onStart); document.removeEventListener('touchmove', onMove)
       document.removeEventListener('touchend', onEnd); document.removeEventListener('touchcancel', onEnd)
       document.removeEventListener('pointercancel', onPointerCancel)
+      document.removeEventListener('click', onClick, { capture: true })
       pager?.removeEventListener('scroll', onScroll)
       for (const type of ['resize', 'scroll', 'pagehide', 'pageshow', 'popstate', 'blur']) window.removeEventListener(type, onWindow)
       window.visualViewport?.removeEventListener('resize', onWindow); window.visualViewport?.removeEventListener('scroll', onWindow)
