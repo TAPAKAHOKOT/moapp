@@ -50,6 +50,15 @@ export function applyKeypad(amount: string, key: string, maxDecimals = 2) {
   return minor !== null && minor <= MAX_SAFE_MINOR ? candidate : amount
 }
 
+// Строка ввода хранится с точкой и без разрядов; на экране сумма читается как в истории: «1 250,5».
+// Хвост сохраняется как набран («12,» и «12,50»), чтобы клавиатура не переставляла введённое.
+export function formatAmountInput(amount: string) {
+  if (!amount) return ''
+  const [whole, fraction] = amount.split('.')
+  const grouped = (whole || '0').replace(/\B(?=(\d{3})+(?!\d))/g, ' ')
+  return fraction === undefined ? grouped : `${grouped},${fraction}`
+}
+
 export function convertExpense(expense: Expense, target: string, currencies: Currency[], rates: RateSnapshot) {
   const decimals = currencies.find((item) => item.code === expense.currency)?.decimals ?? 2
   if (expense.currency === target) return expense.amountMinor / 10 ** decimals

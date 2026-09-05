@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { amountToMinor, applyKeypad, convertExpense, countCalendarWeekdays, isoToLocalInput, localDateKey, localInputToIso, monthDateRange, shiftDateKey, startOfWeekDateKey, swipeDirection, weekdayFromDateKey, weekDateRange } from './utils'
+import { amountToMinor, applyKeypad, convertExpense, countCalendarWeekdays, formatAmountInput, isoToLocalInput, localDateKey, localInputToIso, monthDateRange, shiftDateKey, startOfWeekDateKey, swipeDirection, weekdayFromDateKey, weekDateRange } from './utils'
 import type { Currency, Expense } from './types'
 
 const currencies: Currency[] = [
@@ -85,5 +85,16 @@ describe('Belgrade date helpers', () => {
   it('counts weekday occurrences for fair all-time averages', () => {
     expect(countCalendarWeekdays('2026-08-03', '2026-08-09')).toEqual([1, 1, 1, 1, 1, 1, 1])
     expect(countCalendarWeekdays('2026-08-03', '2026-08-16')).toEqual([2, 2, 2, 2, 2, 2, 2])
+  })
+})
+
+describe('amount display', () => {
+  it('shows the typed amount with a comma and thousands groups, keeping the typed tail', () => {
+    expect(formatAmountInput('')).toBe('')
+    expect(formatAmountInput('1250')).toBe('1\u00a0250')
+    expect(formatAmountInput('924.89')).toBe('924,89')
+    expect(formatAmountInput('12.')).toBe('12,')
+    expect(formatAmountInput('12.50')).toBe('12,50')
+    expect(formatAmountInput('1000000.5')).toBe('1\u00a0000\u00a0000,5')
   })
 })

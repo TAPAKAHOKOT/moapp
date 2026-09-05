@@ -747,7 +747,6 @@ html {
   border-color: var(--sage);
   background: var(--sage);
   color: #fff;
-  font-weight: 750;
 }
 
 .calendar-grid button:active {
@@ -1461,3 +1460,6 @@ button.settings-row:disabled .settings-row-value { color: var(--text-disabled); 
 .reminder-action { min-height: 36px; padding: 0 12px; border: 0; border-radius: 11px; background: var(--ink); color: var(--on-ink); font-size: 12px; font-weight: 700; }
 .access-sheet > h2 { margin: 6px 0 8px; font-size: 18px; }
 .access-sheet .qr { margin-block: 8px; }
+
+/* Состояние выбора не меняет метрики текста: строка легенды держит место под процент, пока категория в фокусе. */
+.legend-value small.ghost { visibility: hidden; }

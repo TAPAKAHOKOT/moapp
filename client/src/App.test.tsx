@@ -494,7 +494,7 @@ describe('Bybit transaction review', () => {
     expect(screen.queryByRole('button', { name: 'Развлечения' })).toBeNull()
 
     fireEvent.click(screen.getByRole('button', { name: 'Ещё 2' }))
-    fireEvent.click(within(screen.getByRole('dialog', { name: 'Все категории' })).getByRole('button', { name: 'Развлечения' }))
+    fireEvent.click(within(screen.getByRole('dialog', { name: 'Другие категории' })).getByRole('button', { name: 'Развлечения' }))
 
     // Выбор в шите, как и плитка, только выделяет категорию; сохраняет кнопка.
     expect(classify).not.toHaveBeenCalled()
