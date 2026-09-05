@@ -268,7 +268,7 @@ They require expected-context headers but no workspace membership. `src/workspac
 - `GET /api/workspaces/:workspaceId/invitations` → `{invitations: InvitationMetadata[]}` for active invitations only. Metadata contains `id`, `workspaceId`, `expiresAt`, and `createdAt`, never the secret URL.
 - `POST /api/workspaces/:workspaceId/invitations` with `{ttlHours?}` → `201 {invitation,url}`.
 - `DELETE /api/workspaces/:workspaceId/invitations/:invitationId` → `204` with no body.
-- `POST /api/access/invitations/preview` with `{token}` → `{kind:'invitation',workspace:{id,name},expiresAt}`.
+- `POST /api/access/invitations/preview` with `{token}` → `{kind:'invitation',workspace:{id,name},expiresAt,invitedBy?}`; `invitedBy` is the creator's current display name and is omitted when the creator cannot be resolved.
 - `POST /api/access/invitations/accept` with `{token}` → `{workspace}` and requires a normal session.
 
 Invitation management is owner-only. Accepting while already a member returns `409 ALREADY_MEMBER`.

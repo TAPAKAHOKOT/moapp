@@ -197,6 +197,7 @@ export function CapabilityScreen({ intent, session, knownUserId, finish, close, 
   const [conflict,setConflict]=useState(false)
   const [targetUserId,setTargetUserId]=useState<string|null>(null)
   const [workspaceTarget,setWorkspaceTarget]=useState<string|null>(null)
+  const [invite,setInvite]=useState<{name:string;invitedBy?:string}|null>(null)
   const [prepared,setPrepared]=useState<RecoveryPrepareResponse|null>(null)
   const online=useOnlineStatus()
   const {confirm,confirmation}=useConfirm()
@@ -206,13 +207,14 @@ export function CapabilityScreen({ intent, session, knownUserId, finish, close, 
 
   useEffect(()=>{
     let active=true
-    setReady(false);setError('');setConflict(false);setTargetUserId(null);setWorkspaceTarget(null)
+    setReady(false);setError('');setConflict(false);setTargetUserId(null);setWorkspaceTarget(null);setInvite(null)
     const preview=async()=>{
       try{
         if(intent.kind==='invite'){
           const value=await previewInvitation(intent.token)
           if(!active)return
-          setWorkspaceTarget(value.workspace.id);setCopy(`Присоединиться к «${value.workspace.name}»`)
+          // Человек открыл ссылку из сообщения и ещё не знает, что это за приложение: заголовок — кто и куда зовёт, строка под ним — что это.
+          setWorkspaceTarget(value.workspace.id);setInvite({name:value.workspace.name,invitedBy:value.invitedBy});setCopy('Общий список трат: записываете свои, итог за месяц виден всем. Без пароля, вход по этой ссылке.')
           if(knownUserId&&!session?.authenticated){setConflict(true);setError('На этом телефоне уже есть другой профиль. Сначала войдите в него по ссылке доступа или удалите его данные.')}
         }else if(intent.kind==='device'){
           const value=await previewDeviceLink(intent.token)
@@ -279,9 +281,12 @@ export function CapabilityScreen({ intent, session, knownUserId, finish, close, 
   }
 
   if(prepared)return <RecoverySave key={prepared.completionToken} prepared={prepared} mode="public" allowLater={false} close={close} complete={completePublicRecovery}/>
-  return <><main className="empty-state"><div className="brand-mark">m</div><p className="eyebrow">Безопасная ссылка</p><h1>{intent.kind==='invite'?'Приглашение':intent.kind==='device'?'Новое устройство':'Ссылка доступа'}</h1><p>{error||copy}</p>
+  const inviteTitle=invite?invite.invitedBy?`${invite.invitedBy} зовёт вас в «${invite.name}»`:`Вас зовут в «${invite.name}»`:'Приглашение'
+  // «Закрыть» на чистом телефоне уводит приглашённого на гостевой экран с «Создать пространство» — и он заводит своё вместо семейного.
+  const closable=intent.kind!=='invite'||Boolean(session?.authenticated)
+  return <><main className="empty-state"><div className="brand-mark">m</div>{intent.kind!=='invite'&&<p className="eyebrow">Безопасная ссылка</p>}<h1>{intent.kind==='invite'?inviteTitle:intent.kind==='device'?'Новое устройство':'Ссылка доступа'}</h1><p>{error||copy}</p>
     {intent.kind==='invite'&&!session?.authenticated&&!conflict&&<label>Как вас называть<input placeholder="Например, Ваня" aria-invalid={Boolean(error&&!name.trim())} value={name} onChange={(event)=>{setError('');setName(event.target.value)}}/></label>}
     {conflict?<button type="button" className="primary danger" disabled={!online||busy} onClick={()=>void (async()=>{if(!await confirm({title:'Выйти из текущего профиля?',message:'Его данные удалятся с этого телефона.',confirmLabel:'Выйти и продолжить',danger:true}))return;setBusy(true);void resolveIdentityConflict(targetUserId).catch((reason)=>setError(reason instanceof Error?reason.message:'Не удалось выйти')).finally(()=>setBusy(false))})()}>{busy?'Выходим…':'Выйти и продолжить'}</button>:<button type="button" className="primary" disabled={!ready||busy||intent.kind==='invite'&&!session?.authenticated&&!name.trim()} onClick={()=>void proceed()}>{busy?'Проверяем…':intent.kind==='invite'?'Присоединиться':intent.kind==='device'?'Подключить':'Вернуть доступ'}</button>}
-    <button className="sheet-cancel" disabled={busy} onClick={close}>Закрыть</button>
+    {closable&&<button className="sheet-cancel" disabled={busy} onClick={close}>Закрыть</button>}
   </main>{confirmation}</>
 }
