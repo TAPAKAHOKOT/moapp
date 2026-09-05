@@ -409,6 +409,18 @@ describe('analytics legend', () => {
 })
 
 describe('analytics filters and fallback', () => {
+  it('tells an empty workspace what analytics will show, and an empty period that records exist elsewhere', () => {
+    const empty = render(<AnalyticsView userId="analytics-user" workspaceId="analytics-workspace" bootstrap={expenseBootstrap()} theme="light" online={false}/>)
+    expect(screen.getAllByText('Появится после первых трат: сколько за месяц и на что')).toHaveLength(2)
+    expect(screen.queryByText('В этом периоде ещё нет расходов')).toBeNull()
+    empty.unmount()
+
+    const old = { id: 'old', amountMinor: 1_000, currency: 'RSD', categoryId: 'products', note: null, occurredAt: '2020-01-10T12:00:00.000Z', createdAt: '2020-01-10T12:00:00.000Z', updatedAt: '2020-01-10T12:00:00.000Z', version: 1, deletedAt: null }
+    render(<AnalyticsView userId="analytics-user" workspaceId="analytics-workspace" bootstrap={expenseBootstrap({ expenses: [old] })} theme="light" online={false}/>)
+    expect(screen.getAllByText('В этом периоде ещё нет расходов')).toHaveLength(2)
+    expect(screen.queryByText('Появится после первых трат: сколько за месяц и на что')).toBeNull()
+  })
+
   it('starts without a category filter and labels cached data with its timestamp', () => {
     const bootstrap = expenseBootstrap()
     render(<AnalyticsView userId="analytics-user" workspaceId="analytics-workspace" bootstrap={bootstrap} theme="light" online={false}/>)
@@ -964,7 +976,7 @@ describe('workspace onboarding controls', () => {
   it('explains the difference between initial, rotating and public recovery links', () => {
     const complete = vi.fn().mockResolvedValue(undefined)
     const initial = render(<RecoverySave prepared={prepared} complete={complete} close={vi.fn()} mode="initial"/>)
-    expect(screen.getByText(/показать эту ссылку снова будет нельзя/i)).not.toBeNull()
+    expect(screen.getByText('Это ваш ключ от приложения. Пароля нет, и если телефон потеряется, вернуться можно только по этой ссылке. Сохраните её в Заметки и никому не пересылайте.')).not.toBeNull()
     initial.unmount()
 
     const rotation = render(<RecoverySave prepared={prepared} complete={complete} close={vi.fn()} mode="rotation"/>)
