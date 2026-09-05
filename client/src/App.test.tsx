@@ -121,6 +121,7 @@ describe('expense card swipe', () => {
     render(<EntryView
       userId="user-a"
       workspaceId="workspace-a"
+      workspace={bootstrap.workspace}
       bootstrap={bootstrap}
       setBootstrap={vi.fn()}
       currentId="newer"
@@ -157,7 +158,7 @@ describe('expense card swipe', () => {
       defaultAnalyticsCurrency: 'RSD',
       serverTime: '2026-08-10T14:00:00.000Z',
     }
-    render(<EntryView userId="user-a" workspaceId="workspace-a" bootstrap={bootstrap} setBootstrap={vi.fn()} currentId="old" setCurrentId={setCurrentId} refreshPending={vi.fn()} onDraftDirtyChange={vi.fn()} active/>)
+    render(<EntryView userId="user-a" workspaceId="workspace-a" workspace={expenseBootstrap().workspace} bootstrap={bootstrap} setBootstrap={vi.fn()} currentId="old" setCurrentId={setCurrentId} refreshPending={vi.fn()} onDraftDirtyChange={vi.fn()} active/>)
 
     const entry = screen.getByRole('region', { name: 'Ввод суммы' })
     fireEvent.pointerDown(entry, { pointerType: 'mouse', button: 0, clientX: 300, clientY: 20 })
@@ -175,7 +176,7 @@ describe('expense card swipe', () => {
       { id: 'newer', amountMinor: 2_000, currency: 'RSD', categoryId: 'products', note: null, occurredAt: '2026-08-10T13:00:00.000Z', createdAt: '2026-08-10T13:00:00.000Z', updatedAt: '2026-08-10T13:00:00.000Z', version: 1, deletedAt: null },
       { id: 'older', amountMinor: 1_000, currency: 'RSD', categoryId: 'products', note: null, occurredAt: '2026-08-09T13:00:00.000Z', createdAt: '2026-08-09T13:00:00.000Z', updatedAt: '2026-08-09T13:00:00.000Z', version: 1, deletedAt: null },
     ] })
-    render(<EntryView userId="user-a" workspaceId="workspace-a" bootstrap={bootstrap} setBootstrap={vi.fn()} currentId="newer" setCurrentId={setCurrentId} refreshPending={vi.fn()} onDraftDirtyChange={vi.fn()} active/>)
+    render(<EntryView userId="user-a" workspaceId="workspace-a" workspace={expenseBootstrap().workspace} bootstrap={bootstrap} setBootstrap={vi.fn()} currentId="newer" setCurrentId={setCurrentId} refreshPending={vi.fn()} onDraftDirtyChange={vi.fn()} active/>)
     fireEvent.click(screen.getByRole('button', { name: '1' }))
     const entry = screen.getByRole('region', { name: 'Ввод суммы' })
     fireEvent.pointerDown(entry, { pointerType: 'mouse', button: 0, clientX: 100, clientY: 20 })
@@ -195,7 +196,7 @@ describe('expense editing and saving', () => {
     const submit = vi.spyOn(workspaceApi, 'submitExpenseOperation').mockResolvedValue(null)
     const archived = { id: 'old-category', name: 'Старое кафе', color: '#758d69', placement: 'main' as const, sortOrder: 0, createdAt: '2026-08-01T00:00:00.000Z', updatedAt: '2026-08-02T00:00:00.000Z', archivedAt: '2026-08-03T00:00:00.000Z', version: 2 }
     const expense = { id: 'old', amountMinor: 1_000, currency: 'RSD', categoryId: archived.id, note: null, occurredAt: '2026-08-09T13:00:00.000Z', createdAt: '2026-08-09T13:00:00.000Z', updatedAt: '2026-08-09T13:00:00.000Z', version: 1, deletedAt: null }
-    render(<EntryView userId="user-a" workspaceId="workspace-a" bootstrap={expenseBootstrap({ categories: [archived], expenses: [expense] })} setBootstrap={vi.fn()} currentId="old" setCurrentId={vi.fn()} refreshPending={vi.fn()} onDraftDirtyChange={vi.fn()} active/>)
+    render(<EntryView userId="user-a" workspaceId="workspace-a" workspace={expenseBootstrap().workspace} bootstrap={expenseBootstrap({ categories: [archived], expenses: [expense] })} setBootstrap={vi.fn()} currentId="old" setCurrentId={vi.fn()} refreshPending={vi.fn()} onDraftDirtyChange={vi.fn()} active/>)
 
     expect(screen.getByRole('region', { name: 'Ввод суммы' }).querySelector('.entry-save')).not.toBeNull()
     fireEvent.click(screen.getByRole('button', { name: '1' }))
@@ -206,9 +207,30 @@ describe('expense editing and saving', () => {
     expect(submit.mock.calls[0]?.[3]).toEqual(expect.objectContaining({ categoryId: archived.id }))
   })
 
+  // Первый сохранённый расход объясняется один раз: владельцу — где позвать домашних, участнику — что запись видна всем.
+  it('explains the very first saved expense once and then goes back to the short toast', async () => {
+    vi.spyOn(workspaceApi, 'submitExpenseOperation').mockResolvedValue(null)
+    const addOne = () => {
+      fireEvent.click(screen.getByRole('button', { name: '1' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Продукты' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Сохранить 1 RSD' }))
+    }
+    const owner = render(<EntryView userId="user-a" workspaceId="workspace-a" workspace={expenseBootstrap().workspace} bootstrap={expenseBootstrap()} setBootstrap={vi.fn()} currentId={null} setCurrentId={vi.fn()} refreshPending={vi.fn()} onDraftDirtyChange={vi.fn()} active/>)
+    addOne()
+    expect(await screen.findByText('Записано. Домашних можно пригласить в настройках, строка «Участники»')).not.toBeNull()
+    addOne()
+    expect(await screen.findByText('Расход добавлен')).not.toBeNull()
+    owner.unmount()
+
+    const member = { ...expenseBootstrap().workspace, id: 'workspace-b', name: 'Семья', role: 'member' as const }
+    render(<EntryView userId="user-a" workspaceId="workspace-b" workspace={member} bootstrap={expenseBootstrap({ workspaceId: 'workspace-b', workspace: member })} setBootstrap={vi.fn()} currentId={null} setCurrentId={vi.fn()} refreshPending={vi.fn()} onDraftDirtyChange={vi.fn()} active/>)
+    addOne()
+    expect(await screen.findByText('Записано. Видно всем в «Семья»')).not.toBeNull()
+  })
+
   it('locks conflicting controls while a new expense is being saved', async () => {
     vi.spyOn(workspaceApi, 'submitExpenseOperation').mockImplementation(() => new Promise(() => {}))
-    render(<EntryView userId="user-a" workspaceId="workspace-a" bootstrap={expenseBootstrap()} setBootstrap={vi.fn()} currentId={null} setCurrentId={vi.fn()} refreshPending={vi.fn()} onDraftDirtyChange={vi.fn()} active/>)
+    render(<EntryView userId="user-a" workspaceId="workspace-a" workspace={expenseBootstrap().workspace} bootstrap={expenseBootstrap()} setBootstrap={vi.fn()} currentId={null} setCurrentId={vi.fn()} refreshPending={vi.fn()} onDraftDirtyChange={vi.fn()} active/>)
 
     expect(screen.queryByRole('button', { name: 'Удалить расход' })).toBeNull()
     // Плитка категории только выбирает; сохраняет одна кнопка, и до выбора она сообщает, чего не хватает.
@@ -558,7 +580,7 @@ describe('Bybit transaction review', () => {
     expect(reviewAmount.getAttribute('data-size')).toBe('medium')
     cleanup()
 
-    render(<EntryView userId="user-a" workspaceId="workspace-a" bootstrap={expenseBootstrap()} setBootstrap={vi.fn()} currentId={null} setCurrentId={vi.fn()} refreshPending={vi.fn()} onDraftDirtyChange={vi.fn()} active/>)
+    render(<EntryView userId="user-a" workspaceId="workspace-a" workspace={expenseBootstrap().workspace} bootstrap={expenseBootstrap()} setBootstrap={vi.fn()} currentId={null} setCurrentId={vi.fn()} refreshPending={vi.fn()} onDraftDirtyChange={vi.fn()} active/>)
     const entryAmount = () => screen.getByRole('region', { name: 'Ввод суммы' }).querySelector('.entry-card:not(.aside) .amount-value')
     expect(entryAmount()?.getAttribute('data-size')).toBe('normal')
     for (const key of '12345678') fireEvent.click(screen.getByRole('button', { name: key }))

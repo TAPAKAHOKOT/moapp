@@ -1,7 +1,7 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { WorkspaceApiError as ApiError, submitExpenseOperation } from '../workspace-api'
 import { getWorkspacePreference, setWorkspacePreference } from '../app-state'
-import type { Category, Currency, Expense, Tag } from '../types'
+import type { Category, Currency, Expense, Tag, WorkspaceSummary } from '../types'
 import { amountToMinor, applyKeypad, cachedNumberFormat, formatAmountInput, isoToLocalInput, localInputToIso, swipeDirection } from '../utils'
 import { ChevronIcon, CurrencySheet, GridIcon, Toast, TrashIcon, prefersReducedMotion, tap, useConfirm, useDialog, useToast } from '../ui'
 import { amountSize, formatEntryDate, formatShortWeekday, inputFromExpense } from '../format'
@@ -150,9 +150,10 @@ export function EntryLowerPreview({ main, additional, tags, state }: { main: Cat
   </>
 }
 
-export function EntryView({ userId, workspaceId, bootstrap, setBootstrap, currentId, setCurrentId, refreshPending, onDraftDirtyChange, active }: {
+export function EntryView({ userId, workspaceId, workspace, bootstrap, setBootstrap, currentId, setCurrentId, refreshPending, onDraftDirtyChange, active }: {
   userId: string
   workspaceId: string
+  workspace: WorkspaceSummary
   bootstrap: Bootstrap; setBootstrap: React.Dispatch<React.SetStateAction<Bootstrap>>; currentId: string | null; setCurrentId: (id: string | null) => void; refreshPending: () => void; onDraftDirtyChange: (dirty: boolean) => void; active: boolean
 }) {
   const activeExpenses = useMemo(() => bootstrap.expenses.filter((item) => !item.deletedAt).sort((a, b) => b.occurredAt.localeCompare(a.occurredAt)), [bootstrap.expenses])
@@ -266,6 +267,14 @@ export function EntryView({ userId, workspaceId, bootstrap, setBootstrap, curren
     }
   }
 
+  // Самое первое сохранение в этом пространстве на этом профиле: вместо «Расход добавлен» — куда попала запись
+  // и что делать дальше (владельцу — позвать домашних). Дальше снова короткий тост.
+  const firstExpenseNotice = () => {
+    if (getWorkspacePreference(userId, workspaceId, 'first-expense-toast')) return 'Расход добавлен'
+    setWorkspacePreference(userId, workspaceId, 'first-expense-toast', '1')
+    return workspace.role === 'owner' ? 'Записано. Домашних можно пригласить в настройках, строка «Участники»' : `Записано. Видно всем в «${workspace.name}»`
+  }
+
   const submitExpense = async () => {
     const submittedForm = { ...form }
     const submittedCurrent = current
@@ -279,7 +288,7 @@ export function EntryView({ userId, workspaceId, bootstrap, setBootstrap, curren
       const result = await submitExpenseOperation(userId, workspaceId, submittedCurrent ? 'updateExpense' : 'createExpense', expense)
       if (result?.expense) setBootstrap((data) => ({ ...data, expenses: data.expenses.map((item) => item.id === expense.id ? result.expense! : item) }))
       else if (!result) setBootstrap((data) => ({ ...data, expenses: data.expenses.map((item) => item.id === expense.id ? { ...item, pending:true } : item) }))
-      notify(result?.status === 'conflict' ? 'Изменение конфликтует с сервером. Откройте «Не отправлено» вверху.' : submittedCurrent ? 'Изменения сохранены' : 'Расход добавлен')
+      notify(result?.status === 'conflict' ? 'Изменение конфликтует с сервером. Откройте «Не отправлено» вверху.' : submittedCurrent ? 'Изменения сохранены' : firstExpenseNotice())
       if (!submittedCurrent && !currentId && JSON.stringify(formRef.current) === JSON.stringify(submittedForm)) {
         const next = { ...EMPTY_FORM, currency: submittedForm.currency }
         draft.current = next
@@ -538,11 +547,11 @@ export function EntryView({ userId, workspaceId, bootstrap, setBootstrap, curren
   const occurredLabel = formatEntryDate(form.occurredAt) || formatEntryDate(isoToLocalInput(new Date().toISOString()))
   const faceOf = (expense: Expense): CardFace => {
     const data = inputFromExpense(expense, bootstrap.currencies)
-    return { kind: 'edit', title: 'Редактирование', date: formatEntryDate(data.occurredAt), amount: data.amount, currency: data.currency }
+    return { kind: 'edit', title: 'Сохранённый расход', date: formatEntryDate(data.occurredAt), amount: data.amount, currency: data.currency }
   }
   const blankFace = (amount: string, currency: string): CardFace => ({ kind: 'new', title: 'Новый расход', date: formatEntryDate(isoToLocalInput(new Date().toISOString())), amount, currency })
   const liveFace: CardFace = current
-    ? { kind: 'edit', title: 'Редактирование', date: occurredLabel, amount: form.amount, currency: form.currency }
+    ? { kind: 'edit', title: 'Сохранённый расход', date: occurredLabel, amount: form.amount, currency: form.currency }
     : { ...blankFace(form.amount, form.currency), date: occurredLabel }
   const olderFace = olderNeighbour ? faceOf(olderNeighbour) : null
   const newerFace = newerNeighbour ? faceOf(newerNeighbour)

@@ -182,10 +182,6 @@ p {
   pointer-events: none;
 }
 
-.topline.topline-edit .eyebrow {
-  color: var(--danger);
-}
-
 .entry-actions {
   display: flex;
   align-items: center;
