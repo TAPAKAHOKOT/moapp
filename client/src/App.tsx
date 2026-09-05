@@ -1,5 +1,5 @@
 import { startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { appTimeZone, localInputToIso } from './utils'
+import { appTimeZone, localInputToIso, workspaceCurrency } from './utils'
 import { WorkspaceApiError as ApiError, allowWorkspaceMutations, blockWorkspaceMutations, discardOutboxIssues, getBootstrap, getBybitCardStatus, getSession, listExpenses, logoutExpected, prepareInitialOrManualRecovery, probeServer, retryOutboxIssue, setSessionContext, syncAllWorkspaces } from './workspace-api'
 import { cacheBootstrap, migrateLegacyOfflineData, outboxStats, readCachedProfile, waitForWorkspaceOfflineWrites } from './workspace-offline'
 import { REMINDER_COMPACT_AFTER, applyMembershipLoss, beginLogout, chooseCachedWorkspace, closeCapability, createAppState, createIdentityCoordinator, createLoggedOutState, forgetKnownProfile, hydrateAppState, openLegacyClaim, readReminderMemory, reminderSnoozed, setActiveWorkspace, settlePendingLogout, snoozeReminder, updateWorkspace, writeReminderMemory } from './app-state'
@@ -501,13 +501,13 @@ export default function App({ capability = null }: { capability?: CapabilityInte
     void refreshWorkspaceStats(current.session.user.id,current.activeWorkspaceId)
   },[refreshWorkspaceStats])
 
-  const create=async(id:string,name:string,displayName?:string)=>{
+  const create=async(id:string,name:string,currency:string,displayName?:string)=>{
     setError('')
     let createdIdentity=false
     try{
       let current=stateRef.current.session
       if(!current?.authenticated){if(!displayName)return;current=await createIdentityWithProbe(displayName);allowWorkspaceMutations();createdIdentity=true}
-      await createWorkspaceWithProbe(id,name)
+      await createWorkspaceWithProbe(id,name,currency)
       const next=await getSession()
       if(!next.authenticated)throw new Error('Сервер не подтвердил созданное пространство')
       let built=await buildState(next,null);built=setActiveWorkspace(built,id);capabilityRef.current=null;commitState(built)
@@ -683,7 +683,7 @@ if(Math.abs(node.scrollLeft-pagerTarget.current)>1)node.scrollLeft=pagerTarget.c
     </main>
     <nav className="bottom-nav" aria-label="Основная навигация">{navigationTabs.map((item)=><button type="button" key={item.id} aria-current={tab===item.id?'page':undefined} aria-label={item.id==='history'&&reviewCount?`История: ${reviewCount} операций с карты ждут разбора`:item.label} className={tab===item.id?'active':''} onClick={()=>{if(tab!==item.id)tap(4);setTab(item.id)}}><span><NavIcon tab={item.id}/>{item.id==='history'&&reviewCount>0&&<b className="nav-badge">{reviewCount>99?'99+':reviewCount}</b>}</span><small>{item.label}</small></button>)}</nav>
     {reviewOpen&&reviewConnected&&<ReviewOverlay onClose={()=>setReviewOpen(false)}><BybitReviewView workspaceId={workspaceId} categories={bootstrap.categories} currencies={bootstrap.currencies} tags={bootstrap.tags??[]} onTag={(tag)=>setWorkspaceData((data)=>({...data,tags:[tag,...(data.tags??[]).filter((item)=>item.id!==tag.id)]}))} online={serverAvailable} onStatus={updateBybitStatus} pendingCount={bybitStatus?.pendingCount??0} active onExpense={(expense)=>setWorkspaceData((data)=>({...data,expenses:[expense,...data.expenses.filter((item)=>item.id!==expense.id)]}))} onExpenseUndo={(expenseId)=>setWorkspaceData((data)=>({...data,expenses:data.expenses.filter((item)=>item.id!==expenseId)}))}/></ReviewOverlay>}
-    {switchOpen&&<WorkspaceSwitcher items={auth.workspaces} active={workspaceId} runtimes={state.runtimes} online={serverAvailable} onSelect={(id)=>void switchWorkspace(id)} onCreate={()=>void openCreate()}/>} {createOpen&&<CreateWorkspaceSheet existing onClose={()=>setCreateOpen(false)} onCreate={create}/>} {issuesOpen&&<SyncIssuesSheet userId={auth.user.id} workspaceId={workspaceId} bootstrap={bootstrap} online={serverAvailable} onClose={()=>setIssuesOpen(false)} onRetry={retryIssue} onDiscard={discardIssues}/>} {initialRecovery&&<RecoverySave key={initialRecovery.completionToken} prepared={initialRecovery} mode="initial" close={()=>setInitialRecovery(null)} complete={async()=>{
+    {switchOpen&&<WorkspaceSwitcher items={auth.workspaces} active={workspaceId} runtimes={state.runtimes} online={serverAvailable} onSelect={(id)=>void switchWorkspace(id)} onCreate={()=>void openCreate()}/>} {createOpen&&<CreateWorkspaceSheet existing initialCurrency={workspaceCurrency(bootstrap)} onClose={()=>setCreateOpen(false)} onCreate={create}/>} {issuesOpen&&<SyncIssuesSheet userId={auth.user.id} workspaceId={workspaceId} bootstrap={bootstrap} online={serverAvailable} onClose={()=>setIssuesOpen(false)} onRetry={retryIssue} onDiscard={discardIssues}/>} {initialRecovery&&<RecoverySave key={initialRecovery.completionToken} prepared={initialRecovery} mode="initial" close={()=>setInitialRecovery(null)} complete={async()=>{
       const outcome=await completeRotationSafely({prepared:initialRecovery,targetUserId:auth.user.id})
       if(outcome.status!=='completed')throw new Error(outcome.status==='rotation-stale'?'Параллельно была сохранена другая ссылка доступа.':'Не удалось подтвердить ссылку. Повторите из настроек.')
       await hydrate(outcome.session,true)

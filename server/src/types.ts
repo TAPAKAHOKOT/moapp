@@ -70,6 +70,8 @@ export type UserProfile = {
 export type WorkspaceSummary = {
   id: string;
   name: string;
+  /** ISO 4217 code a new expense starts in and totals are shown in unless the person picks another. */
+  currency: string;
   role: "owner" | "member";
   version: number;
   joinedAt: string;
@@ -135,6 +137,7 @@ export type SessionRow = {
 export type WorkspaceRow = {
   id: string;
   name: string;
+  currency: string;
   owner_user_id: string;
   version: number;
   created_at: string;

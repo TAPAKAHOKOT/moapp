@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import Database from "better-sqlite3";
-import { openDatabase, seedWorkspaceCategories } from "../src/db.js";
+import { backfillWorkspaceCurrencies, openDatabase, seedWorkspaceCategories } from "../src/db.js";
 
 const LEGACY_CATEGORY = {
   id: "custom-category",
@@ -149,7 +149,7 @@ test("a clean file reaches the latest schema without hidden identity, workspace,
   const fixture = temporaryDatabase();
   try {
     let db = openDatabase(fixture.path);
-    assert.equal((db.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number }).version, 10);
+    assert.equal((db.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number }).version, 11);
     for (const table of ["users", "workspaces", "memberships", "categories", "legacy_claims", "oauth_clients", "oauth_authorization_codes", "oauth_tokens", "bybit_card_connections", "bybit_card_transactions"] as const) {
       assert.equal((db.prepare(`SELECT count(*) AS count FROM ${table}`).get() as { count: number }).count, 0);
     }
@@ -157,7 +157,7 @@ test("a clean file reaches the latest schema without hidden identity, workspace,
     const sizeAfterFirstStart = statSync(fixture.path).size;
 
     db = openDatabase(fixture.path);
-    assert.equal((db.prepare("SELECT count(*) AS count FROM schema_migrations").get() as { count: number }).count, 10);
+    assert.equal((db.prepare("SELECT count(*) AS count FROM schema_migrations").get() as { count: number }).count, 11);
     assert.equal((db.prepare("SELECT count(*) AS count FROM users").get() as { count: number }).count, 0);
     assert.equal(statSync(fixture.path).size, sizeAfterFirstStart);
     db.close();
@@ -178,6 +178,7 @@ for (const version of [1, 2] as const) {
       const claim = db.prepare("SELECT * FROM legacy_claims").get() as Record<string, unknown>;
       assert.equal(workspace.name, "Основное");
       assert.equal(workspace.owner_user_id, user.id);
+      assert.equal(workspace.currency, "RSD", "the legacy workspace takes the currency of its only active expense");
       assert.deepEqual(claim, {
         workspace_id: workspace.id,
         owner_user_id: user.id,
@@ -422,7 +423,7 @@ test("an existing v3 database receives the singleton hardening migration", () =>
     db.close();
 
     db = openDatabase(fixture.path);
-    assert.equal((db.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number }).version, 10);
+    assert.equal((db.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number }).version, 11);
     assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type='index' AND name='legacy_claims_singleton_idx'").get());
     db.close();
   } finally {
@@ -447,12 +448,44 @@ test("a copy failure rolls v3 back and leaves a retryable v2 database", () => {
     db.close();
 
     db = openDatabase(fixture.path);
-    assert.equal((db.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number }).version, 10);
+    assert.equal((db.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number }).version, 11);
     assert.equal((db.prepare("SELECT count(*) AS count FROM expenses").get() as { count: number }).count, 2);
     assert.deepEqual(db.pragma("foreign_key_check"), []);
     db.close();
   } finally {
     rmSync(fixture.directory, { recursive: true, force: true });
+  }
+});
+
+test("the schema-11 backfill gives a workspace its most used currency and leaves an empty one in dinars", () => {
+  const db = openDatabase(":memory:");
+  try {
+    const owner = randomUUID();
+    const [euro, tie, empty] = [randomUUID(), randomUUID(), randomUUID()];
+    for (const [id, name] of [[euro, "Euro"], [tie, "Tie"], [empty, "Empty"]] as const) {
+      createWorkspace(db, id, owner, name);
+      seedWorkspaceCategories(db, id);
+    }
+    const insert = db.prepare(`INSERT INTO expenses(workspace_id,id,amount_minor,currency,category_id,occurred_at,note,version,created_at,updated_at,deleted_at)
+      VALUES (?,?,100,?,'products',?,NULL,1,?,?,?)`);
+    const add = (workspaceId: string, currency: string, occurredAt: string, deletedAt: string | null = null) =>
+      insert.run(workspaceId, randomUUID(), currency, occurredAt, occurredAt, occurredAt, deletedAt);
+    add(euro, "EUR", "2026-03-01T10:00:00.000Z");
+    add(euro, "EUR", "2026-03-02T10:00:00.000Z");
+    add(euro, "RSD", "2026-03-03T10:00:00.000Z");
+    for (let index = 0; index < 5; index += 1) add(euro, "USD", "2026-03-04T10:00:00.000Z", "2026-03-05T10:00:00.000Z");
+    add(tie, "RSD", "2026-01-01T10:00:00.000Z");
+    add(tie, "USD", "2026-02-01T10:00:00.000Z");
+    db.prepare("UPDATE workspaces SET currency='XXX'").run();
+
+    backfillWorkspaceCurrencies(db);
+
+    const currency = (id: string) => db.prepare("SELECT currency FROM workspaces WHERE id=?").pluck().get(id);
+    assert.equal(currency(euro), "EUR", "deleted records do not count");
+    assert.equal(currency(tie), "USD", "a tie goes to the more recent purchase");
+    assert.equal(currency(empty), "RSD");
+  } finally {
+    db.close();
   }
 });
 

@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { QRCodeSVG } from 'qrcode.react'
-import { WorkspaceApiError as ApiError, connectBybitCard, createCategory, createDeviceLink, createInvitation, createTag, deleteTag, disconnectBybitCard, getSession, leaveWorkspace, listInvitations, listMembers, listSessions, prepareInitialOrManualRecovery, removeMember, renameWorkspace, reorderCategories, reorderTags, revokeInvitation, revokeSession, syncBybitCard, transferOwnership, updateCategory, updateProfile, updateTag } from '../workspace-api'
+import { WorkspaceApiError as ApiError, changeWorkspaceCurrency, connectBybitCard, createCategory, createDeviceLink, createInvitation, createTag, deleteTag, disconnectBybitCard, getSession, leaveWorkspace, listInvitations, listMembers, listSessions, prepareInitialOrManualRecovery, removeMember, renameWorkspace, reorderCategories, reorderTags, revokeInvitation, revokeSession, syncBybitCard, transferOwnership, updateCategory, updateProfile, updateTag } from '../workspace-api'
 import { clearWorkspaceOfflineData } from '../workspace-offline'
+import { clearWorkspacePreference } from '../app-state'
 import { completeRotationSafely } from '../recovery-flow'
 import type { AuthenticatedSession, BybitCardStatus, BybitRegion, Category, Expense, RecoveryPrepareResponse, SessionState, Tag, WorkspaceSummary } from '../types'
-import { localDateKey } from '../utils'
+import { PINNED_CURRENCIES, localDateKey, workspaceCurrency } from '../utils'
 import { buildHistoryCsv } from '../history'
-import { ChevronIcon, ListSheet, Select, SelectSheet, TextSheet, Toast, copyText, tap, useConfirm, useDialog, useToast } from '../ui'
+import { ChevronIcon, CurrencySheet, ListSheet, Select, SelectSheet, TextSheet, Toast, copyText, tap, useConfirm, useDialog, useToast } from '../ui'
 import type { SelectOption } from '../ui'
 import { formatLinkLifetime, formatRelativeTime } from '../format'
 import type { Bootstrap } from '../format'
@@ -63,12 +64,14 @@ export function SettingsRow({ label, value, tone, disabled = false, onClick }: {
   return <button type="button" className={className} disabled={disabled} onClick={() => { tap(4); onClick() }}><span>{label}</span><span className="settings-row-value">{value !== undefined && <span>{value}</span>}{tone !== 'danger' && <ChevronIcon/>}</span></button>
 }
 
-export type AccessSheet = 'members' | 'devices' | 'workspace-name' | 'display-name' | null
+export type AccessSheet = 'members' | 'devices' | 'workspace-name' | 'display-name' | 'currency' | null
 
 // Две группы строк — «Пространство» и «Профиль»; списки участников и устройств живут в шитах, на первом уровне только счётчик.
-export function AccessSettings({ user, workspace, pendingCount, online, onSession, onNotice, onBusyChange, children }: {
+export function AccessSettings({ user, workspace, bootstrap, setBootstrap, pendingCount, online, onSession, onNotice, onBusyChange, children }: {
   user: AuthenticatedSession
   workspace: WorkspaceSummary
+  bootstrap: Bootstrap
+  setBootstrap: React.Dispatch<React.SetStateAction<Bootstrap>>
   pendingCount: number
   online: boolean
   onSession: (session: SessionState) => Promise<void>
@@ -185,6 +188,17 @@ export function AccessSettings({ user, workspace, pendingCount, online, onSessio
     await updateProfile(name)
     await onSession(await getSession())
   }
+  // Валюта пространства общая для всех: в ней начинается новый расход и считаются итоги. Меняет её владелец; валюта,
+  // выбранная вручную на этом телефоне, сбрасывается, чтобы следующая запись сразу пошла в новой.
+  const currency = workspaceCurrency(bootstrap)
+  // Короткий список шторки: текущая, встречавшиеся в записях и четыре ходовые — чтобы обычный выбор обходился без поиска.
+  const usedCurrencies = [...new Set([currency, ...bootstrap.expenses.filter((item) => !item.deletedAt).map((item) => item.currency), ...PINNED_CURRENCIES])]
+  const saveCurrency = (code: string) => runAction('currency', async () => {
+    const { workspace: saved } = await changeWorkspaceCurrency(workspace.id, code, workspace.version)
+    setBootstrap((data) => ({ ...data, workspace: { ...data.workspace, ...saved }, defaultAnalyticsCurrency: saved.currency ?? code }))
+    clearWorkspacePreference(user.user.id, workspace.id, 'last-currency')
+    await onSession(await getSession())
+  }, 'Не удалось изменить валюту', `Новые расходы — в ${code}`)
 
   const otherDevices = devices.filter((item) => !item.current)
   const busy = Boolean(busyAction)
@@ -194,6 +208,7 @@ export function AccessSettings({ user, workspace, pendingCount, online, onSessio
   return <>
     <div className="settings-list" role="group" aria-labelledby="settings-space"><h2 id="settings-space">Пространство</h2><div className="settings-rows">
       <SettingsRow label="Название пространства" value={workspace.name} onClick={owner ? () => setSheet('workspace-name') : undefined} disabled={!online}/>
+      <SettingsRow label="Валюта" value={currency} onClick={owner ? () => setSheet('currency') : undefined} disabled={!online}/>
       <SettingsRow label="Участники" value={loading ? '…' : owner ? `${members.length} · пригласить` : String(members.length)} onClick={() => setSheet('members')}/>
       {children}
     </div></div>
@@ -203,6 +218,7 @@ export function AccessSettings({ user, workspace, pendingCount, online, onSessio
       <SettingsRow label="Другие устройства" value={loading ? '…' : otherDevices.length ? String(otherDevices.length) : 'нет'} onClick={() => setSheet('devices')}/>
     </div></div>
     {sheet === 'workspace-name' && <TextSheet title="Название пространства" value={workspace.name} placeholder="Например, Дом или Поездка" onClose={() => setSheet(null)} onSave={saveWorkspaceName}/>}
+    {sheet === 'currency' && <CurrencySheet currencies={bootstrap.currencies} used={usedCurrencies} selected={currency} onClose={() => setSheet(null)} onSelect={(code) => { setSheet(null); if (code !== currency) void saveCurrency(code) }}/>}
     {sheet === 'display-name' && <TextSheet title="Ваше имя" value={user.user.displayName} onClose={() => setSheet(null)} onSave={saveDisplayName}/>}
     {sheet === 'members' && <ListSheet title="Участники" dismissible={!busy} onClose={() => setSheet(null)}>
       {listState}
@@ -480,7 +496,7 @@ export function SettingsView({ user, workspace, workspaceId, bootstrap, setBoots
   const bybitRow=workspace.role==='owner'||Boolean(bybitStatus?.connected)
   const categoryRow=(category:Category)=><><i style={{background:category.color??'#a9afa5'}}/><button type="button" className="category-name" disabled={!online||reordering} onClick={()=>setEditing(category)}>{category.name}</button></>
   return <section className="page settings-page">
-    <AccessSettings user={user} workspace={workspace} pendingCount={pendingCount} online={online} onSession={onSession} onNotice={accessNotice} onBusyChange={setAccessBusy}>
+    <AccessSettings user={user} workspace={workspace} bootstrap={bootstrap} setBootstrap={setBootstrap} pendingCount={pendingCount} online={online} onSession={onSession} onNotice={accessNotice} onBusyChange={setAccessBusy}>
       <SettingsRow label="Категории" value={String(activeCategories.length)} onClick={()=>setSheet('categories')}/>
       <SettingsRow label="Теги" value={tags.length?String(tags.length):'нет'} onClick={()=>setSheet('tags')}/>
       {bybitRow&&<SettingsRow label="Карта Bybit" value={bybitValue} onClick={()=>setSheet('bybit')}/>}

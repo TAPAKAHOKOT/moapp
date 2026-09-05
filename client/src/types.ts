@@ -128,6 +128,8 @@ export type UserProfile = {
 export type WorkspaceSummary = {
   id: string
   name: string
+  /** ISO 4217 code a new expense starts in and totals default to. Absent in caches written before it existed. */
+  currency?: string
   role: 'owner' | 'member'
   version: number
   joinedAt: string

@@ -65,9 +65,9 @@ export async function createIdentityWithProbe(displayName: string, api: AccessFl
 }
 
 /** Resolve an unknown workspace creation result using the caller-provided stable UUID. */
-export async function createWorkspaceWithProbe(stableId: string, name: string, api: AccessFlowApi = defaultApi): Promise<WorkspaceSummary> {
+export async function createWorkspaceWithProbe(stableId: string, name: string, currency: string, api: AccessFlowApi = defaultApi): Promise<WorkspaceSummary> {
   try {
-    return (await api.createWorkspace(stableId, name)).workspace
+    return (await api.createWorkspace(stableId, name, currency)).workspace
   } catch (error) {
     const session = await probeSessionOrThrow(error, api)
     if (hasWorkspace(session, stableId)) return session.workspaces.find((workspace) => workspace.id === stableId)!

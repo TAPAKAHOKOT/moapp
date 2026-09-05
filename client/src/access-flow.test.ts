@@ -51,8 +51,8 @@ describe('access flow helpers', () => {
   it('recognises a lost workspace creation response using the stable workspace id', async () => {
     const lost = new Error('connection closed')
     const client = api({ createWorkspace: vi.fn().mockRejectedValue(lost), getSession: vi.fn().mockResolvedValue(authenticated('user-1', [workspace])) })
-    await expect(createWorkspaceWithProbe(workspace.id, workspace.name, client)).resolves.toEqual(workspace)
-    expect(client.createWorkspace).toHaveBeenCalledWith(workspace.id, workspace.name)
+    await expect(createWorkspaceWithProbe(workspace.id, workspace.name, 'RSD', client)).resolves.toEqual(workspace)
+    expect(client.createWorkspace).toHaveBeenCalledWith(workspace.id, workspace.name, 'RSD')
   })
 
   it('treats an already-member invitation as successful only after membership is confirmed', async () => {

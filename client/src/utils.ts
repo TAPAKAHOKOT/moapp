@@ -1,4 +1,4 @@
-import type { Currency, Expense, RateSnapshot } from './types'
+import type { Currency, Expense, RateSnapshot, WorkspaceBootstrap } from './types'
 
 export const DEFAULT_TIME_ZONE = 'Europe/Belgrade'
 
@@ -36,19 +36,29 @@ function amountAsMinor(value: string, decimals: number) {
   return minor
 }
 
-// Валюта нового расхода, когда человек ещё ни разу не выбирал её сам: та, в которой в пространстве записывали чаще всего.
-// Удалённые записи не считаются; при равенстве побеждает валюта более свежей покупки. Пустой список — null.
-export function mostFrequentCurrency(expenses: readonly Pick<Expense, 'currency' | 'deletedAt' | 'occurredAt'>[]): string | null {
-  const seen = new Map<string, { count: number; latest: string }>()
-  for (const expense of expenses) {
-    if (expense.deletedAt) continue
-    const entry = seen.get(expense.currency)
-    if (!entry) seen.set(expense.currency, { count: 1, latest: expense.occurredAt })
-    else { entry.count += 1; if (expense.occurredAt > entry.latest) entry.latest = expense.occurredAt }
-  }
-  let best: { code: string; count: number; latest: string } | null = null
-  for (const [code, entry] of seen) if (!best || entry.count > best.count || (entry.count === best.count && entry.latest > best.latest)) best = { code, ...entry }
-  return best?.code ?? null
+// Валюта пространства: в ней начинается новый расход и считаются итоги, пока человек не выбрал другую сам.
+// Кэш, записанный до появления поля у пространства, хранит её только в defaultAnalyticsCurrency.
+export function workspaceCurrency(bootstrap: Pick<WorkspaceBootstrap, 'workspace' | 'defaultAnalyticsCurrency'>): string {
+  return bootstrap.workspace.currency || bootstrap.defaultAnalyticsCurrency || 'RSD'
+}
+
+// Валюты, которые предлагаются первыми, пока у пространства нет своих: те же, что сервер ставит в начало каталога.
+export const PINNED_CURRENCIES = ['RSD', 'EUR', 'USD', 'RUB']
+
+// Каталог валют для экрана без bootstrap — создания пространства гостем. Собирается силами браузера так же, как на
+// сервере; без Intl.supportedValuesOf остаются только закреплённые коды. Считается один раз: ~300 форматтеров.
+let catalogue: Currency[] | undefined
+export function currencyCatalogue(): Currency[] {
+  if (catalogue) return catalogue
+  let codes: string[] = []
+  try { codes = Intl.supportedValuesOf('currency') } catch { /* старый браузер: хватит закреплённых */ }
+  const display = new Intl.DisplayNames(['ru'], { type: 'currency' })
+  catalogue = [...new Set([...PINNED_CURRENCIES, ...codes])].map((code) => {
+    const format = new Intl.NumberFormat('ru', { style: 'currency', currency: code })
+    const symbol = format.formatToParts(0).find((part) => part.type === 'currency')?.value ?? code
+    return { code, name: display.of(code) ?? code, symbol, decimals: format.resolvedOptions().maximumFractionDigits ?? 2 }
+  })
+  return catalogue
 }
 
 export function swipeDirection(dx: number) {

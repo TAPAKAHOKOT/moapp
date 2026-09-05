@@ -207,15 +207,32 @@ describe('expense editing and saving', () => {
     expect(submit.mock.calls[0]?.[3]).toEqual(expect.objectContaining({ categoryId: archived.id }))
   })
 
-  it('starts a new expense in the workspace\'s usual currency when none was chosen by hand', () => {
-    const euro = (id: string, occurredAt: string) => ({ id, amountMinor: 1_000, currency: 'EUR', categoryId: 'products', note: null, occurredAt, createdAt: occurredAt, updatedAt: occurredAt, version: 1, deletedAt: null })
+  it('starts a new expense in the workspace currency when none was chosen by hand', () => {
+    const dinar = (id: string, occurredAt: string) => ({ id, amountMinor: 1_000, currency: 'RSD', categoryId: 'products', note: null, occurredAt, createdAt: occurredAt, updatedAt: occurredAt, version: 1, deletedAt: null })
+    const workspace = { ...expenseBootstrap().workspace, currency: 'EUR' }
     const bootstrap = expenseBootstrap({
+      workspace,
       currencies: [{ code: 'RSD', name: 'Сербский динар', symbol: 'дин.', decimals: 2 }, { code: 'EUR', name: 'Евро', symbol: '€', decimals: 2 }],
-      expenses: [euro('a', '2026-08-08T12:00:00.000Z'), euro('b', '2026-08-09T12:00:00.000Z'), { ...euro('c', '2026-08-10T12:00:00.000Z'), currency: 'RSD' }],
+      // Записи в динарах не перебивают настройку: валюта пространства задаётся явно, а не угадывается по частоте.
+      expenses: [dinar('a', '2026-08-08T12:00:00.000Z'), dinar('b', '2026-08-09T12:00:00.000Z')],
     })
-    render(<EntryView userId="user-a" workspaceId="workspace-a" workspace={bootstrap.workspace} bootstrap={bootstrap} setBootstrap={vi.fn()} currentId={null} setCurrentId={vi.fn()} refreshPending={vi.fn()} onDraftDirtyChange={vi.fn()} active/>)
+    render(<EntryView userId="user-a" workspaceId="workspace-a" workspace={workspace} bootstrap={bootstrap} setBootstrap={vi.fn()} currentId={null} setCurrentId={vi.fn()} refreshPending={vi.fn()} onDraftDirtyChange={vi.fn()} active/>)
     expect(screen.getByRole('button', { name: 'EUR' })).not.toBeNull()
     expect(screen.queryByRole('button', { name: 'RSD' })).toBeNull()
+  })
+
+  it('moves an untouched new expense to the workspace currency changed in settings, but keeps a typed amount', () => {
+    const currencies = [{ code: 'RSD', name: 'Сербский динар', symbol: 'дин.', decimals: 2 }, { code: 'EUR', name: 'Евро', symbol: '€', decimals: 2 }]
+    const view = (currency: string) => <EntryView userId="user-a" workspaceId="workspace-a" workspace={{ ...expenseBootstrap().workspace, currency }} bootstrap={expenseBootstrap({ workspace: { ...expenseBootstrap().workspace, currency }, currencies })} setBootstrap={vi.fn()} currentId={null} setCurrentId={vi.fn()} refreshPending={vi.fn()} onDraftDirtyChange={vi.fn()} active/>
+    const { rerender } = render(view('RSD'))
+    expect(screen.getByRole('button', { name: 'RSD' })).not.toBeNull()
+    rerender(view('EUR'))
+    expect(screen.getByRole('button', { name: 'EUR' })).not.toBeNull()
+    expect(screen.queryByRole('button', { name: 'RSD' })).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: '5' }))
+    rerender(view('RSD'))
+    expect(screen.getByRole('button', { name: 'EUR' })).not.toBeNull()
   })
 
   // Первый сохранённый расход объясняется один раз: владельцу — где позвать домашних, участнику — что запись видна всем.
@@ -697,6 +714,46 @@ describe('settings identity transitions', () => {
     expect(screen.getByRole('button', { name: /Карта Bybit/ }).textContent).toContain('подключена')
   })
 
+  it('lets the owner change the workspace currency and forgets the currency picked by hand on this phone', async () => {
+    vi.spyOn(workspaceApi, 'listMembers').mockResolvedValue({ members: [] })
+    vi.spyOn(workspaceApi, 'listSessions').mockResolvedValue({ sessions: [] })
+    vi.spyOn(workspaceApi, 'listInvitations').mockResolvedValue({ invitations: [] })
+    const workspace = expenseBootstrap().workspace
+    const user: AuthenticatedSession = { authenticated: true, user: { id: 'user-a', displayName: 'Аня', recoveryConfigured: true, recoveryGeneration: 1 }, currentSessionId: 'session-a', currentSessionExpiresAt: '2030-01-01T00:00:00.000Z', serverTime: '2026-08-10T14:00:00.000Z', restrictedToRecovery: false, workspaces: [workspace], legacyWorkspaceId: null }
+    const saved = { ...workspace, currency: 'EUR', version: 2 }
+    const change = vi.spyOn(workspaceApi, 'changeWorkspaceCurrency').mockResolvedValue({ workspace: saved })
+    vi.spyOn(workspaceApi, 'getSession').mockResolvedValue({ ...user, workspaces: [saved] })
+    const setBootstrap = vi.fn()
+    const onSession = vi.fn().mockResolvedValue(undefined)
+    localStorage.setItem('moapp:v2:user:user-a:workspace:workspace-a:last-currency', 'USD')
+    const bootstrap = expenseBootstrap({ currencies: [{ code: 'RSD', name: 'Сербский динар', symbol: 'дин.', decimals: 2 }, { code: 'EUR', name: 'Евро', symbol: '€', decimals: 2 }] })
+    render(<SettingsView user={user} workspace={workspace} workspaceId={workspace.id} bootstrap={bootstrap} setBootstrap={setBootstrap} pendingCount={0} refreshPending={vi.fn()} onLogout={vi.fn()} theme="light" onThemeChange={vi.fn()} onSession={onSession} online/>)
+
+    expect(screen.getByRole('button', { name: /^Валюта/ }).textContent).toContain('RSD')
+    fireEvent.click(screen.getByRole('button', { name: /^Валюта/ }))
+    fireEvent.click(within(screen.getByRole('dialog', { name: 'Валюта' })).getByRole('button', { name: /^EUR/ }))
+
+    await waitFor(() => expect(change).toHaveBeenCalledWith('workspace-a', 'EUR', 1))
+    await waitFor(() => expect(onSession).toHaveBeenCalledWith(expect.objectContaining({ workspaces: [saved] })))
+    expect(localStorage.getItem('moapp:v2:user:user-a:workspace:workspace-a:last-currency')).toBeNull()
+    const patched = (setBootstrap.mock.calls[0][0] as (data: WorkspaceBootstrap) => WorkspaceBootstrap)(bootstrap)
+    expect(patched.workspace.currency).toBe('EUR')
+    expect(patched.workspace.version).toBe(2)
+    expect(patched.defaultAnalyticsCurrency).toBe('EUR')
+    expect(await screen.findByText('Новые расходы — в EUR')).not.toBeNull()
+  })
+
+  it('shows a member the workspace currency without a way to change it', async () => {
+    vi.spyOn(workspaceApi, 'listMembers').mockResolvedValue({ members: [] })
+    vi.spyOn(workspaceApi, 'listSessions').mockResolvedValue({ sessions: [] })
+    vi.spyOn(workspaceApi, 'listInvitations').mockResolvedValue({ invitations: [] })
+    const member = { ...expenseBootstrap().workspace, role: 'member' as const, currency: 'EUR' }
+    const user: AuthenticatedSession = { authenticated: true, user: { id: 'user-b', displayName: 'Боря', recoveryConfigured: true, recoveryGeneration: 1 }, currentSessionId: 'session-b', currentSessionExpiresAt: '2030-01-01T00:00:00.000Z', serverTime: '2026-08-10T14:00:00.000Z', restrictedToRecovery: false, workspaces: [member], legacyWorkspaceId: null }
+    render(<SettingsView user={user} workspace={member} workspaceId={member.id} bootstrap={expenseBootstrap({ workspace: member })} setBootstrap={vi.fn()} pendingCount={0} refreshPending={vi.fn()} onLogout={vi.fn()} theme="light" onThemeChange={vi.fn()} onSession={vi.fn()} online/>)
+    expect(screen.queryByRole('button', { name: /^Валюта/ })).toBeNull()
+    expect(screen.getByText('Валюта').parentElement?.textContent).toContain('EUR')
+  })
+
   it('prevents logout while a settings mutation can still return a session', async () => {
     vi.spyOn(workspaceApi, 'listMembers').mockResolvedValue({ members: [] })
     vi.spyOn(workspaceApi, 'listSessions').mockResolvedValue({ sessions: [] })
@@ -838,7 +895,25 @@ describe('workspace onboarding controls', () => {
     fireEvent.change(screen.getByLabelText('Как вас называть'), { target: { value: 'Аня' } })
     fireEvent.change(screen.getByLabelText('Название пространства'), { target: { value: 'Дом' } })
     fireEvent.submit(screen.getByRole('button', { name: 'Создать пространство' }).closest('form')!)
-    expect(create).toHaveBeenCalledWith(expect.any(String), 'Дом', 'Аня')
+    expect(create).toHaveBeenCalledWith(expect.any(String), 'Дом', 'RSD', 'Аня')
+  })
+
+  it('creates the workspace in the chosen currency, dinars unless changed', async () => {
+    const create = vi.fn().mockResolvedValue(undefined)
+    render(<CreateWorkspaceSheet existing onClose={vi.fn()} onCreate={create}/>)
+    expect(screen.getByRole('button', { name: 'Валюта' }).textContent).toContain('RSD')
+    fireEvent.click(screen.getByRole('button', { name: 'Валюта' }))
+    fireEvent.click(within(screen.getByRole('dialog', { name: 'Валюта' })).getByRole('button', { name: /^EUR/ }))
+    expect(screen.queryByRole('dialog', { name: 'Валюта' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Валюта' }).textContent).toContain('EUR')
+    fireEvent.change(screen.getByLabelText('Название пространства'), { target: { value: 'Поездка' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Создать пространство' }))
+    await waitFor(() => expect(create).toHaveBeenCalledWith(expect.any(String), 'Поездка', 'EUR', undefined))
+  })
+
+  it('preselects the currency it was opened with', () => {
+    render(<CreateWorkspaceSheet existing initialCurrency="USD" onClose={vi.fn()} onCreate={vi.fn()}/>)
+    expect(screen.getByRole('button', { name: 'Валюта' }).textContent).toContain('USD')
   })
 
   it('keeps the workspace UUID when the create sheet is submitted again', async () => {

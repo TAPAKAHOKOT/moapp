@@ -28,8 +28,8 @@ function availableCurrencies() {
  * so both screens show one number. Codes cover the expense currencies and the usual analytics targets. Days are
  * the client's calendar days (?tz=…), the same ones the analytics endpoint groups by.
  */
-function dailyRates(app: FastifyInstance, expenses: ExpenseRow[], timeZone: string) {
-  const codes = new Set(["RSD", "EUR", "USD", app.config.defaultAnalyticsCurrency, ...expenses.map((row) => row.currency)]);
+function dailyRates(app: FastifyInstance, expenses: ExpenseRow[], timeZone: string, workspaceCurrency: string) {
+  const codes = new Set(["RSD", "EUR", "USD", workspaceCurrency, ...expenses.map((row) => row.currency)]);
   const lookup = buildRateLookup(app, codes);
   const daily: Record<string, Record<string, number>> = {};
   for (const date of new Set(expenses.map((row) => localDateKey(row.occurred_at, timeZone)))) {
@@ -96,9 +96,10 @@ async function registerBootstrapRoute(app: FastifyInstance): Promise<void> {
       expensesSince,
       olderExpenses: allExpenses.length - expenses.length,
       currencies: currencyList(),
-      rates: { ...bootstrapRates(app.db), daily: dailyRates(app, expenses, timeZone) },
+      rates: { ...bootstrapRates(app.db), daily: dailyRates(app, expenses, timeZone, workspace.currency) },
       timeZone,
-      defaultAnalyticsCurrency: app.config.defaultAnalyticsCurrency,
+      // Итоги по умолчанию показываются в валюте пространства; поле оставлено под именем, которое знают старые кэши.
+      defaultAnalyticsCurrency: workspace.currency,
       serverTime: new Date().toISOString()
     };
   });
