@@ -159,6 +159,7 @@ test("Bybit Card imports only records at or after the exact connection boundary"
   });
   assert.equal(repeatedSync.statusCode, 200, repeatedSync.body);
   assert.equal(assetRequests.length, 2, "a repeated sync inside the cooldown must not call Bybit");
+  assert.equal(repeatedSync.json().throttled, true, "the response says why nothing was fetched so the UI can explain it");
 
   const queue = await app.inject({ method: "GET", url: `/api/workspaces/${workspaceId}/integrations/bybit-card/transactions`, headers: contextHeaders() });
   assert.equal(queue.statusCode, 200, queue.body);

@@ -1,6 +1,6 @@
 /* `__MOAPP_PRECACHE__` is replaced by the Vite build plugin with current hashed assets. */
 const CACHE = 'moapp-shell-v3'
-const PRECACHE = self.__MOAPP_PRECACHE__ || ['/', '/manifest.webmanifest', '/icon.svg']
+const PRECACHE = self.__MOAPP_PRECACHE__ || ['/', '/manifest.webmanifest', '/icon.svg', '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png']
 
 self.addEventListener('install', (event) => {
   event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(PRECACHE)))

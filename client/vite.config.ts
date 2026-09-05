@@ -3,17 +3,15 @@ import react from '@vitejs/plugin-react'
 import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 
-const publicShell = [
-  readFileSync(new URL('./public/manifest.webmanifest', import.meta.url)),
-  readFileSync(new URL('./public/icon.svg', import.meta.url)),
-]
+const SHELL_FILES = ['/manifest.webmanifest', '/icon.svg', '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png']
+const publicShell = SHELL_FILES.map((file) => readFileSync(new URL(`./public${file}`, import.meta.url)))
 
 export default defineConfig({
   plugins: [react(), {
     name: 'moapp-service-worker-precache',
     apply: 'build',
     generateBundle(_options, bundle) {
-      const precache = ['/', '/manifest.webmanifest', '/icon.svg', ...Object.keys(bundle)
+      const precache = ['/', ...SHELL_FILES, ...Object.keys(bundle)
         .filter((file) => /^assets\/.+\.(?:js|css)$/.test(file))
         .map((file) => `/${file}`)]
       const digest = createHash('sha256').update([...precache].sort().join('|'))

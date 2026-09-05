@@ -83,7 +83,8 @@ export async function buildApp(config: AppConfig, options: { logger?: boolean; s
     // Never let the SPA fallback turn a missing hashed asset into a successful
     // HTML response: a service worker could cache that HTML under the JS/CSS URL
     // and leave the application blank even after the server is restarted.
-    if (pathname.startsWith("/assets/") || pathname === "/sw.js" || pathname === "/manifest.webmanifest" || pathname === "/icon.svg") {
+    if (pathname.startsWith("/assets/") || pathname === "/sw.js" || pathname === "/manifest.webmanifest" || pathname === "/icon.svg"
+      || /^\/(?:apple-touch-icon|icon-\d+)\.png$/.test(pathname)) {
       return reply.code(404).send(jsonError("NOT_FOUND", "Static asset not found"));
     }
     if (existsSync(resolve(clientRoot, "index.html"))) return reply.type("text/html").sendFile("index.html");
