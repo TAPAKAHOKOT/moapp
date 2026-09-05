@@ -528,7 +528,7 @@ export async function registerBybitCardRoutes(app: FastifyInstance, options: { f
     const transactionId = (request.params as { transactionId: string }).transactionId;
     const body = request.body as { categoryId?: unknown; comment?: unknown; tagIds?: unknown };
     const categoryId = typeof body.categoryId === "string" ? body.categoryId : "";
-    const comment = typeof body.comment === "string" ? body.comment.trim().slice(0, 300) : "";
+    const comment = typeof body.comment === "string" ? body.comment.trim().slice(0, 200) : "";
     if (!categoryId) return fail(reply, 400, "VALIDATION", "categoryId is required");
     if (body.tagIds !== undefined && (!Array.isArray(body.tagIds) || body.tagIds.some((item) => typeof item !== "string"))) return fail(reply, 400, "VALIDATION", "tagIds must be an array of tag ids");
     const tagIds = (body.tagIds as string[] | undefined) ?? [];

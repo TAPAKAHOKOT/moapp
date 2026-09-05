@@ -44,7 +44,7 @@ export function ExtrasRow({ tags, selected, note, onChange, onNote, onCreate, di
   useLayoutEffect(() => {
     const node = stripRef.current
     if (!node) return
-    const update = () => { node.style.touchAction = node.scrollWidth > node.clientWidth + 1 ? 'pan-x' : 'pan-y' }
+    const update = () => { const next = node.scrollWidth > node.clientWidth + 1 ? 'pan-x' : 'pan-y'; if (node.style.touchAction !== next) node.style.touchAction = next }
     update()
     if (typeof ResizeObserver === 'undefined') return
     const observer = new ResizeObserver(update)

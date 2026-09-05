@@ -465,13 +465,8 @@ export function EntryView({ userId, workspaceId, bootstrap, setBootstrap, curren
   useEffect(() => {
     const node = entryRef.current
     if (!node || !usesNativeTouch()) return
-    // Пока палец на экране расхода, лента вкладок не прокручивается сама: ни от края экрана, ни «перетеканием»
-    // из полосы тегов. Вкладки с этого экрана и так переключаются только кнопками внизу.
-    const pagerNode = node.closest<HTMLElement>('.pager')
-    const lockPager = (locked: boolean) => { if (pagerNode) pagerNode.style.overflowX = locked ? 'hidden' : '' }
     const findTouch = (touches: TouchList, identifier: number) => Array.from(touches).find((touch) => touch.identifier === identifier)
     const touchStart = (event: TouchEvent) => {
-      lockPager(true)
       suppressTouchPointerUp.current = false
       if (event.touches.length !== 1 || insideTagStrip(event.target)) { swipe.current = null; return }
       const touch = event.touches[0]
@@ -487,15 +482,13 @@ export function EntryView({ userId, workspaceId, bootstrap, setBootstrap, curren
       }
     }
     const touchEnd = (event: TouchEvent) => {
-      if (event.touches.length === 0) lockPager(false)
       const start = swipe.current
       if (!start || start.touchId === null) return
       const touch = findTouch(event.changedTouches, start.touchId)
       if (touch) touchHandlers.current.swipeEndAt(touch.clientX)
       setTimeout(() => { suppressTouchPointerUp.current = false }, 0)
     }
-    const touchCancel = (event: TouchEvent) => {
-      if (event.touches.length === 0) lockPager(false)
+    const touchCancel = () => {
       touchHandlers.current.swipeCancelAt()
       setTimeout(() => { suppressTouchPointerUp.current = false }, 0)
     }
@@ -504,7 +497,6 @@ export function EntryView({ userId, workspaceId, bootstrap, setBootstrap, curren
     node.addEventListener('touchend', touchEnd, { passive: true })
     node.addEventListener('touchcancel', touchCancel, { passive: true })
     return () => {
-      lockPager(false)
       node.removeEventListener('touchstart', touchStart)
       node.removeEventListener('touchmove', touchMove)
       node.removeEventListener('touchend', touchEnd)
