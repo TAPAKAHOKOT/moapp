@@ -71,7 +71,7 @@ const seeds = [
   ["other", "Прочее", "additional", 4, "#A8A8A8"]
 ] as const;
 
-const LATEST_SCHEMA_VERSION = 10;
+const LATEST_SCHEMA_VERSION = 11;
 
 type TableCount = {
   categories: number;
@@ -335,6 +335,16 @@ export function seedWorkspaceCategories(db: Database.Database, workspaceId: stri
   for (const seed of seeds) insert.run(workspaceId, ...seed, now, now);
 }
 
+// Валюта пространства появилась в схеме 11. Существующим пространствам ставим ту, в которой записывали чаще всего
+// (удалённые записи не считаются, при равенстве — валюта более свежей покупки): так подстановка в новом расходе
+// не меняется от обновления. Пространство без записей остаётся в динарах.
+export function backfillWorkspaceCurrencies(db: Database.Database): void {
+  db.prepare(`UPDATE workspaces SET currency = COALESCE((
+      SELECT e.currency FROM expenses e WHERE e.workspace_id = workspaces.id AND e.deleted_at IS NULL
+      GROUP BY e.currency ORDER BY count(*) DESC, max(e.occurred_at) DESC, e.currency LIMIT 1
+    ), 'RSD')`).run();
+}
+
 export function openDatabase(path: string): Database.Database {
   if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
   const db = new Database(path);
@@ -481,6 +491,10 @@ export function openDatabase(path: string): Database.Database {
           ALTER TABLE expenses ADD COLUMN voided_at TEXT;
           ALTER TABLE expenses ADD COLUMN void_reason TEXT CHECK(void_reason IS NULL OR json_valid(void_reason));
         `);
+        else if (version === 11) {
+          db.exec("ALTER TABLE workspaces ADD COLUMN currency TEXT NOT NULL DEFAULT 'RSD'");
+          backfillWorkspaceCurrencies(db);
+        }
         db.prepare("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)").run(version, appliedAt);
       }
     });

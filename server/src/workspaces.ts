@@ -16,6 +16,7 @@ export function workspaceSummary(row: WorkspaceRow & { joined_at: string }, user
   return {
     id: row.id,
     name: row.name,
+    currency: row.currency,
     role: row.owner_user_id === userId ? "owner" : "member",
     version: row.version,
     joinedAt: row.joined_at
@@ -28,26 +29,30 @@ export function getWorkspaceSummary(db: Database, workspaceId: string, userId: s
   return row ? workspaceSummary(row, userId) : undefined;
 }
 
+export function getWorkspaceCurrency(db: Database, workspaceId: string): string | undefined {
+  return (db.prepare("SELECT currency FROM workspaces WHERE id=?").get(workspaceId) as { currency: string } | undefined)?.currency;
+}
+
 export function createWorkspace(
   db: Database,
-  input: { id: string; name: string; ownerUserId: string; now?: string }
+  input: { id: string; name: string; currency: string; ownerUserId: string; now?: string }
 ): { workspace: WorkspaceSummary; replayed: boolean } | { conflict: true } {
   return db.transaction(() => {
     const existing = db.prepare("SELECT * FROM workspaces WHERE id=?").get(input.id) as WorkspaceRow | undefined;
     if (existing) {
-      if (existing.owner_user_id !== input.ownerUserId || existing.name !== input.name) return { conflict: true as const };
+      if (existing.owner_user_id !== input.ownerUserId || existing.name !== input.name || existing.currency !== input.currency) return { conflict: true as const };
       const summary = getWorkspaceSummary(db, input.id, input.ownerUserId);
       if (!summary) return { conflict: true as const };
       return { workspace: summary, replayed: true };
     }
     const now = input.now ?? new Date().toISOString();
-    db.prepare(`INSERT INTO workspaces(id,name,owner_user_id,version,created_at,updated_at)
-      VALUES (?,?,?,1,?,?)`).run(input.id, input.name, input.ownerUserId, now, now);
+    db.prepare(`INSERT INTO workspaces(id,name,currency,owner_user_id,version,created_at,updated_at)
+      VALUES (?,?,?,?,1,?,?)`).run(input.id, input.name, input.currency, input.ownerUserId, now, now);
     db.prepare(`INSERT INTO memberships(workspace_id,user_id,joined_at,added_by_user_id)
       VALUES (?,?,?,NULL)`).run(input.id, input.ownerUserId, now);
     seedWorkspaceCategories(db, input.id);
     return {
-      workspace: { id: input.id, name: input.name, role: "owner" as const, version: 1, joinedAt: now },
+      workspace: { id: input.id, name: input.name, currency: input.currency, role: "owner" as const, version: 1, joinedAt: now },
       replayed: false
     };
   })();

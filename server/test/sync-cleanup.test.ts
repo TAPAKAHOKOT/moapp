@@ -16,7 +16,7 @@ after(async () => app.close());
 
 test("old sync verdicts are pruned while recent ones keep protecting retries", () => {
   const owner = createUser(app.db, "Владелец");
-  const workspace = createWorkspace(app.db, { id: "0d6bd3a2-5a4d-4a8c-9f1e-1b2c3d4e5f60", name: "Дом", ownerUserId: owner.id });
+  const workspace = createWorkspace(app.db, { id: "0d6bd3a2-5a4d-4a8c-9f1e-1b2c3d4e5f60", name: "Дом", currency: "RSD", ownerUserId: owner.id });
   assert.ok("workspace" in workspace);
   const insert = app.db.prepare("INSERT INTO sync_operations(workspace_id,operation_id,result_json,created_at) VALUES (?,?,?,?)");
   const now = new Date("2026-09-05T10:00:00.000Z");

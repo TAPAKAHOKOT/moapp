@@ -1,12 +1,12 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { QRCodeSVG } from 'qrcode.react'
 import { WorkspaceApiError as ApiError, allowWorkspaceMutations, describeOutboxIssue, isLinkInvalid, legacyClaim, prepareInitialOrManualRecovery, prepareRecovery, previewDeviceLink, previewInvitation, previewRecovery } from '../workspace-api'
 import { readOutbox } from '../workspace-offline'
 import { AccessFlowError, acceptDeviceWithProbe, acceptInvitationWithProbe, createIdentityWithProbe, generateAttemptToken } from '../access-flow'
 import { completeRecoverySafely, completeRotationSafely } from '../recovery-flow'
 import type { AuthenticatedSession, CapabilityIntent, Expense, RecoveryPrepareResponse, SessionState, WorkspaceOutboxItem, WorkspaceSummary } from '../types'
-import { isoToLocalInput } from '../utils'
-import { copyText, useConfirm, useDialog, useOnlineStatus } from '../ui'
+import { PINNED_CURRENCIES, currencyCatalogue, isoToLocalInput } from '../utils'
+import { ChevronIcon, CurrencySheet, copyText, useConfirm, useDialog, useOnlineStatus } from '../ui'
 import { formatEntryDate, money } from '../format'
 import type { Bootstrap } from '../format'
 
@@ -99,12 +99,17 @@ export function SyncIssuesSheet({ userId, workspaceId, bootstrap, online, onClos
   </section></div>{confirmation}</>
 }
 
-export function CreateWorkspaceSheet({ existing, onClose, onCreate }: { existing: boolean; onClose: () => void; onCreate: (id: string, name: string, displayName?: string) => Promise<void> }) {
-  const [name,setName]=useState(''); const [displayName,setDisplayName]=useState(''); const [busy,setBusy]=useState(false); const [validation,setValidation]=useState('')
+// Валюта пространства выбирается сразу: в ней начнётся первый расход. По умолчанию динар или валюта текущего пространства,
+// так что поле можно не трогать. Шторка выбора лежит рядом с формой, а не внутри: иначе Enter в поиске валюты отправлял бы
+// форму, а тап по её подложке закрывал бы обе шторки.
+export function CreateWorkspaceSheet({ existing, initialCurrency = 'RSD', onClose, onCreate }: { existing: boolean; initialCurrency?: string; onClose: () => void; onCreate: (id: string, name: string, currency: string, displayName?: string) => Promise<void> }) {
+  const [name,setName]=useState(''); const [displayName,setDisplayName]=useState(''); const [currency,setCurrency]=useState(initialCurrency); const [currencyOpen,setCurrencyOpen]=useState(false); const [busy,setBusy]=useState(false); const [validation,setValidation]=useState('')
   const stableId = useRef(crypto.randomUUID())
   const dialogRef=useDialog(onClose,!busy)
-  const submit=()=>{if(!name.trim()||!existing&&!displayName.trim()){setValidation(!existing&&!displayName.trim()?'Введите ваше имя.':'Введите название пространства.');return}setValidation('');setBusy(true);void onCreate(stableId.current,name.trim(),existing?undefined:displayName.trim()).finally(()=>setBusy(false))}
-  return <div className="sheet-backdrop" onMouseDown={()=>{if(!busy)onClose()}}><form ref={dialogRef as React.Ref<HTMLFormElement>} className="bottom-sheet editor" role="dialog" aria-modal="true" aria-labelledby="create-workspace-title" noValidate onMouseDown={(event)=>event.stopPropagation()} onSubmit={(event)=>{event.preventDefault();submit()}}><div className="sheet-handle"/><div className="sheet-title"><h2 id="create-workspace-title">Создать пространство</h2><button type="button" className="icon-button" data-dialog-initial-focus disabled={busy} aria-label="Закрыть" onClick={onClose}>×</button></div>{!existing&&<label>Как вас называть<input maxLength={80} placeholder="Например, Ваня" aria-invalid={Boolean(validation&&!displayName.trim())} value={displayName} onChange={(event)=>{setValidation('');setDisplayName(event.target.value)}}/></label>}<label>Название пространства<input maxLength={80} placeholder="Например, Семья или Поездка" aria-invalid={Boolean(validation&&!name.trim())} value={name} onChange={(event)=>{setValidation('');setName(event.target.value)}}/></label>{validation&&<p className="form-error" role="alert">{validation}</p>}<button className="primary" disabled={busy}>{busy?'Создаём…':'Создать пространство'}</button><button type="button" className="sheet-cancel" disabled={busy} onClick={onClose}>Отмена</button></form></div>
+  const currencies=useMemo(currencyCatalogue,[])
+  const currencyName=currencies.find((item)=>item.code===currency)?.name
+  const submit=()=>{if(!name.trim()||!existing&&!displayName.trim()){setValidation(!existing&&!displayName.trim()?'Введите ваше имя.':'Введите название пространства.');return}setValidation('');setBusy(true);void onCreate(stableId.current,name.trim(),currency,existing?undefined:displayName.trim()).finally(()=>setBusy(false))}
+  return <div className="sheet-backdrop" onMouseDown={()=>{if(!busy)onClose()}}><form ref={dialogRef as React.Ref<HTMLFormElement>} className="bottom-sheet editor" role="dialog" aria-modal="true" aria-labelledby="create-workspace-title" noValidate onMouseDown={(event)=>event.stopPropagation()} onSubmit={(event)=>{event.preventDefault();submit()}}><div className="sheet-handle"/><div className="sheet-title"><h2 id="create-workspace-title">Создать пространство</h2><button type="button" className="icon-button" data-dialog-initial-focus disabled={busy} aria-label="Закрыть" onClick={onClose}>×</button></div>{!existing&&<label>Как вас называть<input maxLength={80} placeholder="Например, Ваня" aria-invalid={Boolean(validation&&!displayName.trim())} value={displayName} onChange={(event)=>{setValidation('');setDisplayName(event.target.value)}}/></label>}<label>Название пространства<input maxLength={80} placeholder="Например, Семья или Поездка" aria-invalid={Boolean(validation&&!name.trim())} value={name} onChange={(event)=>{setValidation('');setName(event.target.value)}}/></label><label>Валюта<button type="button" className="select-trigger" aria-label="Валюта" aria-haspopup="dialog" aria-expanded={currencyOpen} disabled={busy} onClick={()=>setCurrencyOpen(true)}><span>{currency}{currencyName?` · ${currencyName}`:''}</span><ChevronIcon/></button></label>{validation&&<p className="form-error" role="alert">{validation}</p>}<button className="primary" disabled={busy}>{busy?'Создаём…':'Создать пространство'}</button><button type="button" className="sheet-cancel" disabled={busy} onClick={onClose}>Отмена</button></form>{currencyOpen&&<div className="sheet-layer" onMouseDown={(event)=>event.stopPropagation()}><CurrencySheet currencies={currencies} used={PINNED_CURRENCIES} selected={currency} onClose={()=>setCurrencyOpen(false)} onSelect={(code)=>{setCurrency(code);setCurrencyOpen(false)}}/></div>}</div>
 }
 
 export function WorkspaceSwitcher({ items, active, runtimes, online = navigator.onLine, onSelect, onCreate }: { items: WorkspaceSummary[]; active: string; runtimes: Record<string, import('../types').WorkspaceRuntime>; online?: boolean; onSelect: (id: string) => void; onCreate: () => void }) {

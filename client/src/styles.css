@@ -515,6 +515,11 @@ p {
   margin-left: 6px;
 }
 
+/* Обёртка второй шторки рядом с формой: без своей коробки, но останавливает mousedown до внешней подложки. */
+.sheet-layer {
+  display: contents;
+}
+
 .sheet-backdrop {
   position: fixed;
   z-index: 50;

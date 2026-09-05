@@ -2,7 +2,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { WorkspaceApiError as ApiError, includeExpense, submitExpenseOperation, submitExpenseOperations } from '../workspace-api'
 import { getWorkspacePreference, setWorkspacePreference } from '../app-state'
 import type { Category, Currency, Expense, Tag } from '../types'
-import { appTimeZone, cachedDateTimeFormat, localDateKey, monthDateRange, shiftDateKey, weekdayFromDateKey } from '../utils'
+import { appTimeZone, cachedDateTimeFormat, localDateKey, monthDateRange, shiftDateKey, weekdayFromDateKey, workspaceCurrency } from '../utils'
 import { HISTORY_PERIOD_LABELS, defaultHistoryPreferences, expenseTagNames, filterHistoryExpenses, historyTotals, parseHistoryPreferences } from '../history'
 import type { HistoryPeriod, HistoryPreferences } from '../history'
 import { ChevronIcon, LockIcon, MultiSelect, SearchIcon, Toast, TrashIcon, tap, useDialog, useOverflowHint, useToast } from '../ui'
@@ -276,7 +276,7 @@ export const HistoryView = memo(function HistoryView({ userId, workspaceId, boot
     })
     const grouped = expenses.reduce<Record<string, Expense[]>>((result, item) => { (result[localDateKey(item.occurredAt, timeZone)] ||= []).push(item); return result }, {})
     // Итог по показанным записям. В одной валюте — точная сумма; в нескольких — пересчёт в валюту аналитики и разбивка.
-    const totalsTarget = (filters.currencies.length === 1 ? filters.currencies[0] : null) || getWorkspacePreference(userId, workspaceId, 'analytics-currency') || bootstrap.defaultAnalyticsCurrency || 'RSD'
+    const totalsTarget = (filters.currencies.length === 1 ? filters.currencies[0] : null) || getWorkspacePreference(userId, workspaceId, 'analytics-currency') || workspaceCurrency(bootstrap)
     const sumLabel = (items: Expense[]) => {
       const totals = historyTotals(items, bootstrap.currencies, bootstrap.rates, totalsTarget)
       if (!items.length) return { label: null as string | null, parts: '', totals }

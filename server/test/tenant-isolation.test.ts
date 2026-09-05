@@ -215,6 +215,22 @@ test("analytics filters tenants in SQL and sync idempotency is composite", async
   assert.equal(replayA.json().results[0].expense.amountMinor, 111);
 });
 
+test("bootstrap and analytics default to the workspace's own currency", async () => {
+  app.db.prepare("UPDATE workspaces SET currency='EUR' WHERE id=?").run(workspaceB);
+  const bootstrap = await app.inject({ method: "GET", url: `/api/workspaces/${workspaceB}/bootstrap`, headers: identityB.headers });
+  assert.equal(bootstrap.statusCode, 200, bootstrap.body);
+  assert.equal(bootstrap.json().workspace.currency, "EUR");
+  assert.equal(bootstrap.json().defaultAnalyticsCurrency, "EUR");
+
+  const inDinars = await app.inject({ method: "GET", url: `/api/workspaces/${workspaceB}/analytics?from=2026-08-04&to=2026-08-04&currency=RSD`, headers: identityB.headers });
+  const implied = await app.inject({ method: "GET", url: `/api/workspaces/${workspaceB}/analytics?from=2026-08-04&to=2026-08-04`, headers: identityB.headers });
+  assert.equal(implied.statusCode, 200, implied.body);
+  assert.equal(implied.json().currency, "EUR");
+  assert.equal(implied.json().expenseCount, inDinars.json().expenseCount);
+  assert.ok(implied.json().totalMinor > 0);
+  assert.ok(Math.abs(implied.json().totalMinor - Math.round(inDinars.json().totalMinor / 117)) <= 1, `${implied.json().totalMinor} EUR vs ${inDinars.json().totalMinor} RSD`);
+});
+
 test("analytics and rate conversion reject impossible calendar dates before loading rates", async () => {
   for (const date of ["2026-99-99", "2026-02-30", "banana"]) {
     const analytics = await app.inject({

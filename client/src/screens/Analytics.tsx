@@ -2,7 +2,7 @@ import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react'
 import { WorkspaceApiError as ApiError, getAnalytics } from '../workspace-api'
 import { getWorkspacePreference, setWorkspacePreference } from '../app-state'
 import type { AnalyticsData, Expense } from '../types'
-import { appTimeZone, cachedNumberFormat, convertExpense, countCalendarWeekdays, hasRate, localDateKey, monthDateRange, shiftDateKey, weekDateRange, weekdayFromDateKey } from '../utils'
+import { appTimeZone, cachedNumberFormat, convertExpense, countCalendarWeekdays, hasRate, localDateKey, monthDateRange, shiftDateKey, weekDateRange, weekdayFromDateKey, workspaceCurrency } from '../utils'
 import { expenseTagNames } from '../history'
 import { ChevronIcon, CurrencySheet, prefersReducedMotion, tap } from '../ui'
 import type { Theme } from '../ui'
@@ -16,7 +16,10 @@ export type AnalyticsPeriod = 'week' | 'month'
 export const CHART_COLOR = '#758d69'
 
 export function AnalyticsView({ userId, workspaceId, bootstrap, theme, online, timeZone = appTimeZone() }: { userId: string; workspaceId: string; bootstrap: Bootstrap; theme: Theme; online: boolean; timeZone?: string }) {
-  const [target, setTarget] = useState(getWorkspacePreference(userId, workspaceId, 'analytics-currency') || 'RSD')
+  const [target, setTarget] = useState(getWorkspacePreference(userId, workspaceId, 'analytics-currency') || workspaceCurrency(bootstrap))
+  // Пока валюта аналитики не выбрана на этом телефоне, она следует за валютой пространства — и после смены в настройках тоже.
+  const usual = workspaceCurrency(bootstrap)
+  useEffect(() => { if (!getWorkspacePreference(userId, workspaceId, 'analytics-currency')) setTarget(usual) }, [usual, userId, workspaceId])
   const [period, setPeriod] = useState<AnalyticsPeriod>('week')
   const [weekOffset, setWeekOffset] = useState(0)
   const [monthOffset, setMonthOffset] = useState(0)

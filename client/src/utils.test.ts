@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { amountToMinor, appTimeZone, applyKeypad, convertExpense, countCalendarWeekdays, formatAmountInput, isoToLocalInput, localDateKey, localInputToIso, monthDateRange, mostFrequentCurrency, shiftDateKey, startOfWeekDateKey, swipeDirection, weekDateRange, weekdayFromDateKey } from './utils'
+import { amountToMinor, appTimeZone, applyKeypad, convertExpense, countCalendarWeekdays, formatAmountInput, isoToLocalInput, localDateKey, localInputToIso, currencyCatalogue, monthDateRange, shiftDateKey, startOfWeekDateKey, swipeDirection, weekDateRange, weekdayFromDateKey, workspaceCurrency } from './utils'
 import type { Currency, Expense } from './types'
 
 const currencies: Currency[] = [
@@ -116,23 +116,27 @@ describe('amount display', () => {
   })
 })
 
-describe('mostFrequentCurrency', () => {
-  const record = (currency: string, occurredAt: string, deletedAt: string | null = null) => ({ currency, occurredAt, deletedAt })
-  it('returns null for a workspace without active expenses', () => {
-    expect(mostFrequentCurrency([])).toBeNull()
-    expect(mostFrequentCurrency([record('EUR', '2026-08-01T10:00:00.000Z', '2026-08-02T10:00:00.000Z')])).toBeNull()
+describe('workspaceCurrency', () => {
+  const summary = { id: 'w', name: 'Дом', role: 'owner' as const, version: 1, joinedAt: '2026-01-01T00:00:00.000Z' }
+  it('is the currency stored on the workspace', () => {
+    expect(workspaceCurrency({ workspace: { ...summary, currency: 'EUR' }, defaultAnalyticsCurrency: 'RSD' })).toBe('EUR')
   })
-  it('picks the currency used most often, ignoring deleted records', () => {
-    expect(mostFrequentCurrency([
-      record('RSD', '2026-08-01T10:00:00.000Z'),
-      record('EUR', '2026-08-02T10:00:00.000Z'),
-      record('EUR', '2026-08-03T10:00:00.000Z'),
-      record('RSD', '2026-08-04T10:00:00.000Z', '2026-08-05T10:00:00.000Z'),
-      record('RSD', '2026-08-06T10:00:00.000Z', '2026-08-07T10:00:00.000Z'),
-    ])).toBe('EUR')
+  it('falls back to the analytics default of a bootstrap cached before workspaces had a currency, then to dinars', () => {
+    expect(workspaceCurrency({ workspace: summary, defaultAnalyticsCurrency: 'USD' })).toBe('USD')
+    expect(workspaceCurrency({ workspace: summary, defaultAnalyticsCurrency: '' })).toBe('RSD')
   })
-  it('breaks a tie in favour of the more recent purchase', () => {
-    expect(mostFrequentCurrency([record('RSD', '2026-08-01T10:00:00.000Z'), record('USD', '2026-08-09T10:00:00.000Z')])).toBe('USD')
-    expect(mostFrequentCurrency([record('USD', '2026-08-01T10:00:00.000Z'), record('RSD', '2026-08-09T10:00:00.000Z')])).toBe('RSD')
+})
+
+describe('currencyCatalogue', () => {
+  it('starts with the pinned currencies and describes each one with a Russian name, symbol and decimals', () => {
+    const list = currencyCatalogue()
+    expect(list.slice(0, 4).map((currency) => currency.code)).toEqual(['RSD', 'EUR', 'USD', 'RUB'])
+    expect(new Set(list.map((currency) => currency.code)).size).toBe(list.length)
+    const euro = list.find((currency) => currency.code === 'EUR')!
+    expect(euro.symbol).toBe('€')
+    expect(euro.decimals).toBe(2)
+    expect(euro.name.toLowerCase()).toContain('евро')
+    expect(list.find((currency) => currency.code === 'JPY')?.decimals).toBe(0)
+    expect(currencyCatalogue()).toBe(list)
   })
 })

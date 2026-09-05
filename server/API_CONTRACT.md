@@ -136,6 +136,8 @@ There is no ordinary shared-PIN login. `POST /api/session` is a retired method a
 type WorkspaceSummary = {
   id: string
   name: string
+  /** ISO 4217. A new expense starts in it and totals default to it unless the person picks another. */
+  currency: string
   role: 'owner' | 'member'
   version: number
   joinedAt: string
@@ -151,8 +153,8 @@ type Participant = {
 ```
 
 - `GET /api/workspaces` returns `{workspaces: WorkspaceSummary[]}`.
-- `POST /api/workspaces` with `{id,name}` returns `{workspace}` with `201`. A compatible retry returns `200`; reuse of the ID with different data returns `409 IDEMPOTENCY_CONFLICT`.
-- `PATCH /api/workspaces/:workspaceId` with `{name,version}` returns `{workspace}`. It is owner-only; a stale version returns `409 VERSION_CONFLICT`.
+- `POST /api/workspaces` with `{id,name,currency?}` returns `{workspace}` with `201`. `currency` is an ISO 4217 code (case-insensitive) and defaults to the server's `DEFAULT_ANALYTICS_CURRENCY`; an unknown code returns `400 INVALID_CURRENCY`. A compatible retry returns `200`; reuse of the ID with different data returns `409 IDEMPOTENCY_CONFLICT`.
+- `PATCH /api/workspaces/:workspaceId` with `{name?,currency?,version}` returns `{workspace}`; at least one of `name` or `currency` is required. It is owner-only; a stale version returns `409 VERSION_CONFLICT`.
 - `GET /api/workspaces/:workspaceId/members` returns `{members: Participant[]}`.
 - `DELETE /api/workspaces/:workspaceId/members/me` returns `204`. The owner must transfer ownership first and otherwise receives `409 OWNER_CANNOT_LEAVE`.
 - `DELETE /api/workspaces/:workspaceId/members/:userId` returns `204` and is owner-only. The owner cannot remove themself. Removing a member revokes that user's active unconsumed invitations for the workspace.
@@ -178,7 +180,7 @@ type WorkspaceBootstrap = {
 }
 ```
 
-`ratesToRsd` is the number of RSD per major unit of the source currency and always contains `RSD: 1`.
+`ratesToRsd` is the number of RSD per major unit of the source currency and always contains `RSD: 1`. `defaultAnalyticsCurrency` equals `workspace.currency`; the field keeps its historical name so cached bootstraps stay readable.
 
 ## Expenses
 

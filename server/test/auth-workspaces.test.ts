@@ -90,6 +90,7 @@ test("workspace creation is idempotent and owner mutations use versions", async 
   const created = await app.inject({ method: "POST", url: "/api/workspaces", headers, payload: { id, name: " Дом " } });
   assert.equal(created.statusCode, 201, created.body);
   assert.equal(created.json().workspace.role, "owner");
+  assert.equal(created.json().workspace.currency, "RSD", "without a choice the server default applies");
   assert.equal(app.db.prepare("SELECT count(*) FROM categories WHERE workspace_id=?").pluck().get(id), 7);
 
   const replay = await app.inject({ method: "POST", url: "/api/workspaces", headers, payload: { id, name: "Дом" } });
@@ -98,13 +99,43 @@ test("workspace creation is idempotent and owner mutations use versions", async 
   const conflict = await app.inject({ method: "POST", url: "/api/workspaces", headers, payload: { id, name: "Дача" } });
   assert.equal(conflict.statusCode, 409);
   assert.equal(conflict.json().error.code, "IDEMPOTENCY_CONFLICT");
+  const currencyConflict = await app.inject({ method: "POST", url: "/api/workspaces", headers, payload: { id, name: "Дом", currency: "EUR" } });
+  assert.equal(currencyConflict.statusCode, 409);
 
   const renamed = await app.inject({ method: "PATCH", url: `/api/workspaces/${id}`, headers, payload: { name: "Наш дом", version: 1 } });
   assert.equal(renamed.statusCode, 200, renamed.body);
   assert.equal(renamed.json().workspace.version, 2);
+  assert.equal(renamed.json().workspace.currency, "RSD", "renaming leaves the currency alone");
   const stale = await app.inject({ method: "PATCH", url: `/api/workspaces/${id}`, headers, payload: { name: "Старое", version: 1 } });
   assert.equal(stale.statusCode, 409);
   assert.equal(stale.json().error.code, "VERSION_CONFLICT");
+
+  const recurrencied = await app.inject({ method: "PATCH", url: `/api/workspaces/${id}`, headers, payload: { currency: "eur", version: 2 } });
+  assert.equal(recurrencied.statusCode, 200, recurrencied.body);
+  assert.equal(recurrencied.json().workspace.currency, "EUR");
+  assert.equal(recurrencied.json().workspace.name, "Наш дом", "changing the currency leaves the name alone");
+  assert.equal(recurrencied.json().workspace.version, 3);
+  const listed = await app.inject({ method: "GET", url: "/api/workspaces", headers });
+  assert.equal(listed.json().workspaces.find((row: { id: string }) => row.id === id).currency, "EUR");
+
+  const nothing = await app.inject({ method: "PATCH", url: `/api/workspaces/${id}`, headers, payload: { version: 3 } });
+  assert.equal(nothing.statusCode, 400, nothing.body);
+  const unknownCurrency = await app.inject({ method: "PATCH", url: `/api/workspaces/${id}`, headers, payload: { currency: "ZZZ", version: 3 } });
+  assert.equal(unknownCurrency.statusCode, 400);
+  assert.equal(unknownCurrency.json().error.code, "INVALID_CURRENCY");
+  assert.equal(app.db.prepare("SELECT version FROM workspaces WHERE id=?").pluck().get(id), 3, "a rejected change does not bump the version");
+});
+
+test("a workspace is created in the currency chosen for it", async () => {
+  const owner = await identity("Currency Owner");
+  const headers = { ...origin, ...context(owner.session, owner.cookie) };
+  const created = await app.inject({ method: "POST", url: "/api/workspaces", headers, payload: { id: randomUUID(), name: "Поездка", currency: " eur " } });
+  assert.equal(created.statusCode, 201, created.body);
+  assert.equal(created.json().workspace.currency, "EUR");
+  const unknown = await app.inject({ method: "POST", url: "/api/workspaces", headers, payload: { id: randomUUID(), name: "Нет", currency: "ZZZ" } });
+  assert.equal(unknown.statusCode, 400);
+  assert.equal(unknown.json().error.code, "INVALID_CURRENCY");
+  assert.equal(app.db.prepare("SELECT count(*) FROM workspaces WHERE name='Нет'").pluck().get(), 0);
 });
 
 test("route rate limits use the canonical error envelope", async () => {
@@ -150,6 +181,8 @@ test("membership removal, leave and ownership transfer stay workspace scoped", a
   const memberHeaders = { ...origin, ...context(member.session, member.cookie) };
   const forbidden = await app.inject({ method: "PATCH", url: `/api/workspaces/${workspaceA}`, headers: memberHeaders, payload: { name: "No", version: 1 } });
   assert.equal(forbidden.statusCode, 403);
+  const forbiddenCurrency = await app.inject({ method: "PATCH", url: `/api/workspaces/${workspaceA}`, headers: memberHeaders, payload: { currency: "EUR", version: 1 } });
+  assert.equal(forbiddenCurrency.statusCode, 403);
 
   const ownerHeaders = { ...origin, ...context(owner.session, owner.cookie) };
   const transfer = await app.inject({ method: "POST", url: `/api/workspaces/${workspaceA}/transfer-ownership`, headers: ownerHeaders, payload: { userId: member.session.user.id, version: 1 } });

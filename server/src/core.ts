@@ -4,7 +4,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { clearSessionCookie, createSession, hashSecret, refreshNormalSession, requireExpectedSessionContext, revokeSession, revokeSessionInTransaction, setSessionCookie } from "./auth.js";
 import type { LegacyClaimRow, WorkspaceRow } from "./types.js";
 import { authenticatedSession, createUser, guestSession, getUserProfile, listDeviceSessions, listWorkspaceSummaries, normalizeDisplayName } from "./users.js";
-import { isUuid, jsonError } from "./validation.js";
+import { isUuid, jsonError, normalizeCurrencyCode } from "./validation.js";
 import { createWorkspace, getWorkspaceSummary, listParticipants, normalizeWorkspaceName, revokeWorkspaceInvitations } from "./workspaces.js";
 
 const scrypt = promisify(scryptCallback);
@@ -171,37 +171,43 @@ export async function registerCoreRoutes(app: FastifyInstance): Promise<void> {
       hook: "preHandler",
       keyGenerator: (request: FastifyRequest) => request.auth?.userId ?? request.ip
     } },
-    schema: { body: { type: "object", required: ["id", "name"], additionalProperties: false, properties: { id: { type: "string", format: "uuid" }, name: { type: "string", minLength: 1, maxLength: 320 } } } }
+    schema: { body: { type: "object", required: ["id", "name"], additionalProperties: false, properties: { id: { type: "string", format: "uuid" }, name: { type: "string", minLength: 1, maxLength: 320 }, currency: { type: "string", minLength: 1, maxLength: 10 } } } }
   }, async (request, reply) => {
     if (!await requireMutation(request, reply, app) || !request.auth) return;
-    const body = request.body as { id: unknown; name: unknown };
+    const body = request.body as { id: unknown; name: unknown; currency?: unknown };
     if (!isUuid(body.id)) return fail(reply, 400, "REQUEST_ERROR", "Workspace ID must be a UUID");
     const name = normalizeWorkspaceName(body.name);
     if (!name) return fail(reply, 400, "INVALID_WORKSPACE_NAME", "Workspace name is invalid");
-    const result = createWorkspace(app.db, { id: body.id, name, ownerUserId: request.auth.userId });
+    // Валюта пространства выбирается при создании; клиент, который её не прислал, получает серверную по умолчанию.
+    const currency = body.currency === undefined ? app.config.defaultAnalyticsCurrency : normalizeCurrencyCode(body.currency);
+    if (!currency) return fail(reply, 400, "INVALID_CURRENCY", "Currency must be an ISO 4217 code");
+    const result = createWorkspace(app.db, { id: body.id, name, currency, ownerUserId: request.auth.userId });
     if ("conflict" in result) return fail(reply, 409, "IDEMPOTENCY_CONFLICT", "Workspace ID was already used with different data");
     return reply.code(result.replayed ? 200 : 201).send({ workspace: result.workspace });
   });
 
   app.patch("/api/workspaces/:workspaceId", {
     preHandler: app.requireWorkspaceMember,
-    schema: { params: workspaceIdParams, body: { type: "object", required: ["name", "version"], additionalProperties: false, properties: { name: { type: "string", minLength: 1, maxLength: 320 }, version: { type: "integer", minimum: 1 } } } }
+    schema: { params: workspaceIdParams, body: { type: "object", required: ["version"], additionalProperties: false, properties: { name: { type: "string", minLength: 1, maxLength: 320 }, currency: { type: "string", minLength: 1, maxLength: 10 }, version: { type: "integer", minimum: 1 } } } }
   }, async (request, reply) => {
     if (!await requireMutation(request, reply, app) || !request.auth) return;
-    if (!request.workspaceAccess?.owner) return fail(reply, 403, "FORBIDDEN", "Only the workspace owner can rename it");
+    if (!request.workspaceAccess?.owner) return fail(reply, 403, "FORBIDDEN", "Only the workspace owner can change it");
     const workspaceId = request.workspaceAccess.workspaceId;
-    const body = request.body as { name: unknown; version: number };
-    const name = normalizeWorkspaceName(body.name);
-    if (!name) return fail(reply, 400, "INVALID_WORKSPACE_NAME", "Workspace name is invalid");
+    const body = request.body as { name?: unknown; currency?: unknown; version: number };
+    if (body.name === undefined && body.currency === undefined) return fail(reply, 400, "REQUEST_ERROR", "Provide a name or a currency to change");
+    const name = body.name === undefined ? undefined : normalizeWorkspaceName(body.name);
+    if (body.name !== undefined && !name) return fail(reply, 400, "INVALID_WORKSPACE_NAME", "Workspace name is invalid");
+    const currency = body.currency === undefined ? undefined : normalizeCurrencyCode(body.currency);
+    if (body.currency !== undefined && !currency) return fail(reply, 400, "INVALID_CURRENCY", "Currency must be an ISO 4217 code");
     const outcome = app.db.transaction(() => {
       const workspace = ownerInsideTransaction(app, workspaceId, request.auth!.userId);
       if (!workspace) return "forbidden" as const;
       const now = new Date().toISOString();
-      const updated = app.db.prepare("UPDATE workspaces SET name=?,version=version+1,updated_at=? WHERE id=? AND owner_user_id=? AND version=?")
-        .run(name, now, workspaceId, request.auth!.userId, body.version);
+      const updated = app.db.prepare("UPDATE workspaces SET name=?,currency=?,version=version+1,updated_at=? WHERE id=? AND owner_user_id=? AND version=?")
+        .run(name ?? workspace.name, currency ?? workspace.currency, now, workspaceId, request.auth!.userId, body.version);
       return updated.changes === 0 ? "version" as const : getWorkspaceSummary(app.db, workspaceId, request.auth!.userId)!;
     })();
-    if (outcome === "forbidden") return fail(reply, 403, "FORBIDDEN", "Only the workspace owner can rename it");
+    if (outcome === "forbidden") return fail(reply, 403, "FORBIDDEN", "Only the workspace owner can change it");
     if (outcome === "version") return fail(reply, 409, "VERSION_CONFLICT", "Workspace version has changed");
     return { workspace: outcome };
   });

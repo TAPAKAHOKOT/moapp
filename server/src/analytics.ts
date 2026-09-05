@@ -4,6 +4,7 @@ import { convertMajor, ensureRates } from "./rates.js";
 import { hasWorkspaceMembership, noStore, sendWorkspaceNotFound, workspaceContext } from "./tenant-domain-guard.js";
 import { isCalendarDate, isCurrency, jsonError, minorDigits } from "./validation.js";
 import { localDateKey, requestTimeZone } from "./calendar.js";
+import { getWorkspaceCurrency } from "./workspaces.js";
 
 type Point = { amountMinor: number; count: number };
 
@@ -20,7 +21,7 @@ export async function registerAnalyticsRoutes(app: FastifyInstance): Promise<voi
     const from = q.from ?? defaultFrom;
     const to = q.to ?? today;
     const categoryId = q.categoryId?.trim();
-    const target = (q.currency ?? app.config.defaultAnalyticsCurrency).toUpperCase();
+    const target = (q.currency ?? getWorkspaceCurrency(app.db, workspaceId) ?? app.config.defaultAnalyticsCurrency).toUpperCase();
     if (!isCalendarDate(from) || !isCalendarDate(to) || from > to || !isCurrency(target)) {
       return reply.code(400).send(jsonError("VALIDATION", "Valid from, to and currency are required"));
     }

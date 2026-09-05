@@ -50,11 +50,12 @@ export function getUserProfile(db: Database, userId: string): UserProfile | unde
 }
 
 export function listWorkspaceSummaries(db: Database, userId: string): WorkspaceSummary[] {
-  const rows = db.prepare(`SELECT w.id,w.name,w.owner_user_id,w.version,m.joined_at
+  const rows = db.prepare(`SELECT w.id,w.name,w.currency,w.owner_user_id,w.version,m.joined_at
     FROM memberships m JOIN workspaces w ON w.id=m.workspace_id
     WHERE m.user_id=? ORDER BY m.joined_at,w.name COLLATE NOCASE,w.id`).all(userId) as Array<{
       id: string;
       name: string;
+      currency: string;
       owner_user_id: string;
       version: number;
       joined_at: string;
@@ -62,6 +63,7 @@ export function listWorkspaceSummaries(db: Database, userId: string): WorkspaceS
   return rows.map((row) => ({
     id: row.id,
     name: row.name,
+    currency: row.currency,
     role: row.owner_user_id === userId ? "owner" : "member",
     version: row.version,
     joinedAt: row.joined_at

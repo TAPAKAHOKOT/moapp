@@ -245,6 +245,7 @@ export async function forgetKnownProfile(online: boolean, session: SessionState 
 
 export function getWorkspacePreference(userId: string, workspaceId: string, name: WorkspacePreference): string | null { return storage()?.getItem(workspaceCurrencyKey(userId, workspaceId, name)) ?? null }
 export function setWorkspacePreference(userId: string, workspaceId: string, name: WorkspacePreference, value: string): void { storage()?.setItem(workspaceCurrencyKey(userId, workspaceId, name), value) }
+export function clearWorkspacePreference(userId: string, workspaceId: string, name: WorkspacePreference): void { storage()?.removeItem(workspaceCurrencyKey(userId, workspaceId, name)) }
 
 // Карточка «Сохраните ссылку доступа» над историей: помним, сколько раз её показали и когда нажали «Позже».
 // После пары показов она сворачивается в одну строку, «Позже» убирает её на неделю.

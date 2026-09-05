@@ -23,6 +23,7 @@ const SERVER_ERROR_MESSAGES: Record<string, string> = {
   FORBIDDEN: 'Для этого действия не хватает прав.',
   IDEMPOTENCY_CONFLICT: 'Это изменение уже было отправлено с другими данными.',
   IDENTITY_CONFLICT: 'Ссылка относится к другому профилю.',
+  INVALID_CURRENCY: 'Такой валюты нет в списке.',
   INVALID_DISPLAY_NAME: 'Проверьте имя: оно не должно быть пустым или слишком длинным.',
   INVALID_PIN: 'PIN не подошёл.',
   INVALID_WORKSPACE_NAME: 'Проверьте название пространства.',
@@ -180,8 +181,9 @@ export async function revokeSession(sessionId: string, signal?: AbortSignal): Pr
 
 // Workspaces and membership.
 export function listWorkspaces(signal?: AbortSignal) { return request<{ workspaces: WorkspaceSummary[] }>('/api/workspaces', { signal }) }
-export function createWorkspace(id: string, name: string, signal?: AbortSignal) { assertMutationsAllowed(); return request<{ workspace: WorkspaceSummary }>('/api/workspaces', { method: 'POST', body: JSON.stringify({ id, name }), signal }) }
+export function createWorkspace(id: string, name: string, currency: string, signal?: AbortSignal) { assertMutationsAllowed(); return request<{ workspace: WorkspaceSummary }>('/api/workspaces', { method: 'POST', body: JSON.stringify({ id, name, currency }), signal }) }
 export function renameWorkspace(workspaceId: string, name: string, version: number, signal?: AbortSignal) { assertMutationsAllowed(); return request<{ workspace: WorkspaceSummary }>(workspacePath(workspaceId), { method: 'PATCH', body: JSON.stringify({ name, version }), signal }) }
+export function changeWorkspaceCurrency(workspaceId: string, currency: string, version: number, signal?: AbortSignal) { assertMutationsAllowed(); return request<{ workspace: WorkspaceSummary }>(workspacePath(workspaceId), { method: 'PATCH', body: JSON.stringify({ currency, version }), signal }) }
 export function listMembers(workspaceId: string, signal?: AbortSignal) { return request<{ members: Participant[] }>(workspacePath(workspaceId, '/members'), { signal }) }
 export async function removeMember(workspaceId: string, userId: string, signal?: AbortSignal): Promise<void> { assertMutationsAllowed(); return request<void>(workspacePath(workspaceId, `/members/${encodeURIComponent(userId)}`), { method: 'DELETE', signal }) }
 export async function leaveWorkspace(workspaceId: string, signal?: AbortSignal): Promise<void> { assertMutationsAllowed(); return request<void>(workspacePath(workspaceId, '/members/me'), { method: 'DELETE', signal }) }

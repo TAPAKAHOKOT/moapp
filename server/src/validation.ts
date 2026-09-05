@@ -7,6 +7,12 @@ export function isCurrency(value: unknown): value is string {
   try { return Intl.supportedValuesOf("currency").includes(value); } catch { return true; }
 }
 
+export function normalizeCurrencyCode(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const code = value.trim().toUpperCase();
+  return isCurrency(code) ? code : undefined;
+}
+
 export function isTimestamp(value: unknown): value is string {
   return typeof value === "string" && !Number.isNaN(Date.parse(value));
 }
