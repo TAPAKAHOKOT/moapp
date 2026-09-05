@@ -52,6 +52,12 @@ function dailyRates(app: FastifyInstance, expenses: ExpenseRow[]) {
   return daily;
 }
 
+// ~300 Intl formatters per call; the catalogue never changes while the process runs.
+let currencyCatalogue: ReturnType<typeof availableCurrencies> | undefined;
+function currencyList() {
+  return currencyCatalogue ??= availableCurrencies();
+}
+
 function bootstrapRates(db: FastifyInstance["db"]) {
   const latest = db.prepare(`SELECT MAX(rate_date) date FROM exchange_rates
     WHERE base_currency='EUR' AND quote_currency='RSD'`).get() as { date: string | null };
@@ -88,7 +94,7 @@ async function registerBootstrapRoute(app: FastifyInstance): Promise<void> {
       categories: categories.map(categoryJson),
       tags: tags.map(tagJson),
       expenses: expenses.map(expenseJson),
-      currencies: availableCurrencies(),
+      currencies: currencyList(),
       rates: { ...bootstrapRates(app.db), daily: dailyRates(app, expenses) },
       defaultAnalyticsCurrency: app.config.defaultAnalyticsCurrency,
       serverTime: new Date().toISOString()

@@ -1,3 +1,4 @@
+import type { Database } from "better-sqlite3";
 import type { FastifyInstance } from "fastify";
 import { createExpense, deleteExpense, updateExpense, type ExpenseInput } from "./expenses.js";
 import { hasWorkspaceMembership, noStore, rejectsWorkspaceId, requireMutationOrigin, sendWorkspaceNotFound, workspaceContext } from "./tenant-domain-guard.js";
@@ -8,6 +9,15 @@ type Operation = {
   type: "createExpense" | "updateExpense" | "deleteExpense";
   payload: ExpenseInput & { version?: number };
 };
+
+/*
+ * The idempotency log only has to outlive a client's retry window: the offline outbox is replayed within days, so
+ * verdicts older than three months are dead weight in a table that otherwise grows with every saved expense.
+ */
+export function cleanupSyncOperations(db: Database, now = new Date(), maxAgeDays = 90): number {
+  const cutoff = new Date(now.getTime() - maxAgeDays * 86_400_000).toISOString();
+  return db.prepare("DELETE FROM sync_operations WHERE created_at < ?").run(cutoff).changes;
+}
 
 export async function registerSyncRoutes(app: FastifyInstance): Promise<void> {
   app.post("/api/workspaces/:workspaceId/sync", {

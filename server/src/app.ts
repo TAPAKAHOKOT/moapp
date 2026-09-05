@@ -14,6 +14,7 @@ import { startRateScheduler } from "./rates.js";
 import { jsonError } from "./validation.js";
 import { cleanupExpiredOAuthRows, registerOAuthRoutes } from "./oauth.js";
 import { registerMcpRoutes } from "./mcp.js";
+import { cleanupSyncOperations } from "./sync.js";
 import { registerBybitCardRoutes, startBybitCardScheduler } from "./bybit-card.js";
 
 function loggerOptions(enabled: boolean | undefined) {
@@ -61,9 +62,10 @@ export async function buildApp(config: AppConfig, options: { logger?: boolean; s
     db.close();
   });
 
+  // Health is polled by Docker, the deploy script and every client probe: a cheap read, not a whole-file integrity scan.
   app.get("/api/health", async () => {
-    const database = db.prepare("PRAGMA quick_check").pluck().get();
-    return { status: database === "ok" ? "ok" : "degraded", database, time: new Date().toISOString() };
+    const database = db.prepare("SELECT 1").pluck().get() === 1 ? "ok" : "degraded";
+    return { status: database, database, time: new Date().toISOString() };
   });
   await registerAuth(app);
   await registerOAuthRoutes(app);
@@ -103,15 +105,19 @@ export async function buildApp(config: AppConfig, options: { logger?: boolean; s
     const stopBybitCard = startBybitCardScheduler(app);
     cleanupExpiredAccessRows(db);
     cleanupExpiredOAuthRows(db);
+    cleanupSyncOperations(db);
     const accessCleanup = setInterval(() => cleanupExpiredAccessRows(db), 6 * 60 * 60 * 1000);
     const oauthCleanup = setInterval(() => cleanupExpiredOAuthRows(db), 6 * 60 * 60 * 1000);
+    const syncCleanup = setInterval(() => cleanupSyncOperations(db), 6 * 60 * 60 * 1000);
     accessCleanup.unref();
     oauthCleanup.unref();
+    syncCleanup.unref();
     app.addHook("onClose", async () => {
       stop();
       stopBybitCard();
       clearInterval(accessCleanup);
       clearInterval(oauthCleanup);
+      clearInterval(syncCleanup);
     });
   }
   return app;
