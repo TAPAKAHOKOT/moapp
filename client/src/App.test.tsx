@@ -1222,5 +1222,9 @@ describe('logout confirmation', () => {
     await waitFor(() => expect(logout).toHaveBeenCalled())
     expect(logout.mock.calls[0]?.slice(0, 2)).toEqual(['user-a', 'session-a'])
     expect(await screen.findByRole('button', { name: 'Создать пространство' })).not.toBeNull()
+    // Гостевой экран говорит, что это за приложение, и отводит приглашённых к ссылке из сообщения.
+    expect(screen.getByRole('heading', { name: 'Общий учёт трат для семьи' })).not.toBeNull()
+    expect(screen.getByText('Каждый записывает траты со своего телефона, итог за месяц виден всем. Без регистрации и пароля.')).not.toBeNull()
+    expect(screen.getByText('Вас пригласили? Откройте ссылку из сообщения.')).not.toBeNull()
   })
 })
