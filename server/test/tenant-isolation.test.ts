@@ -18,7 +18,8 @@ const categoryOnlyB = randomUUID();
 
 function createIdentity(displayName: string) {
   const user = createUser(app.db, displayName, now);
-  const session = createSession(app.db, config, { userId: user.id, now: new Date(now) });
+  // Сессия живёт 30 дней от реального времени: с фиксированной датой она протухает, и тесты падают в CI ровно через месяц.
+  const session = createSession(app.db, config, { userId: user.id });
   const cookie = `${sessionCookieName(config)}=${app.signCookie(session.token)}`;
   return {
     user,
