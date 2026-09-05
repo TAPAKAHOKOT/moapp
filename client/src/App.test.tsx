@@ -1053,6 +1053,29 @@ describe('workspace onboarding controls', () => {
     expect(accept.mock.calls[1]?.[1]).toBe(accept.mock.calls[0]?.[1])
   })
 
+  it('introduces the app on an invitation link and hides «Закрыть» on a clean phone', async () => {
+    vi.spyOn(workspaceApi, 'previewInvitation').mockResolvedValue({ kind: 'invitation', workspace: { id: 'workspace-b', name: 'Семья' }, expiresAt: '2030-01-01T00:00:00.000Z', invitedBy: 'Аня' })
+    render(<CapabilityScreen intent={{ kind: 'invite', token: 'A'.repeat(43) }} session={null} knownUserId={null} finish={vi.fn()} close={vi.fn()} resolveIdentityConflict={vi.fn()}/>)
+
+    expect(await screen.findByRole('heading', { name: 'Аня зовёт вас в «Семья»' })).not.toBeNull()
+    expect(screen.getByText('Общий список трат: записываете свои, итог за месяц виден всем. Без пароля, вход по этой ссылке.')).not.toBeNull()
+    expect(screen.queryByText('Безопасная ссылка')).toBeNull()
+    expect(screen.getByLabelText('Как вас называть')).not.toBeNull()
+    expect(screen.getByRole('button', { name: 'Присоединиться' })).not.toBeNull()
+    // Без профиля «Закрыть» вело бы на гостевой экран, где человек создаёт себе отдельное пространство вместо семейного.
+    expect(screen.queryByRole('button', { name: 'Закрыть' })).toBeNull()
+  })
+
+  it('keeps «Закрыть» for a signed-in profile and copes with an invitation without a sender', async () => {
+    vi.spyOn(workspaceApi, 'previewInvitation').mockResolvedValue({ kind: 'invitation', workspace: { id: 'workspace-b', name: 'Семья' }, expiresAt: '2030-01-01T00:00:00.000Z' })
+    const session: AuthenticatedSession = { authenticated: true, user: { id: 'user-a', displayName: 'Аня', recoveryConfigured: true, recoveryGeneration: 1 }, currentSessionId: 'session-a', currentSessionExpiresAt: '2030-01-01T00:00:00.000Z', serverTime: '2026-08-10T14:00:00.000Z', restrictedToRecovery: false, workspaces: [], legacyWorkspaceId: null }
+    render(<CapabilityScreen intent={{ kind: 'invite', token: 'A'.repeat(43) }} session={session} knownUserId="user-a" finish={vi.fn()} close={vi.fn()} resolveIdentityConflict={vi.fn()}/>)
+
+    expect(await screen.findByRole('heading', { name: 'Вас зовут в «Семья»' })).not.toBeNull()
+    expect(screen.getByRole('button', { name: 'Закрыть' })).not.toBeNull()
+    expect(screen.queryByLabelText('Как вас называть')).toBeNull()
+  })
+
   it('turns an action-time identity mismatch into the explicit logout flow', async () => {
     vi.spyOn(workspaceApi, 'previewDeviceLink').mockResolvedValue({
       kind: 'device', targetUserId: 'user-a', displayName: 'Аня', expiresAt: '2030-01-01T00:00:00.000Z',

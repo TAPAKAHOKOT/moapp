@@ -182,6 +182,8 @@ export type InvitationPreview = {
   kind: 'invitation'
   workspace: Pick<WorkspaceSummary, 'id' | 'name'>
   expiresAt: string
+  /** Display name of the person who created the link; absent when the creator cannot be resolved. */
+  invitedBy?: string
 }
 
 export type DeviceLinkMetadata = { id: string; expiresAt: string }

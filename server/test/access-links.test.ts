@@ -96,6 +96,7 @@ test("invitations are owner-only, hash-only, one-use capabilities with purpose i
       const preview = await app.inject({ method: "POST", url: "/api/access/invitations/preview", headers: origin, payload: { token } });
       assert.equal(preview.statusCode, 200, preview.body);
       assert.equal(preview.json().workspace.id, workspaceId);
+      assert.equal(preview.json().invitedBy, "Owner");
       assert.equal(preview.headers["cache-control"], "private, no-store");
     }
     const wrongPurpose = await app.inject({ method: "POST", url: "/api/access/device-links/preview", headers: origin, payload: { token } });

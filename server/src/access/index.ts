@@ -257,7 +257,11 @@ export async function registerAccessRoutes(app: FastifyInstance): Promise<void> 
     if (!row || row.consumed_at !== null || row.workspace_id === null) return sendLinkInvalid(reply);
     const workspace = app.db.prepare("SELECT id,name FROM workspaces WHERE id=?").get(row.workspace_id) as { id: string; name: string } | undefined;
     if (!workspace) return sendLinkInvalid(reply);
-    return { kind: "invitation" as const, workspace, expiresAt: row.expires_at };
+    // The invitation page reads like a message from a known person, so the creator's current name goes along.
+    const inviter = row.created_by_user_id
+      ? app.db.prepare("SELECT display_name FROM users WHERE id=?").get(row.created_by_user_id) as { display_name: string } | undefined
+      : undefined;
+    return { kind: "invitation" as const, workspace, expiresAt: row.expires_at, ...(inviter ? { invitedBy: inviter.display_name } : {}) };
   });
 
   app.post("/api/access/invitations/accept", {
