@@ -70,37 +70,55 @@ function SwipeDebug() {
     const pager = document.querySelector<HTMLElement>('.pager')
     const push = (line: string, replaceMove = false) => setLines((current) => {
       const kept = replaceMove && current.at(-1)?.startsWith('move') ? current.slice(0, -1) : current
-      return [...kept.slice(-8), line]
+      return [...kept.slice(-9), line]
     })
     const describe = (target: EventTarget | null) => target instanceof Element ? `${target.tagName.toLowerCase()}${target.className && typeof target.className === 'string' ? `.${target.className.split(' ').filter(Boolean).slice(0, 2).join('.')}` : ''}` : '?'
     let startX = 0, startY = 0
     const track = () => document.querySelector<HTMLElement>('.entry-track')?.style.transform || '0'
+    // Что вокруг касания: заблокированные предки, состояние полосы тегов и слоя превью — то, что ломается «до перезагрузки».
+    const surroundings = (target: EventTarget | null) => {
+      const blocked = target instanceof Element ? target.closest('[inert], [aria-hidden="true"]') : null
+      const strip = document.querySelector<HTMLElement>('.entry-lower-live .tag-strip')
+      const preview = document.querySelector<HTMLElement>('.entry-lower-preview')
+      return [
+        blocked ? `blocked-by=${describe(blocked)}` : '',
+        strip ? `strip=${strip.style.touchAction || 'css'}/${strip.scrollWidth - strip.clientWidth}px/left${Math.round(strip.scrollLeft)}` : '',
+        preview ? `preview=${preview.style.opacity || '?'}` : '',
+        pager?.style.overflowX ? `pager-overflow=${pager.style.overflowX}` : '',
+      ].filter(Boolean).join(' ')
+    }
+    const viewport = () => `vv=${Math.round(window.visualViewport?.offsetLeft ?? 0)},${Math.round(window.visualViewport?.offsetTop ?? 0)} h${Math.round(window.visualViewport?.height ?? window.innerHeight)} scroll=${Math.round(window.scrollX)},${Math.round(window.scrollY)}`
     const onStart = (event: TouchEvent) => {
       const touch = event.touches[0]
       if (!touch) return
       startX = touch.clientX; startY = touch.clientY
       const action = event.target instanceof Element ? getComputedStyle(event.target).touchAction : '?'
-      push(`start x${Math.round(touch.clientX)} y${Math.round(touch.clientY)} ${describe(event.target)} touch-action=${action} pager=${pager?.scrollLeft ?? '-'} fingers=${event.touches.length}`)
+      push(`start x${Math.round(touch.clientX)} y${Math.round(touch.clientY)} ${describe(event.target)} touch-action=${action} pager=${pager?.scrollLeft ?? '-'} fingers=${event.touches.length} ${surroundings(event.target)}`)
     }
     const onMove = (event: TouchEvent) => {
       const touch = event.touches[0]
       if (!touch) return
-      push(`move dx${Math.round(touch.clientX - startX)} dy${Math.round(touch.clientY - startY)} pager=${pager?.scrollLeft ?? '-'} track=${track()}${event.defaultPrevented ? ' prevented' : ''}`, true)
+      push(`move dx${Math.round(touch.clientX - startX)} dy${Math.round(touch.clientY - startY)} pager=${pager?.scrollLeft ?? '-'} track=${track()}${event.defaultPrevented ? ' prevented' : ''} ${viewport()}`, true)
     }
-    const onEnd = (event: TouchEvent) => push(`${event.type} pager=${pager?.scrollLeft ?? '-'} track=${track()}`)
+    const onEnd = (event: TouchEvent) => push(`${event.type} pager=${pager?.scrollLeft ?? '-'} track=${track()} ${viewport()}`)
     const onScroll = () => push(`pager scrolled to ${pager?.scrollLeft}`)
     const onPointerCancel = (event: PointerEvent) => push(`pointercancel ${event.pointerType} ${describe(event.target)}`)
+    const onWindow = (event: Event) => push(`${event.type} ${viewport()} inner=${window.innerWidth}x${window.innerHeight}`)
     document.addEventListener('touchstart', onStart, { passive: true })
     document.addEventListener('touchmove', onMove, { passive: true })
     document.addEventListener('touchend', onEnd, { passive: true })
     document.addEventListener('touchcancel', onEnd, { passive: true })
     document.addEventListener('pointercancel', onPointerCancel, { passive: true })
     pager?.addEventListener('scroll', onScroll, { passive: true })
+    for (const type of ['resize', 'scroll', 'pagehide', 'pageshow', 'popstate', 'blur']) window.addEventListener(type, onWindow, { passive: true })
+    window.visualViewport?.addEventListener('resize', onWindow); window.visualViewport?.addEventListener('scroll', onWindow)
     return () => {
       document.removeEventListener('touchstart', onStart); document.removeEventListener('touchmove', onMove)
       document.removeEventListener('touchend', onEnd); document.removeEventListener('touchcancel', onEnd)
       document.removeEventListener('pointercancel', onPointerCancel)
       pager?.removeEventListener('scroll', onScroll)
+      for (const type of ['resize', 'scroll', 'pagehide', 'pageshow', 'popstate', 'blur']) window.removeEventListener(type, onWindow)
+      window.visualViewport?.removeEventListener('resize', onWindow); window.visualViewport?.removeEventListener('scroll', onWindow)
     }
   }, [])
   return <pre className="swipe-debug" aria-hidden="true">{lines.join('\n')}</pre>

@@ -61,7 +61,8 @@ function chartAnimation() {
   return reduced ? false as const : { duration: 250 }
 }
 
-function formatAnalyticsAmount(value: number, currency: string) {
+// Точное значение для таблицы читалки и подсказок; на экране аналитика округляет до целых (format.ts).
+function exactAmount(value: number, currency: string) {
   return `${new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 4 }).format(value)} ${currency}`
 }
 
@@ -74,7 +75,7 @@ function chartAccessibility(props: AnalyticsChartProps): ChartAccessibility {
     const total = props.values.reduce((sum, value) => sum + value, 0)
     return {
       title: `Расходы по категориям в валюте ${props.target}`,
-      description: `Кольцевая диаграмма содержит ${props.labels.length} категорий на общую сумму ${formatAnalyticsAmount(total, props.target)}. Точные значения доступны в таблице после графика.`,
+      description: `Кольцевая диаграмма содержит ${props.labels.length} категорий на общую сумму ${exactAmount(total, props.target)}. Точные значения доступны в таблице после графика.`,
       dimensionLabel: 'Категория',
     }
   }
@@ -83,8 +84,8 @@ function chartAccessibility(props: AnalyticsChartProps): ChartAccessibility {
   const minimum = Math.min(...values)
   const maximum = Math.max(...values)
   const range = minimum === maximum
-    ? `Все значения: ${formatAnalyticsAmount(minimum, props.target)}.`
-    : `Значения от ${formatAnalyticsAmount(minimum, props.target)} до ${formatAnalyticsAmount(maximum, props.target)}.`
+    ? `Все значения: ${exactAmount(minimum, props.target)}.`
+    : `Значения от ${exactAmount(minimum, props.target)} до ${exactAmount(maximum, props.target)}.`
 
   if (props.kind === 'line') {
     return {
@@ -120,7 +121,7 @@ function ChartDataAlternative({
     <table className="sr-only">
       <caption>{title}. Точные значения</caption>
       <thead><tr><th scope="col">{dimensionLabel}</th><th scope="col">Расходы, {target}</th></tr></thead>
-      <tbody>{labels.map((label, index) => <tr key={`${label}-${index}`}><th scope="row">{label}</th><td>{formatAnalyticsAmount(values[index] ?? 0, target)}</td></tr>)}</tbody>
+      <tbody>{labels.map((label, index) => <tr key={`${label}-${index}`}><th scope="row">{label}</th><td>{exactAmount(values[index] ?? 0, target)}</td></tr>)}</tbody>
     </table>
   </>
 }
@@ -149,7 +150,7 @@ export default function AnalyticsChart(props: AnalyticsChartProps) {
       animation: chartAnimation(),
       plugins: {
         legend: { display: false },
-        tooltip: { callbacks: { label: (context) => formatAnalyticsAmount(context.parsed.y ?? 0, props.target) } },
+        tooltip: { callbacks: { label: (context) => exactAmount(context.parsed.y ?? 0, props.target) } },
       },
       scales: {
         x: { grid: { display: false }, ticks: { maxTicksLimit: props.maxTicksLimit, color: props.textColor } },
@@ -172,7 +173,7 @@ export default function AnalyticsChart(props: AnalyticsChartProps) {
       cutout: '72%',
       plugins: {
         legend: { display: false },
-        tooltip: { callbacks: { label: (context) => formatAnalyticsAmount(context.parsed, props.target) } },
+        tooltip: { callbacks: { label: (context) => exactAmount(context.parsed, props.target) } },
       },
     }
     return <><Doughnut data={{ labels: props.labels, datasets: [{ data: props.values, backgroundColor: props.colors, borderWidth: 0, spacing: 3 }] }} options={options} {...accessibleCanvas}/>{dataAlternative}</>
@@ -184,7 +185,7 @@ export default function AnalyticsChart(props: AnalyticsChartProps) {
     animation: chartAnimation(),
     plugins: {
       legend: { display: false },
-      tooltip: { callbacks: { label: (context) => formatAnalyticsAmount(context.parsed.y ?? 0, props.target) } },
+      tooltip: { callbacks: { label: (context) => exactAmount(context.parsed.y ?? 0, props.target) } },
     },
     scales: {
       x: { grid: { display: false }, ticks: { color: props.textColor } },
