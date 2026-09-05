@@ -55,6 +55,12 @@ type ChartAccessibility = {
   dimensionLabel: string
 }
 
+// Переходы между наборами данных анимируются коротко; при prefers-reduced-motion графики меняются мгновенно.
+function chartAnimation() {
+  const reduced = typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+  return reduced ? false as const : { duration: 250 }
+}
+
 function formatAnalyticsAmount(value: number, currency: string) {
   return `${new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 4 }).format(value)} ${currency}`
 }
@@ -140,7 +146,7 @@ export default function AnalyticsChart(props: AnalyticsChartProps) {
     const options: ChartOptions<'line'> = {
       responsive: true,
       maintainAspectRatio: false,
-      animation: false,
+      animation: chartAnimation(),
       plugins: {
         legend: { display: false },
         tooltip: { callbacks: { label: (context) => formatAnalyticsAmount(context.parsed.y ?? 0, props.target) } },
@@ -162,7 +168,7 @@ export default function AnalyticsChart(props: AnalyticsChartProps) {
     const options: ChartOptions<'doughnut'> = {
       responsive: true,
       maintainAspectRatio: false,
-      animation: false,
+      animation: chartAnimation(),
       cutout: '72%',
       plugins: {
         legend: { display: false },
@@ -175,7 +181,7 @@ export default function AnalyticsChart(props: AnalyticsChartProps) {
   const options: ChartOptions<'bar'> = {
     responsive: true,
     maintainAspectRatio: false,
-    animation: false,
+    animation: chartAnimation(),
     plugins: {
       legend: { display: false },
       tooltip: { callbacks: { label: (context) => formatAnalyticsAmount(context.parsed.y ?? 0, props.target) } },

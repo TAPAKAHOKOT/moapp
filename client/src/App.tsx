@@ -14,7 +14,7 @@ import { AccessFlowError, acceptDeviceWithProbe, acceptInvitationWithProbe, crea
 import { completeRecoverySafely, completeRotationSafely } from './recovery-flow'
 import { monitorServiceWorkerUpdates } from './service-worker-update'
 import type { AnalyticsData, AuthenticatedSession, BybitCardStatus, BybitCardTransaction, BybitRegion, CapabilityIntent, Category, Currency, Expense, RecoveryPrepareResponse, SessionState, Tag, WorkspaceBootstrap, WorkspaceOutboxItem, WorkspaceSummary } from './types'
-import { amountToMinor, applyKeypad, cachedDateTimeFormat, cachedNumberFormat, convertExpense, countCalendarWeekdays, formatAmountInput, isoToLocalInput, localDateKey, localInputToIso, monthDateRange, shiftDateKey, swipeDirection, weekdayFromDateKey, weekDateRange } from './utils'
+import { amountToMinor, applyKeypad, cachedDateTimeFormat, cachedNumberFormat, convertExpense, countCalendarWeekdays, formatAmountInput, hasRate, isoToLocalInput, localDateKey, localInputToIso, monthDateRange, shiftDateKey, swipeDirection, weekdayFromDateKey, weekDateRange } from './utils'
 import { buildHistoryCsv, defaultHistoryPreferences, expenseTagNames, filterHistoryExpenses, HISTORY_PERIOD_LABELS, historyTotals, parseHistoryPreferences, type HistoryPeriod, type HistoryPreferences } from './history'
 
 const AnalyticsChart = lazy(() => import('./AnalyticsCharts'))
@@ -1574,24 +1574,47 @@ export function AnalyticsView({ userId, workspaceId, bootstrap, theme, online }:
   const today=localDateKey(new Date())
   const selectedWeek=weekDateRange(today,weekOffset)
   const selectedMonth=monthDateRange(today,monthOffset)
-  const previousWeek=weekDateRange(today,weekOffset-1)
-  const currentWeekPartial=weekOffset===0&&weekdayFromDateKey(today)<6
-  const previousAnalyticsTo=currentWeekPartial?shiftDateKey(previousWeek.from,weekdayFromDateKey(today)):previousWeek.to
   const categoryId=focusedCategoryId&&bootstrap.categories.some((category)=>category.id===focusedCategoryId)?focusedCategoryId:null
   const selectedRange=period==='week'?selectedWeek:selectedMonth
   const from=selectedRange.from
+  // График обрывается на сегодняшнем дне: ещё не наступившие дни — не нули.
   const analyticsTo=selectedRange.to>today?today:selectedRange.to
+  const periodDays=Math.round((new Date(`${analyticsTo}T12:00:00Z`).getTime()-new Date(`${from}T12:00:00Z`).getTime())/86400000)+1
+  // Сравнение с прошлым периодом — за те же дни, пока текущий период не закончился; и для недели, и для месяца.
+  const partial=analyticsTo<selectedRange.to
+  const previousRange=period==='week'?weekDateRange(today,weekOffset-1):monthDateRange(today,monthOffset-1)
+  const previousSameDays=shiftDateKey(previousRange.from,periodDays-1)
+  const previousTo=partial&&previousSameDays<previousRange.to?previousSameDays:previousRange.to
   const expenseRevision=bootstrap.expenses.map((expense)=>`${expense.id}:${expense.version}:${expense.updatedAt}:${expense.deletedAt||''}:${expense.voidedAt||''}:${expense.amountMinor}:${expense.currency}:${expense.categoryId}:${expense.occurredAt}`).join('|')
   const requestKey=`${expenseRevision}:${from}:${analyticsTo}:${target}:${period}:${categoryId??'all'}`
   const fallback=useMemo(()=>fallbackAnalytics(bootstrap,target,from,analyticsTo,categoryId),[bootstrap,target,from,analyticsTo,categoryId])
-  const previousFallback=useMemo(()=>fallbackAnalytics(bootstrap,target,previousWeek.from,previousAnalyticsTo,categoryId),[bootstrap,target,previousWeek.from,previousAnalyticsTo,categoryId])
-  useEffect(()=>{let active=true;const controller=new AbortController();setAnalyticsError(null);if(!online){setAnalyticsOffline(true);setAnalyticsLoading(false);setRemote(null);return()=>controller.abort()}setAnalyticsLoading(true);Promise.all([getAnalytics(workspaceId,from,analyticsTo,target,categoryId??undefined,controller.signal),period==='week'?getAnalytics(workspaceId,previousWeek.from,previousAnalyticsTo,target,categoryId??undefined,controller.signal):Promise.resolve(null)]).then(([result,previous])=>{if(active){setRemote({key:requestKey,data:result,previousTotalMinor:previous?.totalMinor??null});setAnalyticsOffline(false);setAnalyticsLoading(false)}}).catch((reason)=>{if(active&&!controller.signal.aborted){setRemote(null);setAnalyticsOffline(true);setAnalyticsError(reason instanceof ApiError?reason.message:'Сервер аналитики недоступен');setAnalyticsLoading(false)}});return()=>{active=false;controller.abort()}},[workspaceId,from,analyticsTo,target,categoryId,period,previousWeek.from,previousAnalyticsTo,requestKey,online,retryEpoch])
+  const previousFallback=useMemo(()=>fallbackAnalytics(bootstrap,target,previousRange.from,previousTo,categoryId),[bootstrap,target,previousRange.from,previousTo,categoryId])
+  // Ответы сервера запоминаются по ключу периода: возврат к уже виденной неделе не ждёт сети. Пока ответа нет,
+  // показан локальный расчёт по тем же курсам дня, так что число не меняется дважды.
+  const cache=useRef(new Map<string,{data:AnalyticsData;previousTotalMinor:number|null}>())
+  useEffect(()=>{
+    let active=true;const controller=new AbortController()
+    setAnalyticsError(null)
+    if(!online){setAnalyticsOffline(true);setAnalyticsLoading(false);setRemote(null);return()=>controller.abort()}
+    const cached=cache.current.get(requestKey)
+    if(cached){setRemote({key:requestKey,...cached});setAnalyticsOffline(false);setAnalyticsLoading(false);return()=>controller.abort()}
+    setAnalyticsLoading(true)
+    Promise.all([getAnalytics(workspaceId,from,analyticsTo,target,categoryId??undefined,controller.signal),getAnalytics(workspaceId,previousRange.from,previousTo,target,categoryId??undefined,controller.signal)]).then(([result,previous])=>{
+      if(!active)return
+      const entry={data:result,previousTotalMinor:previous.totalMinor}
+      cache.current.set(requestKey,entry)
+      if(cache.current.size>40)cache.current.delete(cache.current.keys().next().value!)
+      setRemote({key:requestKey,...entry});setAnalyticsOffline(false);setAnalyticsLoading(false)
+    }).catch((reason)=>{if(active&&!controller.signal.aborted){setRemote(null);setAnalyticsOffline(true);setAnalyticsError(reason instanceof ApiError?reason.message:'Сервер аналитики недоступен');setAnalyticsLoading(false)}})
+    return()=>{active=false;controller.abort()}
+  },[workspaceId,from,analyticsTo,target,categoryId,previousRange.from,previousTo,requestKey,online,retryEpoch])
+  // Индикатор загрузки появляется только если сервер думает дольше 300 мс, и не трогает раскладку.
+  const [slowLoading,setSlowLoading]=useState(false)
+  useEffect(()=>{if(!analyticsLoading){setSlowLoading(false);return}const timer=setTimeout(()=>setSlowLoading(true),300);return()=>clearTimeout(timer)},[analyticsLoading])
   const data=remote?.key===requestKey?remote.data:fallback
-  const previousTotalMinor=remote?.key===requestKey?remote.previousTotalMinor:period==='week'?previousFallback.totalMinor:null
+  const previousTotalMinor=remote?.key===requestKey?remote.previousTotalMinor:previousFallback.totalMinor
   const decimals=bootstrap.currencies.find((currency)=>currency.code===target)?.decimals??2
   const divisor=10**decimals
-  // График обрывается на сегодняшнем дне: ещё не наступившие дни — не нули.
-  const periodDays=Math.round((new Date(`${analyticsTo}T12:00:00Z`).getTime()-new Date(`${from}T12:00:00Z`).getTime())/86400000)+1
   const days=Array.from({length:periodDays},(_,index)=>shiftDateKey(from,index))
   const dailyMap=new Map(data.daily.map((point)=>[point.date,point.amountMinor/divisor]))
   const byDay=days.map((date)=>dailyMap.get(date)||0)
@@ -1606,6 +1629,8 @@ export function AnalyticsView({ userId, workspaceId, bootstrap, theme, online }:
   const total=data.totalMinor/divisor
   const previousTotal=(previousTotalMinor??0)/divisor
   const elapsedDays=Math.max(1,periodDays)
+  const shownTotal=useTweenedNumber(total)
+  const shownPerDay=useTweenedNumber(total/elapsedDays)
   const weekRange=formatWeekRange(selectedWeek.from,selectedWeek.to)
   const monthLabel=new Date(`${selectedMonth.from}T12:00:00Z`).toLocaleDateString('ru-RU',{timeZone:'UTC',month:'long',year:'numeric'})
   const focusedName=categoryId?bootstrap.categories.find((category)=>category.id===categoryId)?.name:null
@@ -1615,8 +1640,8 @@ export function AnalyticsView({ userId, workspaceId, bootstrap, theme, online }:
   const chartColor=theme==='dark'?'#b1cfa3':CHART_COLOR
   const chartText=theme==='dark'?'#b3b3ae':'#73776f'
   const chartGrid=theme==='dark'?'rgba(255,255,255,.06)':'rgba(32,37,31,.06)'
-  const statusLine=analyticsLoading?'Обновляем аналитику…':analyticsOffline?<>{analyticsError?'Не удалось обновить. ':''}Показаны сохранённые данные на {new Date(bootstrap.serverTime).toLocaleString('ru-RU')}{online&&<button type="button" onClick={()=>setRetryEpoch((value)=>value+1)}>Повторить</button>}</>:data.missingCurrencies.length?`Нет курса: ${data.missingCurrencies.join(', ')} — эти расходы не посчитаны`:null
-  return <section className={`page analytics${analyticsLoading?' loading':''}`}><header className="page-header analytics-title"><div>{focusedName&&<p className="eyebrow">{focusedName}</p>}<h1 key={`${period}:${categoryId??''}:${target}:${from}`}>{new Intl.NumberFormat('ru-RU',{maximumFractionDigits:0}).format(total)}{hasForeign&&<button type="button" className="rate-info" aria-label="Как посчитана сумма" aria-expanded={rateInfo} onClick={()=>setRateInfo((value)=>!value)}>i</button>}</h1><p className="analytics-comparison" key={`stats:${period}:${categoryId??''}:${target}:${from}`}>{formatAnalyticsAmount(total/elapsedDays,target)} в день · {data.expenseCount} {pluralRu(data.expenseCount,['операция','операции','операций'])}</p>{period==='week'&&<p className="analytics-comparison">{weekComparisonLabel(total,previousTotal,currentWeekPartial)}</p>}</div><button className="currency-choice" onClick={()=>setCurrencySheet(true)}>{target}<ChevronIcon/></button></header>
+  const statusLine=analyticsOffline?<>{analyticsError?'Не удалось обновить. ':''}Показаны сохранённые данные на {new Date(bootstrap.serverTime).toLocaleString('ru-RU')}{online&&<button type="button" onClick={()=>setRetryEpoch((value)=>value+1)}>Повторить</button>}</>:data.missingCurrencies.length?`Нет курса: ${data.missingCurrencies.join(', ')} — эти расходы не посчитаны`:null
+  return <section className="page analytics"><div className={`analytics-progress${slowLoading?' on':''}`} aria-hidden="true"/><header className="page-header analytics-title"><div>{focusedName&&<p className="eyebrow">{focusedName}</p>}<h1>{cachedNumberFormat('ru-RU',{maximumFractionDigits:0}).format(shownTotal)}{hasForeign&&<button type="button" className="rate-info" aria-label="Как посчитана сумма" aria-expanded={rateInfo} onClick={()=>setRateInfo((value)=>!value)}>i</button>}</h1><p className="analytics-comparison">{formatAnalyticsAmount(shownPerDay,target)} в день · {data.expenseCount} {pluralRu(data.expenseCount,['операция','операции','операций'])}</p><p className="analytics-comparison">{comparisonLabel(total,previousTotal,partial,period)}</p></div><button className="currency-choice" onClick={()=>setCurrencySheet(true)}>{target}<ChevronIcon/></button></header>
     {rateInfo&&hasForeign&&<p className="rate-caption" role="note">Расходы в других валютах пересчитаны в {target} по курсу на день покупки.</p>}
     <div className="analytics-period" role="group" aria-label="Период аналитики"><button type="button" aria-pressed={period==='week'} className={period==='week'?'selected':''} onClick={()=>setPeriod('week')}>Неделя</button><button type="button" aria-pressed={period==='month'} className={period==='month'?'selected':''} onClick={()=>setPeriod('month')}>Месяц</button></div>
     {period==='week'&&<div className="week-navigator"><button type="button" onClick={()=>setWeekOffset((value)=>value-1)} aria-label="Предыдущая неделя">‹</button><div><b>{weekOffset===0?'Текущая неделя':weekOffset===-1?'Прошлая неделя':'Выбранная неделя'}</b><span>{weekRange}</span></div><button type="button" onClick={()=>setWeekOffset((value)=>Math.min(0,value+1))} disabled={weekOffset===0} aria-label="Следующая неделя">›</button></div>}
@@ -1647,11 +1672,37 @@ function formatCompactNumber(value:number) {
   return cachedNumberFormat('ru-RU',{notation:'compact',maximumFractionDigits:1}).format(value)
 }
 
-function weekComparisonLabel(total:number,previous:number,partial:boolean) {
-  const comparison=partial?'за те же дни прошлой недели':'на прошлой неделе'
-  if(previous===0)return total===0?`Как и ${comparison}`:partial?'За те же дни прошлой недели расходов не было':'На прошлой неделе расходов не было'
+// Число в шапке аналитики доезжает до нового значения за четверть секунды, а не прыгает. Первое значение — сразу.
+function useTweenedNumber(value:number,duration=250) {
+  const [shown,setShown]=useState(value)
+  const shownRef=useRef(value)
+  useEffect(()=>{
+    const from=shownRef.current
+    if(from===value)return
+    if(prefersReducedMotion()||!Number.isFinite(from)||!Number.isFinite(value)||typeof requestAnimationFrame!=='function'){shownRef.current=value;setShown(value);return}
+    const started=performance.now()
+    let frame=0
+    const tick=(now:number)=>{
+      const progress=Math.min(1,(now-started)/duration)
+      const eased=1-Math.pow(1-progress,3)
+      const next=progress<1?from+(value-from)*eased:value
+      shownRef.current=next;setShown(next)
+      if(progress<1)frame=requestAnimationFrame(tick)
+    }
+    frame=requestAnimationFrame(tick)
+    return()=>cancelAnimationFrame(frame)
+  },[value,duration])
+  return shown
+}
+
+function comparisonLabel(total:number,previous:number,partial:boolean,period:AnalyticsPeriod) {
+  const words=period==='week'
+    ?{sameDays:'за те же дни прошлой недели',whole:'на прошлой неделе',levelSame:'На уровне тех же дней прошлой недели',levelWhole:'На уровне прошлой недели',noneSame:'За те же дни прошлой недели расходов не было',noneWhole:'На прошлой неделе расходов не было'}
+    :{sameDays:'за те же дни прошлого месяца',whole:'в прошлом месяце',levelSame:'На уровне тех же дней прошлого месяца',levelWhole:'На уровне прошлого месяца',noneSame:'За те же дни прошлого месяца расходов не было',noneWhole:'В прошлом месяце расходов не было'}
+  const comparison=partial?words.sameDays:words.whole
+  if(previous===0)return total===0?`Как и ${comparison}`:partial?words.noneSame:words.noneWhole
   const difference=Math.round(Math.abs(total-previous)/previous*100)
-  if(difference===0)return partial?'На уровне тех же дней прошлой недели':'На уровне прошлой недели'
+  if(difference===0)return partial?words.levelSame:words.levelWhole
   return `На ${difference}% ${total>previous?'больше':'меньше'}, чем ${comparison}`
 }
 
@@ -1659,7 +1710,7 @@ export function fallbackAnalytics(bootstrap:Bootstrap,target:string,from:string,
   const decimals=bootstrap.currencies.find((currency)=>currency.code===target)?.decimals??2
   const categories=new Map(bootstrap.categories.map((category)=>[category.id,category]))
   const periodExpenses=bootstrap.expenses.filter((expense)=>!expense.deletedAt&&!expense.voidedAt&&(!categoryId||expense.categoryId===categoryId)).map((expense)=>({expense,date:localDateKey(expense.occurredAt)})).filter((item)=>item.date>=from&&item.date<=to)
-  const canConvert=(expense:Expense)=>expense.currency===target||Boolean(bootstrap.rates.ratesToRsd[expense.currency]??(expense.currency==='RSD'?1:0))&&Boolean(bootstrap.rates.ratesToRsd[target]??(target==='RSD'?1:0))
+  const canConvert=(expense:Expense)=>hasRate(bootstrap.rates,expense.currency,target,localDateKey(expense.occurredAt))
   const missingCurrencies=[...new Set(periodExpenses.filter(({expense})=>!canConvert(expense)).map(({expense})=>expense.currency))]
   const expenses=periodExpenses.filter(({expense})=>canConvert(expense)).map(({expense,date})=>({expense,date,amountMinor:Math.round(convertExpense(expense,target,bootstrap.currencies,bootstrap.rates)*10**decimals)}))
   const sum=(items:typeof expenses)=>items.reduce((total,item)=>total+item.amountMinor,0)

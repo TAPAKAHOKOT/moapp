@@ -59,11 +59,23 @@ export function formatAmountInput(amount: string) {
   return fraction === undefined ? grouped : `${grouped},${fraction}`
 }
 
+// Курс к динару на день покупки, если сервер прислал его для этого дня; иначе — последний известный. 0 — курса нет.
+export function rateToRsd(rates: RateSnapshot, code: string, date?: string) {
+  const table = date ? rates.daily?.[date] : undefined
+  return table?.[code] ?? rates.ratesToRsd[code] ?? (code === 'RSD' ? 1 : 0)
+}
+
+export function hasRate(rates: RateSnapshot, source: string, target: string, date?: string) {
+  return source === target || Boolean(rateToRsd(rates, source, date) && rateToRsd(rates, target, date))
+}
+
+// История и офлайн-аналитика считают по курсу дня покупки — так же, как сервер, поэтому итоги на экранах совпадают.
 export function convertExpense(expense: Expense, target: string, currencies: Currency[], rates: RateSnapshot) {
   const decimals = currencies.find((item) => item.code === expense.currency)?.decimals ?? 2
   if (expense.currency === target) return expense.amountMinor / 10 ** decimals
-  const sourceRate = rates.ratesToRsd[expense.currency] ?? (expense.currency === 'RSD' ? 1 : 0)
-  const targetRate = rates.ratesToRsd[target] ?? (target === 'RSD' ? 1 : 0)
+  const date = localDateKey(expense.occurredAt)
+  const sourceRate = rateToRsd(rates, expense.currency, date)
+  const targetRate = rateToRsd(rates, target, date)
   return targetRate ? expense.amountMinor / 10 ** decimals * sourceRate / targetRate : 0
 }
 

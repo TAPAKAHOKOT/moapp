@@ -90,6 +90,8 @@ export type RateSnapshot = {
   base: 'RSD'
   date: string | null
   ratesToRsd: Record<string, number>
+  /** Rates to RSD by purchase day (Europe/Belgrade), for the days that have expenses. Missing days fall back to the snapshot. */
+  daily?: Record<string, Record<string, number>>
 }
 
 export type SyncResult = {
