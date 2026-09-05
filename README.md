@@ -21,6 +21,10 @@ The repository is split into two workspaces:
 - `server` — Fastify API, SQLite storage, profile sessions, workspaces, and
   exchange rates.
 
+Layout, gesture and animation changes are checked in a real WebKit engine with
+the scripts in [client/e2e](./client/e2e/README.md) (`npm run e2e:shots`,
+`npm run e2e:swipe`, `npm run e2e:analytics`); they are not part of `npm test`.
+
 ### Local Bybit Card demo
 
 The mock exercises credential validation, request signing, the exact
