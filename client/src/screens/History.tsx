@@ -72,55 +72,115 @@ export const ROW_DRAG_START = 8
 
 // Строка истории: тап открывает запись, долгое нажатие включает выбор нескольких, свайп влево открывает удаление.
 // Заголовок — всегда категория; второй строкой — то, что человек написал сам, и теги текстом: «Maxi · #вдвоём».
+// На сенсорных экранах жест ведут touch-события с preventDefault: Safari обрывает pointer-события, как только
+// решает, что палец листает список, и свайп по строке до него не доходил. Мышь остаётся на pointer-событиях.
 // Строк в истории сотни, и все они живут в дереве постоянно. Мемоизация с колбэками, принимающими запись,
 // даёт перерисовку только тех строк, чьё состояние (выбор, открытый свайп) действительно изменилось.
+type RowGesture = { x: number; y: number; touchId: number | null; dragging: boolean; longPress: ReturnType<typeof setTimeout> | undefined }
+
+const usesNativeTouch = () => typeof window !== 'undefined' && 'ontouchstart' in window
+
 export const HistoryRow = memo(function HistoryRow({ expense, category, tags, currencies, checked, selecting, open, disabled, onOpen, onToggle, onEdit, onDelete, onVoided }: {
   expense: Expense; category?: Category; tags: Tag[]; currencies: Currency[]; checked: boolean; selecting: boolean; open: boolean; disabled: boolean
   onOpen: (id: string | null) => void; onToggle: (id: string) => void; onEdit: (id: string) => void; onDelete: (expense: Expense) => void; onVoided?: (expense: Expense) => void
 }) {
-  const gesture = useRef<{ x: number; y: number; dragging: boolean; moved: boolean; longPress: ReturnType<typeof setTimeout> | undefined } | null>(null)
+  const root = useRef<HTMLDivElement>(null)
+  const gesture = useRef<RowGesture | null>(null)
+  // Клик приходит следом за жестом (после pointerup или touchend); после свайпа или долгого нажатия он лишний.
+  const suppressClick = useRef(false)
   const [dragOffset, setDragOffset] = useState<number | null>(null)
   const swipeDisabled = disabled || selecting
   useEffect(() => () => clearTimeout(gesture.current?.longPress), [])
-  const finish = (commit: boolean, clientX?: number) => {
+  const begin = (x: number, y: number, touchId: number | null) => {
+    if (disabled) return
+    clearTimeout(gesture.current?.longPress)
+    suppressClick.current = false
+    gesture.current = { x, y, touchId, dragging: false, longPress: selecting || open ? undefined : setTimeout(() => {
+      // Долгое нажатие без движения — вход в выбор нескольких записей.
+      const state = gesture.current
+      if (!state || state.dragging) return
+      suppressClick.current = true
+      tap(8)
+      onToggle(expense.id)
+    }, LONG_PRESS_MS) }
+  }
+  // Возвращает true, пока строка едет за пальцем: в этот момент touchmove гасится, чтобы список не прокручивался.
+  const move = (x: number, y: number) => {
+    const state = gesture.current
+    if (!state) return false
+    const dx = x - state.x
+    const dy = y - state.y
+    if (!state.dragging) {
+      if (Math.abs(dy) > ROW_DRAG_START && Math.abs(dy) > Math.abs(dx)) { clearTimeout(state.longPress); gesture.current = null; return false }
+      if (Math.abs(dx) < ROW_DRAG_START || Math.abs(dx) < Math.abs(dy) * 1.5) return false
+      clearTimeout(state.longPress)
+      if (swipeDisabled && !open) { gesture.current = null; return false }
+      state.dragging = true
+      suppressClick.current = true
+    }
+    const base = open ? -ROW_ACTION_WIDTH : 0
+    setDragOffset(Math.max(-ROW_ACTION_WIDTH * 1.15, Math.min(0, base + dx)))
+    return true
+  }
+  const finish = (commit: boolean, x?: number) => {
     const state = gesture.current
     gesture.current = null
     if (!state) return
     clearTimeout(state.longPress)
     if (!state.dragging) return
     setDragOffset(null)
-    if (!commit || clientX === undefined) return
-    const dx = clientX - state.x + (open ? -ROW_ACTION_WIDTH : 0)
+    if (!commit || x === undefined) return
+    const dx = x - state.x + (open ? -ROW_ACTION_WIDTH : 0)
     onOpen(dx < -ROW_ACTION_WIDTH / 2 ? expense.id : null)
   }
   const pointerDown = (event: React.PointerEvent) => {
-    if (disabled || event.button !== 0) return
-    clearTimeout(gesture.current?.longPress)
-    gesture.current = { x: event.clientX, y: event.clientY, dragging: false, moved: false, longPress: selecting || open ? undefined : setTimeout(() => {
-      // Долгое нажатие без движения — вход в выбор нескольких записей.
-      if (gesture.current && !gesture.current.dragging) { gesture.current.moved = true; tap(8); onToggle(expense.id) }
-    }, LONG_PRESS_MS) }
+    if (event.pointerType === 'touch' && usesNativeTouch()) return
+    if (event.button !== 0) return
+    begin(event.clientX, event.clientY, null)
   }
   const pointerMove = (event: React.PointerEvent) => {
-    const state = gesture.current
-    if (!state) return
-    const dx = event.clientX - state.x
-    const dy = event.clientY - state.y
-    if (!state.dragging) {
-      if (Math.abs(dy) > ROW_DRAG_START && Math.abs(dy) > Math.abs(dx)) { clearTimeout(state.longPress); gesture.current = null; return }
-      if (Math.abs(dx) < ROW_DRAG_START || Math.abs(dx) < Math.abs(dy) * 1.5) return
-      clearTimeout(state.longPress)
-      if (swipeDisabled && !open) { gesture.current = null; return }
-      state.dragging = true
-      state.moved = true
-      event.currentTarget.setPointerCapture?.(event.pointerId)
-    }
-    const base = open ? -ROW_ACTION_WIDTH : 0
-    setDragOffset(Math.max(-ROW_ACTION_WIDTH * 1.15, Math.min(0, base + dx)))
+    if (event.pointerType === 'touch' && usesNativeTouch()) return
+    const wasDragging = gesture.current?.dragging
+    if (move(event.clientX, event.clientY) && !wasDragging) event.currentTarget.setPointerCapture?.(event.pointerId)
   }
+  const pointerEnd = (event: React.PointerEvent) => {
+    if (event.pointerType === 'touch' && usesNativeTouch()) return
+    finish(event.type === 'pointerup', event.clientX)
+  }
+  // Touch-слушатели ставятся один раз на строку; актуальные замыкания берутся из рефа.
+  const touch = useRef({ begin, move, finish })
+  touch.current = { begin, move, finish }
+  useEffect(() => {
+    const node = root.current
+    if (!node || !usesNativeTouch()) return
+    const tracked = (touches: TouchList) => { const id = gesture.current?.touchId; return id === null || id === undefined ? undefined : Array.from(touches).find((item) => item.identifier === id) }
+    const touchStart = (event: TouchEvent) => {
+      if (event.touches.length !== 1) { clearTimeout(gesture.current?.longPress); gesture.current = null; return }
+      const point = event.touches[0]
+      if (point) touch.current.begin(point.clientX, point.clientY, point.identifier)
+    }
+    const touchMove = (event: TouchEvent) => {
+      const point = tracked(event.touches)
+      if (point && touch.current.move(point.clientX, point.clientY)) event.preventDefault()
+    }
+    const touchEnd = (event: TouchEvent) => {
+      const point = tracked(event.changedTouches)
+      if (point) touch.current.finish(true, point.clientX)
+    }
+    const touchCancel = () => touch.current.finish(false)
+    node.addEventListener('touchstart', touchStart, { passive: true })
+    node.addEventListener('touchmove', touchMove, { passive: false })
+    node.addEventListener('touchend', touchEnd, { passive: true })
+    node.addEventListener('touchcancel', touchCancel, { passive: true })
+    return () => {
+      node.removeEventListener('touchstart', touchStart)
+      node.removeEventListener('touchmove', touchMove)
+      node.removeEventListener('touchend', touchEnd)
+      node.removeEventListener('touchcancel', touchCancel)
+    }
+  }, [])
   const click = () => {
-    const moved = gesture.current?.moved
-    if (moved) return
+    if (suppressClick.current) { suppressClick.current = false; return }
     if (open) { onOpen(null); return }
     if (selecting) onToggle(expense.id)
     else if (expense.voidedAt && onVoided) onVoided(expense)
@@ -130,7 +190,7 @@ export const HistoryRow = memo(function HistoryRow({ expense, category, tags, cu
   const tagList = expense.tagIds?.length ? sortTags(tags.filter((tag) => expense.tagIds?.includes(tag.id))) : []
   const categoryName = category?.name || 'Скрытая категория'
   const details = [expense.note, tagList.map((tag) => `#${tag.name}`).join(' ')].filter(Boolean).join(' · ')
-  return <div className={`history-expense${checked ? ' selected' : ''}${open ? ' open' : ''}`} onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={(event) => finish(true, event.clientX)} onPointerCancel={() => finish(false)}>
+  return <div ref={root} className={`history-expense${checked ? ' selected' : ''}${open ? ' open' : ''}${dragOffset !== null ? ' dragging' : ''}`} onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={pointerEnd} onPointerCancel={pointerEnd}>
     <div className="history-swipe" style={{ transform: translate ? `translateX(${translate}px)` : undefined, transition: dragOffset === null ? undefined : 'none', willChange: dragOffset === null ? undefined : 'transform' }}>
       <label className="expense-check" aria-label={`Выбрать расход ${categoryName}`}><input type="checkbox" tabIndex={selecting ? 0 : -1} checked={checked} onChange={() => onToggle(expense.id)}/><span/></label>
       <button type="button" className={`history-row${expense.voidedAt ? ' voided' : ''}`} aria-pressed={selecting ? checked : undefined} onClick={click}><i style={{backgroundColor:category?.color ?? '#a9afa5'}}/><span><b>{categoryName}</b>{details && <small>{details}</small>}</span><strong>{money(expense.amountMinor,expense.currency,currencies)}</strong>{expense.voidedAt ? <em className="voided-badge" aria-label="Платёж не прошёл, не учитывается">{expense.voidReason?.kind === 'reversed' ? 'Возврат' : 'Не прошёл'}</em> : expense.pending && <em aria-label="Ожидает отправки">●</em>}</button>
