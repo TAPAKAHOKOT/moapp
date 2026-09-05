@@ -1,6 +1,7 @@
 /* Общие стили приложения. Порядок: базовые токены и раскладка, экраны, шиты и элементы, затем @media в конце.
-   Файл переформатирован 2026-09-05: дубли селекторов сведены в одно объявление, правила для классов, которых нет
-   в разметке, удалены. Правки к экранам после 2026-09 живут в workspace-layout.css. */
+   Файл переформатирован 2026-09-05: каждое свойство селектора объявлено один раз (там, где стояло его последнее
+   объявление, поэтому блок селектора может встречаться дважды), правила для классов без разметки удалены.
+   Минимальный кегль текста — 11px; меньше только точки-индикаторы и бейджи. Правки к экранам после 2026-09 живут в workspace-layout.css. */
 
 :root {
   font-family: system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
@@ -104,7 +105,7 @@ select {
   margin: 0 0 5px;
   text-transform: uppercase;
   letter-spacing: .13em;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
   color: var(--accent-muted);
 }
@@ -474,7 +475,7 @@ p {
 }
 
 .bottom-nav button small {
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
 }
 
@@ -496,7 +497,7 @@ p {
   color: #fff;
   border-radius: 20px;
   padding: 6px 10px;
-  font-size: 9px;
+  font-size: 11px;
   box-shadow: 0 4px 20px #0003;
 }
 
@@ -666,7 +667,7 @@ p {
   justify-content: space-between;
   padding: 0 5px 8px;
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
   text-transform: uppercase;
   letter-spacing: .07em;
 }
@@ -711,7 +712,7 @@ p {
 
 .history-day>button small {
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -751,7 +752,7 @@ p {
 }
 
 .rate-caption {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--muted);
   margin: -2px 20px 17px;
 }
@@ -770,7 +771,7 @@ p {
 }
 
 .chart-card p {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--muted);
   margin: 0;
 }
@@ -815,7 +816,7 @@ p {
   align-items: center;
   border-top: 1px solid var(--line);
   padding: 7px 0;
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .legend i {
@@ -911,7 +912,7 @@ p {
 }
 
 .form-error {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--danger);
 }
 
@@ -1029,7 +1030,7 @@ p {
   border-radius: 8px;
   background: var(--soft);
   color: var(--sage);
-  font-size: 10px;
+  font-size: 11px;
   text-align: center;
   text-transform: lowercase;
 }
@@ -1162,7 +1163,7 @@ p {
 
 .history-row small {
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1331,7 +1332,7 @@ body {
 
 .analytics-comparison {
   margin: 5px 0 0;
-  font-size: 10px;
+  font-size: 11px;
   color: var(--muted);
 }
 
@@ -1374,7 +1375,7 @@ body {
 }
 
 .week-navigator span {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--muted);
 }
 
@@ -1405,7 +1406,7 @@ body {
 
 .analytics-empty p {
   max-width: 210px;
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1.45;
   margin: 0;
 }
@@ -1419,11 +1420,11 @@ body {
 }
 
 .legend-value b {
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .legend-value small {
-  font-size: 9px;
+  font-size: 11px;
   color: var(--muted);
 }
 
@@ -1480,7 +1481,7 @@ body {
   display: block;
   margin-top: 3px;
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .management-row button {
@@ -1489,7 +1490,7 @@ body {
   border-radius: 8px;
   padding: 7px 9px;
   color: var(--ink);
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .access-sheet {
@@ -1512,7 +1513,7 @@ body {
   max-height: 76px;
   overflow: auto;
   word-break: break-all;
-  font-size: 9px;
+  font-size: 11px;
   color: var(--muted);
   margin: 10px 0;
 }
@@ -1594,7 +1595,7 @@ body {
 .integration-title small,
 .integration-meta {
   color: var(--muted);
-  font-size: 9px;
+  font-size: 11px;
 }
 
 .integration-title>i {
@@ -1638,7 +1639,7 @@ body {
   gap: 5px;
   margin-bottom: 10px;
   color: var(--muted);
-  font-size: 9px;
+  font-size: 11px;
 }
 
 .integration-form input,
@@ -1687,7 +1688,7 @@ body {
   border-radius: 12px;
   background: transparent;
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
 }
 
@@ -1718,7 +1719,7 @@ body {
 
 .review-done p {
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .review-done .primary {
@@ -1849,7 +1850,7 @@ body {
   border-radius: 999px;
   border: 1px solid color-mix(in srgb,var(--sage) 35%,transparent);
   color: var(--ink);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
   line-height: 1;
   white-space: nowrap;
@@ -1879,7 +1880,7 @@ body {
   border-radius: 999px;
   background: transparent;
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
   line-height: 1;
 }
@@ -1907,7 +1908,7 @@ body {
 .history-row .tag-chip {
   min-height: 18px;
   padding: 0 6px;
-  font-size: 9px;
+  font-size: 11px;
 }
 
 .tag-chip {
@@ -2172,7 +2173,7 @@ button.tag-chip:disabled {
   align-items: center;
   justify-content: center;
   gap: 4px;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
 }
 

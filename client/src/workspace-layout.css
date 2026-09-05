@@ -179,7 +179,7 @@ textarea,
   border-radius: 6px;
   background: var(--soft);
   color: var(--danger);
-  font-size: 8px;
+  font-size: 9px;
   font-style: normal;
   font-weight: 700;
   letter-spacing: 0.04em;
@@ -467,7 +467,7 @@ textarea,
 
 .sync-issue-head small {
   color: var(--text-tertiary);
-  font-size: 9px;
+  font-size: 11px;
   white-space: nowrap;
 }
 
@@ -490,7 +490,7 @@ textarea,
 .sync-issue-reason,
 .sync-issue-server {
   margin: 0;
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1.45;
 }
 
@@ -566,7 +566,7 @@ textarea,
   padding: 6px 0;
   border-top: 1px dashed color-mix(in srgb, var(--line) 75%, transparent);
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .legend-detail > span:first-child {
@@ -594,14 +594,14 @@ textarea,
   border: 0;
   background: transparent;
   color: var(--sage);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
 }
 
 .legend-empty {
   margin: 8px 0 0;
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
 }
 
 /* Period sheet: five choices in one list. */
@@ -670,7 +670,7 @@ textarea,
 .calendar-grid small {
   padding: 4px 0 6px;
   color: var(--text-tertiary);
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 700;
   text-align: center;
   text-transform: uppercase;
@@ -839,7 +839,7 @@ textarea,
     top: 2px;
     left: 0;
     margin: 0;
-    font-size: 8px;
+    font-size: 9px;
     line-height: 10px;
   }
 
@@ -896,7 +896,7 @@ textarea,
     min-height: 54px;
     border-radius: 14px;
     gap: 5px;
-    font-size: 10px;
+    font-size: 11px;
   }
 
   .page.bybit-review-page {
@@ -1067,7 +1067,7 @@ textarea,
   border-radius: 9px;
   background: var(--danger);
   color: #fff;
-  font-size: 8px;
+  font-size: 9px;
   line-height: 12px;
   text-align: center;
 }
@@ -1136,7 +1136,7 @@ textarea,
   margin: 0;
   overflow: hidden;
   color: var(--muted);
-  font-size: 9px;
+  font-size: 11px;
   line-height: 1.35;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1485,7 +1485,7 @@ textarea,
 .history-total-parts {
   margin: -4px 16px 0;
   color: var(--text-tertiary);
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .history-selectbar {
@@ -1562,7 +1562,7 @@ textarea,
   display: block;
   margin-top: 2px;
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .history-inbox .chevron {
@@ -1670,7 +1670,7 @@ textarea,
   margin: 0 0 5px;
   padding: 0 6px;
   color: var(--text-tertiary);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
   letter-spacing: .1em;
   text-transform: uppercase;
@@ -1773,7 +1773,7 @@ button.settings-row:disabled .settings-row-value {
 .list-sheet h3 {
   margin: 12px 4px 4px;
   color: var(--text-tertiary);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
   letter-spacing: .1em;
   text-transform: uppercase;
