@@ -6,9 +6,11 @@ import { AnalyticsView, BybitReviewView, CapabilityScreen, CreateWorkspaceSheet,
 import * as workspaceApi from './workspace-api'
 import type { AuthenticatedSession, WorkspaceBootstrap } from './types'
 
-function chooseOption(label: string, option: string) {
+// Фильтры истории выбирают несколько значений: шит остаётся открытым до «Готово».
+function chooseOption(label: string, ...options: string[]) {
   fireEvent.click(screen.getByLabelText(label))
-  fireEvent.click(screen.getByRole('option', { name: (name) => name === option || name.startsWith(`${option}, `) }))
+  for (const option of options) fireEvent.click(screen.getByRole('option', { name: (name) => name === option || name.startsWith(`${option}, `) }))
+  fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Готово' }))
 }
 
 function choosePeriod(option: string) {
@@ -267,6 +269,15 @@ describe('history discovery', () => {
     chooseOption('Категория истории', 'Транспорт')
     expect(screen.queryByRole('button', { name: /Продукты/ })).toBeNull()
     expect(screen.getByRole('button', { name: /Транспорт/ })).not.toBeNull()
+    expect(screen.getByLabelText('Категория истории').textContent).toBe('Транспорт')
+
+    // Вторая категория добавляется к первой («или»), чип показывает счёт.
+    chooseOption('Категория истории', 'Продукты')
+    expect(screen.getByRole('button', { name: /Продукты/ })).not.toBeNull()
+    expect(screen.getByRole('button', { name: /Транспорт/ })).not.toBeNull()
+    expect(screen.getByLabelText('Категория истории').textContent).toBe('2 категории')
+    chooseOption('Категория истории', 'Продукты')
+    expect(screen.queryByRole('button', { name: /Продукты/ })).toBeNull()
 
     // Один день — два тапа по одной дате в календаре диапазона.
     choosePeriod('Выбрать даты')
@@ -321,12 +332,11 @@ describe('history totals', () => {
     expect(screen.getByLabelText(/Сумма показанных расходов/).textContent).toMatch(/20,00\s*RSD/)
   })
 
-  it('closes a filter sheet from its × even though the sheet lives inside a label', () => {
+  it('closes a filter sheet from its × and keeps «Все категории» checked while nothing is chosen', () => {
     render(<HistoryView userId="user-a" workspaceId="workspace-a" bootstrap={expenseBootstrap({ expenses: [{ id: 'a', amountMinor: 1_000, currency: 'RSD', categoryId: 'products', note: null, occurredAt: '2026-08-31T09:37:00.000Z', createdAt: '2026-08-31T09:37:00.000Z', updatedAt: '2026-08-31T09:37:00.000Z', version: 1, deletedAt: null }] })} setBootstrap={vi.fn()} edit={vi.fn()} createNew={vi.fn()} refreshPending={vi.fn()}/>)
     fireEvent.click(screen.getByLabelText('Категория истории'))
-    // The label's own activation would re-press the trigger after the sheet unmounts, so the click must be cancelled.
-    const notCancelled = fireEvent.click(screen.getByRole('button', { name: 'Закрыть' }))
-    expect(notCancelled).toBe(false)
+    expect(screen.getByRole('option', { name: 'Все категории' }).getAttribute('aria-selected')).toBe('true')
+    fireEvent.click(screen.getByRole('button', { name: 'Закрыть' }))
     expect(screen.queryByRole('dialog')).toBeNull()
   })
 })
