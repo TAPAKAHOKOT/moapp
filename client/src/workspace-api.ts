@@ -283,7 +283,7 @@ export async function disconnectBybitCard(workspaceId: string, signal?: AbortSig
 }
 export function syncBybitCard(workspaceId: string, signal?: AbortSignal) {
   assertMutationsAllowed()
-  return request<BybitCardStatus & { imported: number }>(bybitCardPath(workspaceId, '/sync'), { method: 'POST', body: JSON.stringify({}), signal })
+  return request<BybitCardStatus & { imported: number; throttled?: boolean }>(bybitCardPath(workspaceId, '/sync'), { method: 'POST', body: JSON.stringify({}), signal })
 }
 export function listBybitCardTransactions(workspaceId: string, signal?: AbortSignal) {
   return request<{ transactions: BybitCardTransaction[]; pendingCount: number }>(bybitCardPath(workspaceId, '/transactions?limit=200'), { signal })

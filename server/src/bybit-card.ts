@@ -351,9 +351,10 @@ async function fetchRecords(fetchImpl: FetchLike, credentials: Credentials, from
   return records;
 }
 
-export async function syncBybitCard(app: FastifyInstance, workspaceId: string, fetchImpl: FetchLike = fetch): Promise<{ imported: number; pendingCount: number }> {
+/* `throttled` tells the caller that nothing was fetched because a sync just ran (or is running), so the UI can say «уже актуально» instead of staying silent. */
+export async function syncBybitCard(app: FastifyInstance, workspaceId: string, fetchImpl: FetchLike = fetch): Promise<{ imported: number; pendingCount: number; throttled?: boolean }> {
   const running = syncSet(app);
-  if (running.has(workspaceId)) return { imported: 0, pendingCount: connectionStatus(app, workspaceId).pendingCount };
+  if (running.has(workspaceId)) return { imported: 0, throttled: true, pendingCount: connectionStatus(app, workspaceId).pendingCount };
   running.add(workspaceId);
   let connectionId: string | null = null;
   try {
@@ -363,7 +364,7 @@ export async function syncBybitCard(app: FastifyInstance, workspaceId: string, f
     const enabledAtMs = Date.parse(connection.enabled_at);
     const lastSyncedMs = connection.last_synced_at ? Date.parse(connection.last_synced_at) : enabledAtMs;
     if (connection.last_synced_at && Date.now() - lastSyncedMs < MIN_SYNC_INTERVAL_MS) {
-      return { imported: 0, pendingCount: connectionStatus(app, workspaceId).pendingCount };
+      return { imported: 0, throttled: true, pendingCount: connectionStatus(app, workspaceId).pendingCount };
     }
     /* Open authorizations may settle weeks later, so the window always reaches back to the oldest one. */
     const oldestOpen = app.db.prepare(`SELECT min(occurred_at) occurred_at FROM bybit_card_transactions

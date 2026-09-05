@@ -586,6 +586,23 @@ describe('settings identity transitions', () => {
     expect(screen.queryByRole('button', { name: /Поднять категорию/ })).toBeNull()
   })
 
+  it('tells the person why «Обновить» fetched nothing from Bybit', async () => {
+    vi.spyOn(workspaceApi, 'listMembers').mockResolvedValue({ members: [] })
+    vi.spyOn(workspaceApi, 'listSessions').mockResolvedValue({ sessions: [] })
+    vi.spyOn(workspaceApi, 'listInvitations').mockResolvedValue({ invitations: [] })
+    const status = { connected: true, canManage: true, pendingCount: 1, enabledAt: '2026-08-10T12:00:00.000Z', lastSyncedAt: '2026-09-05T08:00:00.000Z', status: 'active' as const }
+    const sync = vi.spyOn(workspaceApi, 'syncBybitCard').mockResolvedValue({ ...status, imported: 0, throttled: true })
+    const workspace = expenseBootstrap().workspace
+    const user: AuthenticatedSession = { authenticated: true, user: { id: 'user-a', displayName: 'Аня', recoveryConfigured: true, recoveryGeneration: 1 }, currentSessionId: 'session-a', currentSessionExpiresAt: '2030-01-01T00:00:00.000Z', serverTime: '2026-08-10T14:00:00.000Z', restrictedToRecovery: false, workspaces: [workspace], legacyWorkspaceId: null }
+    render(<SettingsView user={user} workspace={workspace} workspaceId={workspace.id} bootstrap={expenseBootstrap()} setBootstrap={vi.fn()} pendingCount={0} refreshPending={vi.fn()} onLogout={vi.fn()} theme="system" onThemeChange={vi.fn()} onSession={vi.fn()} online bybitStatus={status}/>)
+
+    fireEvent.click(screen.getByRole('button', { name: /Карта Bybit/ }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Обновить' }))
+    // Сервер не ходит в Bybit чаще раза в минуту; молчание выглядело бы как сломанная кнопка.
+    await screen.findByText('Уже актуально: обновлялось меньше минуты назад')
+    expect(sync).toHaveBeenCalledWith(workspace.id)
+  })
+
   it('prevents logout while a settings mutation can still return a session', async () => {
     vi.spyOn(workspaceApi, 'listMembers').mockResolvedValue({ members: [] })
     vi.spyOn(workspaceApi, 'listSessions').mockResolvedValue({ sessions: [] })

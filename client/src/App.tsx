@@ -1912,6 +1912,7 @@ function BybitSheet({ workspace, workspaceId, status, online, onStatus, onSynced
   const [region,setRegion]=useState<BybitRegion>('global')
   const [busy,setBusy]=useState(false)
   const [error,setError]=useState('')
+  const [feedback,setFeedback]=useState('')
   const {confirm,confirmation}=useConfirm()
   const manage=workspace.role==='owner'&&status?.canManage!==false
   const connect=async(event:React.FormEvent)=>{
@@ -1923,9 +1924,13 @@ function BybitSheet({ workspace, workspaceId, status, online, onStatus, onSynced
     }catch(reason){setError(reason instanceof ApiError?reason.message:'Не удалось подключить карту')}
     finally{setBusy(false)}
   }
+  // Сервер не ходит в Bybit чаще раза в минуту; кнопка обязана сказать об этом, иначе нажатие выглядит сломанным.
   const sync=async()=>{
-    setBusy(true);setError('')
-    try{onStatus(await syncBybitCard(workspaceId));onSynced()}catch(reason){setError(reason instanceof ApiError?reason.message:'Не удалось обновить операции')}
+    setBusy(true);setError('');setFeedback('')
+    try{
+      const result=await syncBybitCard(workspaceId);onStatus(result);onSynced()
+      setFeedback(result.throttled?'Уже актуально: обновлялось меньше минуты назад':result.imported?`Новых операций: ${result.imported}`:'Новых операций нет')
+    }catch(reason){setError(reason instanceof ApiError?reason.message:'Не удалось обновить операции')}
     finally{setBusy(false)}
   }
   const disconnect=async()=>{
@@ -1942,6 +1947,7 @@ function BybitSheet({ workspace, workspaceId, status, online, onStatus, onSynced
       <p className="sheet-copy">Платежи попадают в историю начиная с {new Date(status.enabledAt!).toLocaleDateString('ru-RU',{day:'numeric',month:'long'})}. Более ранние не загружаются.</p>
       {status.lastError&&<p className="form-error" role="alert">{status.lastError}</p>}
       <button type="button" className="primary sheet-action" disabled={!online||busy} onClick={()=>void sync()}>{busy?'Обновляем…':'Обновить'}</button>
+      {feedback&&<p className="inline-feedback" role="status">{feedback}</p>}
       {manage&&<button type="button" className="danger-link sheet-action" disabled={!online||busy} onClick={()=>void disconnect()}>Отключить</button>}
     </>:manage?<>
       <p className="sheet-copy">Платежи по карте будут появляться в истории сами — останется выбрать категорию. Загружаются только платежи после подключения. Нужен отдельный ключ только для чтения с разрешением BitCard.</p>

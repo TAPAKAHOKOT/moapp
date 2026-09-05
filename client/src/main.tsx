@@ -9,7 +9,7 @@ type Theme = 'light' | 'dark'
 
 const themeColors: Record<Theme, string> = {
   light: '#f5f2eb',
-  dark: '#181b18',
+  dark: '#111212',
 }
 
 function syncThemeColor(theme: Theme) {

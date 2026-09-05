@@ -1463,3 +1463,14 @@ button.settings-row:disabled .settings-row-value { color: var(--text-disabled); 
 
 /* Состояние выбора не меняет метрики текста: строка легенды держит место под процент, пока категория в фокусе. */
 .legend-value small.ghost { visibility: hidden; }
+
+/* На широком экране шит — центрированный диалог, а не лист, выезжающий из-под нижнего края окна. */
+@media (min-width: 700px) {
+  .sheet-backdrop { align-items: center; padding: 24px; }
+  .bottom-sheet, .access-sheet { max-width: 520px; max-height: calc(100dvh - 48px); border-radius: 24px; padding-bottom: 22px; animation: dialog-in .22s cubic-bezier(.22, .75, .25, 1); }
+  .bottom-sheet.tall { height: min(78dvh, 640px); max-height: calc(100dvh - 48px); }
+  .sheet-handle { display: none; }
+  .sheet-backdrop.closing .bottom-sheet, .sheet-backdrop.closing .access-sheet { animation: dialog-out .16s ease forwards; }
+}
+@keyframes dialog-in { from { transform: translateY(12px) scale(.98); opacity: 0; } }
+@keyframes dialog-out { to { transform: translateY(8px) scale(.98); opacity: 0; } }
