@@ -153,7 +153,6 @@ textarea,
   color: var(--text-tertiary);
 }
 
-.history-row em,
 .history-day > button em {
   color: var(--pending);
   font-size: 9px;
@@ -727,55 +726,15 @@ textarea,
   font-weight: 700;
 }
 
-/* Offline is stated in its own strip under the header, and the pager shrinks by exactly that strip. */
-.offline-banner {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  height: 34px;
-  padding: 0 16px;
-  border-bottom: 1px solid color-mix(in srgb, var(--pending) 28%, var(--line));
-  background: color-mix(in srgb, var(--pending) 12%, var(--paper));
+/* Офлайн живёт в той же плашке шапки, что и очередь отправки: нажатие проверяет связь. */
+.workspace-header .sync-status.offline {
+  background: color-mix(in srgb, var(--pending) 14%, var(--paper));
   color: var(--pending);
-  font-size: 11px;
 }
 
-.offline-banner > span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.offline-banner b {
-  font-weight: 800;
-}
-
-.offline-banner button {
-  flex: 0 0 auto;
-  min-height: 28px;
-  padding: 0 10px;
-  border: 1px solid color-mix(in srgb, var(--pending) 45%, transparent);
-  border-radius: 9px;
-  background: transparent;
-  color: inherit;
-  font-size: 11px;
-  font-weight: 700;
-}
-
-.app-shell.offline .pager {
-  height: calc(100dvh - 150px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
-}
-
-:root[data-theme="dark"] .offline-banner {
-  border-bottom-color: #3a3226;
+:root[data-theme="dark"] .workspace-header .sync-status.offline {
   background: #26221a;
   color: #e6bd72;
-}
-
-:root[data-theme="dark"] .offline-banner button {
-  border-color: #5a4a2c;
 }
 
 @keyframes chart-shimmer { from { background-position: 100% 0; } to { background-position: -100% 0; } }
@@ -1975,6 +1934,51 @@ button.settings-row:disabled .settings-row-value {
   color: var(--on-ink);
   font-size: 12px;
   font-weight: 700;
+}
+
+/* «Сохранить» и «Позже» стоят столбиком справа, чтобы заголовок карточки не переносился на узких экранах. */
+.reminder-actions {
+  display: grid;
+  justify-items: end;
+  gap: 0;
+}
+
+.reminder-later {
+  min-height: 26px;
+  padding: 0 4px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+/* После пары показов карточка сворачивается в одну строку. */
+.history-reminder.compact {
+  grid-template-columns: 28px minmax(0, 1fr) auto auto;
+  gap: 8px;
+  padding: 6px 8px 6px 12px;
+}
+
+.history-reminder.compact .reminder-mark {
+  width: 28px;
+  height: 28px;
+  border-radius: 9px;
+}
+
+.history-reminder.compact > b {
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.history-reminder.compact .text-button {
+  min-height: 32px;
+  padding: 0 6px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.reminder-save {
+  color: var(--sage);
 }
 
 .access-sheet > h2 {

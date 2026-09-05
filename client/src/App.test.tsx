@@ -232,6 +232,21 @@ describe('expense dates', () => {
 })
 
 describe('history discovery', () => {
+  it('lets the recovery reminder be postponed and collapses it into one line after a few shows', () => {
+    const bootstrap = expenseBootstrap({ expenses: [{ id: 'a', amountMinor: 1_000, currency: 'RSD', categoryId: 'products', note: null, occurredAt: '2026-08-31T09:37:00.000Z', createdAt: '2026-08-31T09:37:00.000Z', updatedAt: '2026-08-31T09:37:00.000Z', version: 1, deletedAt: null }] })
+    const onSave = vi.fn(); const onLater = vi.fn()
+    const { unmount } = render(<HistoryView userId="user-a" workspaceId="workspace-a" bootstrap={bootstrap} setBootstrap={vi.fn()} edit={vi.fn()} createNew={vi.fn()} refreshPending={vi.fn()} reminder={{ onSave, onLater, compact: false }}/>)
+    expect(screen.getByText('Иначе без этого телефона расходы не вернуть')).not.toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Позже' }))
+    expect(onLater).toHaveBeenCalledTimes(1)
+    unmount()
+    render(<HistoryView userId="user-a" workspaceId="workspace-a" bootstrap={bootstrap} setBootstrap={vi.fn()} edit={vi.fn()} createNew={vi.fn()} refreshPending={vi.fn()} reminder={{ onSave, onLater, compact: true }}/>)
+    expect(screen.queryByText('Иначе без этого телефона расходы не вернуть')).toBeNull()
+    expect(screen.getByText('Сохраните ссылку доступа')).not.toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }))
+    expect(onSave).toHaveBeenCalledTimes(1)
+  })
+
   it('offers a first-expense action instead of a useless empty search field', () => {
     const createNew = vi.fn()
     render(<HistoryView userId="user-a" workspaceId="workspace-a" bootstrap={expenseBootstrap()} setBootstrap={vi.fn()} edit={vi.fn()} createNew={createNew} refreshPending={vi.fn()}/>)

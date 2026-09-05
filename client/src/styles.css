@@ -1188,14 +1188,6 @@ p {
   white-space: nowrap;
 }
 
-.history-row em {
-  position: absolute;
-  right: 0;
-  bottom: 3px;
-  color: #d3aa57;
-  font-size: 7px;
-}
-
 .history-empty-action {
   width: min(100%,240px);
   margin-top: 5px;

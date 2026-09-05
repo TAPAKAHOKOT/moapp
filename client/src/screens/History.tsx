@@ -193,7 +193,7 @@ export const HistoryRow = memo(function HistoryRow({ expense, category, tags, cu
   return <div ref={root} className={`history-expense${checked ? ' selected' : ''}${open ? ' open' : ''}${dragOffset !== null ? ' dragging' : ''}`} onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={pointerEnd} onPointerCancel={pointerEnd}>
     <div className="history-swipe" style={{ transform: translate ? `translateX(${translate}px)` : undefined, transition: dragOffset === null ? undefined : 'none', willChange: dragOffset === null ? undefined : 'transform' }}>
       <label className="expense-check" aria-label={`Выбрать расход ${categoryName}`}><input type="checkbox" tabIndex={selecting ? 0 : -1} checked={checked} onChange={() => onToggle(expense.id)}/><span/></label>
-      <button type="button" className={`history-row${expense.voidedAt ? ' voided' : ''}`} aria-pressed={selecting ? checked : undefined} onClick={click}><i style={{backgroundColor:category?.color ?? '#a9afa5'}}/><span><b>{categoryName}</b>{details && <small>{details}</small>}</span><strong>{money(expense.amountMinor,expense.currency,currencies)}</strong>{expense.voidedAt ? <em className="voided-badge" aria-label="Платёж не прошёл, не учитывается">{expense.voidReason?.kind === 'reversed' ? 'Возврат' : 'Не прошёл'}</em> : expense.pending && <em aria-label="Ожидает отправки">●</em>}</button>
+      <button type="button" className={`history-row${expense.voidedAt ? ' voided' : ''}`} aria-pressed={selecting ? checked : undefined} onClick={click}><i style={{backgroundColor:category?.color ?? '#a9afa5'}}/><span><b>{categoryName}</b>{details && <small>{details}</small>}</span><strong>{money(expense.amountMinor,expense.currency,currencies)}</strong>{expense.voidedAt && <em className="voided-badge" aria-label="Платёж не прошёл, не учитывается">{expense.voidReason?.kind === 'reversed' ? 'Возврат' : 'Не прошёл'}</em>}</button>
     </div>
     <button type="button" className="history-swipe-delete" tabIndex={open ? 0 : -1} aria-hidden={!open} disabled={disabled} onClick={() => onDelete(expense)}><TrashIcon/><span>Удалить</span></button>
   </div>
@@ -201,7 +201,7 @@ export const HistoryRow = memo(function HistoryRow({ expense, category, tags, cu
 
 export type HistoryInbox = { count: number; onOpen: () => void }
 
-export type HistoryReminder = { onSave: () => void }
+export type HistoryReminder = { onSave: () => void; onLater: () => void; compact: boolean }
 
 // Вкладка не размонтируется, пока открыто пространство, поэтому она не должна перерисовываться от чужих
 // изменений состояния приложения — только от своих данных и колбэков (все они стабильны у родителя).
@@ -424,7 +424,9 @@ export const HistoryView = memo(function HistoryView({ userId, workspaceId, boot
       </div>
       {showParts && totalParts && <p className="history-total-parts">{totalParts}{totals.missing.length ? ` · нет курса: ${totals.missing.join(', ')}` : ''}</p>}
     </div>}
-    {reminder && !selected.size && <div className="history-inbox history-reminder"><span className="reminder-mark"><LockIcon/></span><span><b>Сохраните ссылку доступа</b><small>Иначе без этого телефона расходы не вернуть</small></span><button type="button" className="reminder-action" onClick={reminder.onSave}>Сохранить</button></div>}
+    {reminder && !selected.size && (reminder.compact
+      ? <div className="history-inbox history-reminder compact"><span className="reminder-mark"><LockIcon/></span><b>Сохраните ссылку доступа</b><button type="button" className="text-button reminder-save" onClick={reminder.onSave}>Сохранить</button><button type="button" className="text-button reminder-later" onClick={reminder.onLater}>Позже</button></div>
+      : <div className="history-inbox history-reminder"><span className="reminder-mark"><LockIcon/></span><span><b>Сохраните ссылку доступа</b><small>Иначе без этого телефона расходы не вернуть</small></span><span className="reminder-actions"><button type="button" className="reminder-action" onClick={reminder.onSave}>Сохранить</button><button type="button" className="text-button reminder-later" onClick={reminder.onLater}>Позже</button></span></div>)}
     {inbox && inbox.count > 0 && !selected.size && <button type="button" className="history-inbox" onClick={inbox.onOpen}><span className="bybit-mark">B</span><span><b>{inbox.count} {pluralRu(inbox.count, ['операция с карты ждёт', 'операции с карты ждут', 'операций с карты ждут'])} разбора</b><small>Выбрать категории</small></span><ChevronIcon/></button>}
     <div className={`history-list${selected.size ? ' selecting' : ''}`}>{groups.map(({ date, items, total }) => <div key={date} className="history-day"><div className="history-date"><span>{formatHistoryDate(date)}</span>{total && <b>{total}</b>}</div>{items.map((expense) => <HistoryRow key={expense.id} expense={expense} category={categoryMap.get(expense.categoryId)} tags={tags} currencies={bootstrap.currencies} checked={selected.has(expense.id)} selecting={selected.size > 0} open={openRow === expense.id} disabled={deleting} onOpen={setOpenRow} onToggle={toggle} onEdit={editRow} onDelete={deleteRow} onVoided={setVoided}/>)}</div>)}</div>
     {!groups.length && <div className="list-empty" role="status"><span>{filtersActive ? 'Ничего не найдено' : 'История пока пуста'}</span><p>{filtersActive ? 'Измените фильтры или сбросьте их.' : 'Добавьте первый расход — он сразу появится здесь.'}</p>{!filtersActive && <button type="button" className="primary history-empty-action" onClick={createNew}>Добавить первый расход</button>}</div>}

@@ -21,6 +21,8 @@ const LOGOUT_PENDING = 'moapp:v2:logout-pending'
 const activeKey = (userId: string) => `moapp:v2:active-workspace:${userId}`
 type WorkspacePreference = 'last-currency' | 'analytics-currency' | 'analytics-week-category' | 'analytics-month-category' | 'history-filters'
 const workspaceCurrencyKey = (userId: string, workspaceId: string, name: WorkspacePreference) => `moapp:v2:user:${userId}:workspace:${workspaceId}:${name}`
+type UserPreference = 'recovery-reminder'
+const userPreferenceKey = (userId: string, name: UserPreference) => `moapp:v2:user:${userId}:${name}`
 
 const storage = (): Storage | null => {
   if (typeof localStorage === 'undefined') return null
@@ -72,7 +74,7 @@ function newRuntime(workspaceId: string): WorkspaceRuntime {
 function clearUserPreferences(userId: string, workspaceId?: string): void {
   const local = storage()
   if (!local) return
-  const prefix = workspaceId === undefined ? `moapp:v2:user:${userId}:workspace:` : `moapp:v2:user:${userId}:workspace:${workspaceId}:`
+  const prefix = workspaceId === undefined ? `moapp:v2:user:${userId}:` : `moapp:v2:user:${userId}:workspace:${workspaceId}:`
   const keys: string[] = []
   for (let index = 0; index < local.length; index += 1) {
     const key = local.key(index)
@@ -243,6 +245,25 @@ export async function forgetKnownProfile(online: boolean, session: SessionState 
 
 export function getWorkspacePreference(userId: string, workspaceId: string, name: WorkspacePreference): string | null { return storage()?.getItem(workspaceCurrencyKey(userId, workspaceId, name)) ?? null }
 export function setWorkspacePreference(userId: string, workspaceId: string, name: WorkspacePreference, value: string): void { storage()?.setItem(workspaceCurrencyKey(userId, workspaceId, name), value) }
+
+// Карточка «Сохраните ссылку доступа» над историей: помним, сколько раз её показали и когда нажали «Позже».
+// После пары показов она сворачивается в одну строку, «Позже» убирает её на неделю.
+export type ReminderMemory = { shows: number; snoozedUntil: string | null }
+export const REMINDER_COMPACT_AFTER = 2
+export const REMINDER_SNOOZE_DAYS = 7
+export function readReminderMemory(userId: string): ReminderMemory {
+  try {
+    const raw = storage()?.getItem(userPreferenceKey(userId, 'recovery-reminder'))
+    const parsed = raw ? JSON.parse(raw) as Partial<ReminderMemory> : null
+    return {
+      shows: typeof parsed?.shows === 'number' && Number.isFinite(parsed.shows) && parsed.shows > 0 ? Math.floor(parsed.shows) : 0,
+      snoozedUntil: typeof parsed?.snoozedUntil === 'string' && !Number.isNaN(Date.parse(parsed.snoozedUntil)) ? parsed.snoozedUntil : null,
+    }
+  } catch { return { shows: 0, snoozedUntil: null } }
+}
+export function writeReminderMemory(userId: string, memory: ReminderMemory): void { storage()?.setItem(userPreferenceKey(userId, 'recovery-reminder'), JSON.stringify(memory)) }
+export const reminderSnoozed = (memory: ReminderMemory, now = Date.now()) => Boolean(memory.snoozedUntil && Date.parse(memory.snoozedUntil) > now)
+export const snoozeReminder = (memory: ReminderMemory, now = Date.now()): ReminderMemory => ({ ...memory, snoozedUntil: new Date(now + REMINDER_SNOOZE_DAYS * 86_400_000).toISOString() })
 export const readWorkspaceStats = (userId: string, workspaceId: string): Promise<OutboxStats> => outboxStats(userId, workspaceId)
 
 export type IdentityEvent = { epoch: number; eventId: string; userId: string | null; sessionId: string | null }

@@ -5,7 +5,7 @@ vi.mock('./workspace-offline', () => ({
   readCachedBootstrap: vi.fn(), readCachedProfile: vi.fn(), waitForWorkspaceOfflineWrites: vi.fn(),
 }))
 
-import { beginLogout, beginWorkspaceRequest, chooseCachedWorkspace, closeCapability, createAppState, createIdentityCoordinator, createLoggedOutState, finishWorkspaceRequest, forgetKnownProfile, hydrateAppState, openLegacyClaim, settlePendingLogout, updateWorkspace } from './app-state'
+import { beginLogout, beginWorkspaceRequest, chooseCachedWorkspace, closeCapability, createAppState, createIdentityCoordinator, createLoggedOutState, finishWorkspaceRequest, forgetKnownProfile, hydrateAppState, openLegacyClaim, readReminderMemory, reminderSnoozed, settlePendingLogout, snoozeReminder, updateWorkspace, writeReminderMemory } from './app-state'
 import { clearUserOfflineData, readCachedBootstrap, waitForWorkspaceOfflineWrites } from './workspace-offline'
 import type { AuthenticatedSession, GuestSession, WorkspaceRuntime, WorkspaceSummary } from './types'
 
@@ -175,5 +175,29 @@ describe('workspace runtime race isolation', () => {
 
     expect(refresh).toHaveBeenCalledWith(true)
     coordinator.dispose()
+  })
+})
+
+describe('recovery reminder memory', () => {
+  it('counts shows, snoozes for a week and survives garbage in storage', () => {
+    expect(readReminderMemory('user-a')).toEqual({ shows: 0, snoozedUntil: null })
+    localStorage.setItem('moapp:v2:user:user-a:recovery-reminder', '{"shows":"many","snoozedUntil":"not a date"}')
+    expect(readReminderMemory('user-a')).toEqual({ shows: 0, snoozedUntil: null })
+    localStorage.setItem('moapp:v2:user:user-a:recovery-reminder', 'not json')
+    expect(readReminderMemory('user-a')).toEqual({ shows: 0, snoozedUntil: null })
+
+    const now = Date.parse('2026-09-05T10:00:00.000Z')
+    const snoozed = snoozeReminder({ shows: 3, snoozedUntil: null }, now)
+    writeReminderMemory('user-a', snoozed)
+    expect(readReminderMemory('user-a')).toEqual({ shows: 3, snoozedUntil: '2026-09-12T10:00:00.000Z' })
+    expect(reminderSnoozed(snoozed, now + 6 * 86_400_000)).toBe(true)
+    expect(reminderSnoozed(snoozed, now + 8 * 86_400_000)).toBe(false)
+  })
+
+  it('forgetting a profile clears user-level preferences too', async () => {
+    localStorage.setItem('moapp:v2:known-user', 'cached-user')
+    localStorage.setItem('moapp:v2:user:cached-user:recovery-reminder', '{"shows":2,"snoozedUntil":null}')
+    await expect(forgetKnownProfile(true, guest())).resolves.toBe(true)
+    expect(localStorage.getItem('moapp:v2:user:cached-user:recovery-reminder')).toBeNull()
   })
 })

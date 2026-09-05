@@ -1,8 +1,8 @@
 import { startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { WorkspaceApiError as ApiError, allowWorkspaceMutations, blockWorkspaceMutations, discardOutboxIssues, getBootstrap, getBybitCardStatus, getSession, logoutExpected, prepareInitialOrManualRecovery, probeServer, retryOutboxIssue, setSessionContext, syncAllWorkspaces } from './workspace-api'
 import { cacheBootstrap, migrateLegacyOfflineData, outboxStats, readCachedProfile, waitForWorkspaceOfflineWrites } from './workspace-offline'
-import { applyMembershipLoss, beginLogout, chooseCachedWorkspace, closeCapability, createAppState, createIdentityCoordinator, createLoggedOutState, forgetKnownProfile, hydrateAppState, openLegacyClaim, setActiveWorkspace, settlePendingLogout, updateWorkspace } from './app-state'
-import type { AppState } from './app-state'
+import { REMINDER_COMPACT_AFTER, applyMembershipLoss, beginLogout, chooseCachedWorkspace, closeCapability, createAppState, createIdentityCoordinator, createLoggedOutState, forgetKnownProfile, hydrateAppState, openLegacyClaim, readReminderMemory, reminderSnoozed, setActiveWorkspace, settlePendingLogout, snoozeReminder, updateWorkspace, writeReminderMemory } from './app-state'
+import type { AppState, ReminderMemory } from './app-state'
 import { createIdentityWithProbe, createWorkspaceWithProbe } from './access-flow'
 import { completeRotationSafely } from './recovery-flow'
 import { monitorServiceWorkerUpdates } from './service-worker-update'
@@ -353,7 +353,22 @@ export default function App({ capability = null }: { capability?: CapabilityInte
     try{setInitialRecovery(await prepareInitialOrManualRecovery())}
     catch(reason){setError(reason instanceof ApiError?reason.message:'Не удалось подготовить ссылку доступа')}
   },[])
-  const historyReminder=useMemo(()=>recoveryNeeded&&hasExpenses&&online?{onSave:()=>void openRecoverySave()}:null,[recoveryNeeded,hasExpenses,online,openRecoverySave])
+  // Показы карточки считаются по одному на запуск; после пары показов она сворачивается в строку, «Позже» убирает её на неделю.
+  const reminderUserId=auth?.user.id??null
+  const [reminderMemory,setReminderMemory]=useState<ReminderMemory>({shows:0,snoozedUntil:null})
+  useEffect(()=>{if(reminderUserId)setReminderMemory(readReminderMemory(reminderUserId))},[reminderUserId])
+  const reminderEligible=recoveryNeeded&&hasExpenses&&online
+  const reminderCounted=useRef<string|null>(null)
+  useEffect(()=>{
+    if(!reminderEligible||!reminderUserId||reminderCounted.current===reminderUserId)return
+    reminderCounted.current=reminderUserId
+    setReminderMemory((current)=>{if(reminderSnoozed(current))return current;const next={...current,shows:current.shows+1};writeReminderMemory(reminderUserId,next);return next})
+  },[reminderEligible,reminderUserId])
+  const postponeReminder=useCallback(()=>{
+    if(!reminderUserId)return
+    setReminderMemory((current)=>{const next=snoozeReminder(current);writeReminderMemory(reminderUserId,next);return next})
+  },[reminderUserId])
+  const historyReminder=useMemo(()=>reminderEligible&&!reminderSnoozed(reminderMemory)?{onSave:()=>void openRecoverySave(),onLater:postponeReminder,compact:reminderMemory.shows>REMINDER_COMPACT_AFTER}:null,[reminderEligible,reminderMemory,openRecoverySave,postponeReminder])
 
   // A Bybit sync can change expenses server-side (declined operations void their expense); pull the
   // workspace again without the loading state so history and analytics reflect it immediately.
@@ -587,9 +602,14 @@ if(Math.abs(node.scrollLeft-pagerTarget.current)>1)node.scrollLeft=pagerTarget.c
   const serverAvailable=online&&!runtime.offline
   const issueCount=stats.conflicts+stats.failed
   const queuedCount=Math.max(0,stats.total-issueCount)
-  return <div className={`app-shell${serverAvailable?'':' offline'}`} key={workspaceId}>
-    <header className="workspace-header"><button type="button" className="workspace-name-button" onClick={()=>setSwitchOpen(true)}><span>{workspace.name}</span><ChevronIcon/></button><div className="workspace-header-actions">{updateWaiting&&<button type="button" className="update-button" onClick={activateUpdate}>Обновить</button>}{issueCount?<button type="button" className="sync-status attention" onClick={()=>setIssuesOpen(true)} aria-label={`Не отправлено: ${issueCount}. Открыть список`}><span>Не отправлено · {issueCount}</span><i/></button>:serverAvailable&&stats.total?<div className="sync-status" role="status" aria-live="polite"><span>Отправляем · {stats.total}</span><i/></div>:null}</div></header>
-    {!serverAvailable&&<div className="offline-banner" role="status" aria-live="polite"><span><b>Офлайн</b>{queuedCount?` · ${queuedCount} ${pluralRu(queuedCount,['изменение','изменения','изменений'])} ${queuedCount===1?'ждёт':'ждут'} отправки`:' · отправим при подключении'}</span><button type="button" onClick={()=>{void probeServer();setWorkspaceReloadEpoch((value)=>value+1)}}>Повторить</button></div>}
+  // Одно место для состояния связи — плашка в шапке: проблемы отправки, офлайн с очередью или идущая отправка.
+  const syncPill=issueCount
+    ?<button type="button" className="sync-status attention" onClick={()=>setIssuesOpen(true)} aria-label={`Не отправлено: ${issueCount}. Открыть список`}><span>Не отправлено · {issueCount}</span><i/></button>
+    :!serverAvailable
+      ?<button type="button" className="sync-status offline" onClick={()=>{void probeServer();setWorkspaceReloadEpoch((value)=>value+1)}} aria-label={`Нет связи с сервером${queuedCount?`, ${queuedCount} ${pluralRu(queuedCount,['изменение ждёт','изменения ждут','изменений ждут'])} отправки`:''}. Проверить связь`}><span>Офлайн{queuedCount?` · ${queuedCount} ${queuedCount===1?'ждёт':'ждут'}`:''}</span>{queuedCount?<i/>:null}</button>
+      :stats.total?<div className="sync-status" role="status" aria-live="polite"><span>Отправляем · {stats.total}</span><i/></div>:null
+  return <div className="app-shell" key={workspaceId}>
+    <header className="workspace-header"><button type="button" className="workspace-name-button" onClick={()=>setSwitchOpen(true)}><span>{workspace.name}</span><ChevronIcon/></button><div className="workspace-header-actions">{updateWaiting&&<button type="button" className="update-button" onClick={activateUpdate}>Обновить</button>}{syncPill}</div></header>
     <main className="pager" ref={pager} onScroll={onPagerScroll} onPointerDown={()=>{stopPagerAnimation();pagerTarget.current=null}} onTouchStart={()=>{stopPagerAnimation();pagerTarget.current=null}}>
       <div className="page-slot" inert={tab!=='entry'} aria-hidden={tab!=='entry'}>{mountedTabs.includes('entry')&&<EntryView userId={auth.user.id} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} currentId={currentId} setCurrentId={setCurrentId} refreshPending={refreshPending} onDraftDirtyChange={setDraftDirty} active={tab==='entry'}/>}</div>
       <div className="page-slot" inert={tab!=='history'} aria-hidden={tab!=='history'}>{mountedTabs.includes('history')&&<HistoryView userId={auth.user.id} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} edit={editExpense} createNew={createNewExpense} refreshPending={refreshPending} inbox={historyInbox} reminder={historyReminder}/>}</div>
