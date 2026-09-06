@@ -144,7 +144,7 @@ describe('expense card swipe', () => {
     expect(setCurrentId).not.toHaveBeenCalled()
   })
 
-  // Отдельной кнопки «новый расход» нет: пустая карточка лежит справа от самой свежей записи.
+  // Пустая карточка лежит справа от самой свежей записи; с более глубоких записей к ней везёт «Новый» (ниже).
   it('swipes from the newest expense to a blank card', () => {
     vi.useFakeTimers()
     const setCurrentId = vi.fn()
@@ -188,6 +188,59 @@ describe('expense card swipe', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Отмена' }))
     act(() => vi.runAllTimers())
     expect(setCurrentId).not.toHaveBeenCalled()
+  })
+
+  const savedExpense = (id: string, day: number) => {
+    const at = `2026-08-${String(day).padStart(2, '0')}T13:00:00.000Z`
+    return { id, amountMinor: 1_000, currency: 'RSD', categoryId: 'products', note: null, occurredAt: at, createdAt: at, updatedAt: at, version: 1, deletedAt: null }
+  }
+
+  // «Новый» в углу записи везёт к пустой карточке той же лентой, что и свайп, но сразу — даже если новее есть ещё записи.
+  it('jumps from a deep record straight to the blank card with «Новый»', () => {
+    vi.useFakeTimers()
+    const setCurrentId = vi.fn()
+    const bootstrap = expenseBootstrap({ expenses: [savedExpense('newest', 10), savedExpense('middle', 9), savedExpense('oldest', 8)] })
+    render(<EntryView userId="user-a" workspaceId="workspace-a" workspace={bootstrap.workspace} bootstrap={bootstrap} setBootstrap={vi.fn()} currentId="oldest" setCurrentId={setCurrentId} refreshPending={vi.fn()} onDraftDirtyChange={vi.fn()} active/>)
+    const entry = screen.getByRole('region', { name: 'Ввод суммы' })
+    expect(entry.querySelector('.entry-card.aside.newer .eyebrow')?.textContent).toBe('Сохранённый расход')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Новый расход' }))
+    expect(entry.querySelector('.entry-card.aside.newer .eyebrow')?.textContent).toBe('Новый расход')
+    expect(setCurrentId).not.toHaveBeenCalled()
+    act(() => vi.runAllTimers())
+    expect(setCurrentId).toHaveBeenCalledWith(null)
+  })
+
+  it('hides «Новый» on the blank card and asks before it discards edits', () => {
+    vi.useFakeTimers()
+    const setCurrentId = vi.fn()
+    const bootstrap = expenseBootstrap({ expenses: [savedExpense('old', 9)] })
+    const view = (currentId: string | null) => <EntryView userId="user-a" workspaceId="workspace-a" workspace={bootstrap.workspace} bootstrap={bootstrap} setBootstrap={vi.fn()} currentId={currentId} setCurrentId={setCurrentId} refreshPending={vi.fn()} onDraftDirtyChange={vi.fn()} active/>
+    const { rerender } = render(view(null))
+    expect(screen.queryByRole('button', { name: 'Новый расход' })).toBeNull()
+
+    rerender(view('old'))
+    fireEvent.click(screen.getByRole('button', { name: '1' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Новый расход' }))
+    expect(screen.getByRole('alertdialog', { name: 'Перейти к новому расходу?' })).not.toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Отмена' }))
+    act(() => vi.runAllTimers())
+    expect(setCurrentId).not.toHaveBeenCalled()
+  })
+
+  // Повторный тап по активной вкладке «Расход» просит карточку о том же переезде; при монтировании счётчик ничего не запускает.
+  it('returns to the blank card when the active «Расход» tab is tapped again', () => {
+    vi.useFakeTimers()
+    const setCurrentId = vi.fn()
+    const bootstrap = expenseBootstrap({ expenses: [savedExpense('old', 9)] })
+    const view = (request: number) => <EntryView userId="user-a" workspaceId="workspace-a" workspace={bootstrap.workspace} bootstrap={bootstrap} setBootstrap={vi.fn()} currentId="old" setCurrentId={setCurrentId} refreshPending={vi.fn()} onDraftDirtyChange={vi.fn()} active newExpenseRequest={request}/>
+    const { rerender } = render(view(2))
+    act(() => vi.runAllTimers())
+    expect(setCurrentId).not.toHaveBeenCalled()
+
+    rerender(view(3))
+    act(() => vi.runAllTimers())
+    expect(setCurrentId).toHaveBeenCalledWith(null)
   })
 })
 

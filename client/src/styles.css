@@ -188,6 +188,26 @@ p {
   gap: 7px;
 }
 
+/* «Новый» в углу сохранённой записи: слово, а не значок, и своим цветом отделено от красной корзины рядом. */
+.entry-new {
+  display: inline-flex;
+  align-items: center;
+  height: 38px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--soft);
+  color: var(--sage);
+  font-size: 13px;
+  font-weight: 700;
+  white-space: nowrap;
+  transition: transform .12s ease,opacity .15s ease;
+}
+
+.entry-new:active:not(:disabled) {
+  transform: scale(.96);
+}
+
 .icon-danger {
   width: 38px;
   height: 38px;
@@ -1008,7 +1028,7 @@ p {
 }
 
 .entry-view .topline.topline-edit {
-  padding-right: 128px;
+  padding-right: 142px;
 }
 
 .entry-view .topline>div {

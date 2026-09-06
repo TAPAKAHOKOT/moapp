@@ -150,11 +150,13 @@ export function EntryLowerPreview({ main, additional, tags, state }: { main: Cat
   </>
 }
 
-export function EntryView({ userId, workspaceId, workspace, bootstrap, setBootstrap, currentId, setCurrentId, refreshPending, onDraftDirtyChange, active }: {
+export function EntryView({ userId, workspaceId, workspace, bootstrap, setBootstrap, currentId, setCurrentId, refreshPending, onDraftDirtyChange, active, newExpenseRequest = 0 }: {
   userId: string
   workspaceId: string
   workspace: WorkspaceSummary
   bootstrap: Bootstrap; setBootstrap: React.Dispatch<React.SetStateAction<Bootstrap>>; currentId: string | null; setCurrentId: (id: string | null) => void; refreshPending: () => void; onDraftDirtyChange: (dirty: boolean) => void; active: boolean
+  /** Счётчик просьб «к новому расходу» извне (повторный тап по вкладке «Расход»): каждое увеличение — один переезд к пустой карточке. */
+  newExpenseRequest?: number
 }) {
   const activeExpenses = useMemo(() => bootstrap.expenses.filter((item) => !item.deletedAt).sort((a, b) => b.occurredAt.localeCompare(a.occurredAt)), [bootstrap.expenses])
   const currentIndex = currentId ? activeExpenses.findIndex((item) => item.id === currentId) : -1
@@ -366,8 +368,10 @@ export function EntryView({ userId, workspaceId, workspace, bootstrap, setBootst
   }
 
   // Слева от текущей карточки лежит более старый расход, справа — более новый (или карточка нового расхода).
+  // Пока идёт переезд по кнопке «Новый», справа лежит пустая карточка, даже если по дате есть записи новее.
+  const [jumpingNew, setJumpingNew] = useState(false)
   const olderNeighbour = current ? activeExpenses[currentIndex + 1] : activeExpenses[0]
-  const newerNeighbour = currentIndex > 0 ? activeExpenses[currentIndex - 1] : undefined
+  const newerNeighbour = currentIndex > 0 && !jumpingNew ? activeExpenses[currentIndex - 1] : undefined
   const canMove = (direction: 'older' | 'newer') => direction === 'older' ? Boolean(olderNeighbour) : currentIndex >= 0
 
   // Лента едет за пальцем один к одному, поэтому соседняя карточка видна на всём пути. Доводка — тоже покадрово,
@@ -432,6 +436,39 @@ export function EntryView({ userId, workspaceId, workspace, bootstrap, setBootst
     slide(destination, duration, () => { swapped.current = true; setCurrentId(target?.id ?? null) })
     tap(6)
   }
+
+  // «Новый» в углу записи и повторный тап по вкладке «Расход» везут к пустой карточке той же лентой, что и свайп,
+  // только сразу, с любой глубины истории. Несохранённые правки — тот же вопрос, что и перед свайпом к соседу.
+  const startNew = async () => {
+    if (!current || saving || jumpingNew) return
+    if (dirty) {
+      if (!await confirm({
+        title: 'Перейти к новому расходу?',
+        message: 'Несохранённые изменения будут потеряны. Сохраните их кнопкой ниже или подтвердите переход.',
+        confirmLabel: 'Отбросить и перейти',
+        danger: true,
+      })) return
+      draft.current = { ...EMPTY_FORM, currency: form.currency }
+    }
+    setJumpingNew(true)
+  }
+  // Лента едет уже после рендера с пустой карточкой справа: так соседом и в превью нижней части будет она, а не запись новее.
+  useEffect(() => {
+    if (!jumpingNew) return
+    const span = (trackRef.current?.clientWidth ?? 320) + CARD_GAP
+    const duration = prefersReducedMotion() ? 0 : Math.min(300, Math.max(150, span * 0.55))
+    committing.current = true
+    slide(-span, duration, () => { swapped.current = true; setJumpingNew(false); setCurrentId(null) })
+    tap(6)
+  }, [jumpingNew]) // eslint-disable-line react-hooks/exhaustive-deps
+  const startNewRef = useRef(startNew)
+  startNewRef.current = startNew
+  const handledRequest = useRef(newExpenseRequest)
+  useEffect(() => {
+    if (newExpenseRequest === handledRequest.current) return
+    handledRequest.current = newExpenseRequest
+    void startNewRef.current()
+  }, [newExpenseRequest])
 
   const swipeStartAt = (clientX: number, clientY: number, touchId: number | null = null) => {
     // Пока лента доезжает до соседа, новый жест перехватывать нельзя: подмена карточки дёрнет её из-под пальца.
@@ -566,7 +603,7 @@ export function EntryView({ userId, workspaceId, workspace, bootstrap, setBootst
     : { ...blankFace(form.amount, form.currency), date: occurredLabel }
   const olderFace = olderNeighbour ? faceOf(olderNeighbour) : null
   const newerFace = newerNeighbour ? faceOf(newerNeighbour)
-    : currentIndex === 0 ? blankFace(draft.current.amount, draft.current.amount ? draft.current.currency : defaultCurrency())
+    : currentIndex === 0 || jumpingNew ? blankFace(draft.current.amount, draft.current.amount ? draft.current.currency : defaultCurrency())
     : null
   const main = bootstrap.categories.filter((item) => !item.archivedAt && item.placement === 'main').sort((a,b) => a.sortOrder-b.sortOrder)
   const additional = bootstrap.categories.filter((item) => !item.archivedAt && item.placement === 'additional').sort((a,b) => a.sortOrder-b.sortOrder)
@@ -616,7 +653,8 @@ export function EntryView({ userId, workspaceId, workspace, bootstrap, setBootst
       </div>
     </div>
     <div ref={actionsRef} className="entry-actions" style={ENTRY_ACTIONS_HIDDEN} inert={!current} aria-hidden={!current}>
-      <button type="button" className="icon-danger entry-delete" disabled={saving || !current} onClick={() => void remove()} aria-label="Удалить расход"><TrashIcon/></button>
+      <button type="button" className="entry-new" disabled={saving || !current || jumpingNew} onClick={() => void startNew()} aria-label="Новый расход">Новый</button>
+      <button type="button" className="icon-danger entry-delete" disabled={saving || !current || jumpingNew} onClick={() => void remove()} aria-label="Удалить расход"><TrashIcon/></button>
     </div>
     <Keypad onKey={key} disabled={saving}/>
     <div className="entry-lower">

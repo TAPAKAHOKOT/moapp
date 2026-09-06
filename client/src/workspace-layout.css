@@ -49,6 +49,7 @@ textarea,
 }
 
 .icon-danger,
+.entry-new,
 .date-chip,
 .amount-row button,
 .amount-row .review-currency,
@@ -60,6 +61,10 @@ textarea,
 .colors button,
 .management-row button {
   min-height: 44px;
+}
+
+.entry-new {
+  height: 44px;
 }
 
 .icon-danger,
@@ -195,7 +200,8 @@ textarea,
 .date-presets button,
 .main-categories button,
 .category-grid button,
-.icon-danger {
+.icon-danger,
+.entry-new {
   border-color: var(--control-line);
 }
 
@@ -777,6 +783,10 @@ textarea,
   /* 320 × 568 and similar compact phones: the category row stays above nav. */
   .entry-view {
     min-height: 431px;
+  }
+  /* Шапка карточки здесь в один ряд: «Новый» и корзина встают вровень с датой, а не поверх плашки валюты под ней. */
+  .entry-actions {
+    top: 6px;
   }
 
   .swipe-area {
