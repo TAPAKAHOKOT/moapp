@@ -146,6 +146,23 @@ type Expense = {
 - `POST /api/workspaces/:workspaceId/expenses` with complete expense input → `201 Expense`, or `200 Expense` for a compatible ID retry.
 - `PATCH /api/workspaces/:workspaceId/expenses/:expenseId` with changed fields and `version` → `Expense`.
 - `DELETE /api/workspaces/:workspaceId/expenses/:expenseId` with `{version}` → `204` and soft-deletes the expense.
+- `POST /api/workspaces/:workspaceId/expenses/:expenseId/split` with `{version,parts}` → `{expenses: Expense[]}`.
+
+One payment can cover several categories, so `splitExpense` divides a saved expense into two to ten parts:
+
+```ts
+type ExpenseSplitPart = { amountMinor: number; categoryId?: string; note?: string | null; tagIds?: string[] }
+```
+
+The wrapper sends amounts only, so every part keeps the category, note and tags of the expense; what a part
+actually was is changed afterwards on the record itself. The parts must add up exactly to the current amount
+(`400 SPLIT_MISMATCH` otherwise). The first part rewrites the expense that was split — same id, version
+incremented — and the rest become new expenses with its currency, day and provider origin; the response lists
+them in the order they were sent, so the caller replaces the original and appends the new ones. A stale
+`version` returns `409 VERSION_CONFLICT`, a declined (voided) expense `400 EXPENSE_VOIDED`. Splitting is
+online-only: it is a server-side operation and never enters the offline outbox, so the UI offers it only for a
+saved, already synchronized expense that is not being edited. Undoing a split is composed from the ordinary
+routes: delete the new parts and update the first one back to the original amount.
 
 The offline write path uses `POST /api/workspaces/:workspaceId/sync` with at most 200 operations:
 
@@ -225,12 +242,19 @@ Tag mutations are online requests. Creating a tag whose name already exists retu
 ## Bybit Card integration
 
 The client exposes workspace-scoped status, connection, disconnection, manual
-sync, review-list, classify, ignore, and guarded undo calls. Classify sends `{categoryId,comment,tagIds}` so the review flow can tag the created expense. These mutations are online-only.
+sync, review-list, classify, split, unsplit, ignore, and guarded undo calls. Classify sends `{categoryId,comment,tagIds}` so the review flow can tag the created expense. These mutations are online-only.
 The connection UI displays `enabledAt`: transactions before that instant are
 never imported. Review items remain outside `Expense[]` and analytics until
-classification returns a normal expense and adds it to the workspace bootstrap.
-Undo supplies the returned expense id/version, removes an unchanged classified
-expense from the bootstrap, and restores its provider transaction to review.
+classification returns normal expenses and adds them to the workspace bootstrap.
+Undo supplies every returned expense id/version as `{expenses}`, removes those
+unchanged classified expenses from the bootstrap, and restores its provider
+transaction to review.
+
+A payment that covered several categories is split before it is classified:
+`splitBybitCardTransaction` sends `{amounts}` and gets back the parts, which replace
+the payment in the queue as ordinary rows — each carries `splitIndex`/`splitCount`, is
+classified on the same card as any other operation, and can be put back together with
+`unsplitBybitCardTransaction` until one of the parts is recorded (`409 SPLIT_IN_USE`).
 
 ## Analytics and rates
 

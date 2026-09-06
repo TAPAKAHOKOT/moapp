@@ -207,6 +207,23 @@ type Expense = {
 - `POST /api/workspaces/:workspaceId/expenses` accepts complete `{id,amountMinor,currency,categoryId,occurredAt,note?,tagIds?}` and returns an `Expense` with `201`. A compatible ID retry returns the existing expense with `200`; incompatible reuse returns `409 IDEMPOTENCY_CONFLICT` with `details.current`.
 - `PATCH /api/workspaces/:workspaceId/expenses/:id` accepts changed fields plus required `version` and returns the updated `Expense`.
 - `DELETE /api/workspaces/:workspaceId/expenses/:id` requires JSON `{version}` and returns `204`; deletion is soft.
+- `POST /api/workspaces/:workspaceId/expenses/:id/split` accepts `{version,parts}` and returns `{expenses}`.
+
+One payment can cover several categories, so an expense can be split into parts:
+
+```ts
+type ExpenseSplitPart = { amountMinor: number; categoryId?: string; note?: string | null; tagIds?: string[] }
+```
+
+Splitting only decides amounts: a part that omits `categoryId`, `note` or `tagIds` inherits them from the
+expense, and what each part actually was is changed afterwards on the expense itself. Two to ten parts are
+allowed and their amounts must add up exactly to the current amount of the expense; anything else returns
+`400 SPLIT_MISMATCH`. The first part rewrites the expense that was split (its id and version survive, the
+version increments), the remaining parts become new expenses with the same currency, `occurredAt` and
+provider origin. The response lists the parts in the order they were sent. The whole split is one
+transaction: a rejected part leaves the original expense untouched. A stale `version` returns
+`409 VERSION_CONFLICT`, a deleted expense `404 NOT_FOUND`, and an expense marked declined by the provider
+`400 EXPENSE_VOIDED` — count it again first, then split it.
 
 Notes are trimmed, nullable, and at most 500 characters. Creating or updating against an absent/archived category returns `400 CATEGORY_INVALID`. A stale expense version returns `409 VERSION_CONFLICT` with the current expense in `error.details.current`.
 
@@ -293,9 +310,11 @@ with the `BitCard` permission and are encrypted before storage.
 - `DELETE /api/workspaces/:workspaceId/integrations/bybit-card` requires `{}`. Classified expenses remain.
 - `POST /api/workspaces/:workspaceId/integrations/bybit-card/sync` requires `{}` and polls cleared card transactions.
 - `GET /api/workspaces/:workspaceId/integrations/bybit-card/transactions?limit=` returns oldest-first pending transactions, capped at 200.
-- `POST .../transactions/:transactionId/classify` accepts `{categoryId,comment,tagIds?}` and atomically creates an expense carrying those tags. Compatible retries return the linked expense.
+- `POST .../transactions/:transactionId/classify` accepts `{categoryId,comment,tagIds?}` and atomically creates one expense carrying those tags. The response is `{transaction,expense,expenses,pendingCount}`. Compatible retries return the linked expenses.
+- `POST .../transactions/:transactionId/split` accepts `{amounts}` — two to ten positive minor-unit amounts adding up to the operation (`400 SPLIT_MISMATCH` otherwise). The operation becomes `review_status:"split"` and leaves review; in its place come that many ordinary pending rows carrying its merchant, date and metadata, each with its own amount, `splitIndex` (1-based) and `splitCount`. The response is `{transactions,pendingCount}`. A part cannot be split again (`409 ALREADY_SPLIT`), and only a pending operation can be split (`409 ALREADY_REVIEWED`).
+- `POST .../transactions/:transactionId/unsplit` requires `{}` and puts a split payment back together; it accepts the id of any part or of the payment itself. The parts are deleted and the payment returns to review with its full amount. While one of the parts is already classified it returns `409 SPLIT_IN_USE`: undo that part first. The response is `{transaction,removedTransactionIds,pendingCount}`.
 - `POST .../transactions/:transactionId/ignore` requires `{}` and removes the item from review without creating an expense.
-- `POST .../transactions/:transactionId/undo` returns an ignored item to review. For a classified item it accepts `{expenseId,expenseVersion}` and soft-deletes the linked expense only if that version is still current; otherwise it returns `409 UNDO_CONFLICT`.
+- `POST .../transactions/:transactionId/undo` returns an ignored item to review. For a classified item it accepts `{expenses:[{id,version}]}` (or `{expenseId,expenseVersion}` for a single one) and soft-deletes the linked expenses only if the list covers every one of them at its current version; otherwise it returns `409 UNDO_CONFLICT`. A split operation is undone whole or not at all. The response carries `undoneExpenseIds` and, for one part, `undoneExpenseId`.
 
 Both the provider query and the storage transaction enforce
 `occurredAt >= enabledAt`. Subsequent polls overlap recent time to absorb delayed
@@ -306,13 +325,17 @@ paged at 100 records with a one-second pause between pages. Settled payments
 review; each transaction carries `settled`. Open authorizations are refreshed on
 every poll (the window always reaches back to the oldest one) until they settle,
 which may change the amount, or are declined/reversed, which removes a still
-pending item from review and leaves an already classified expense untouched.
+pending item from review and leaves already classified expenses untouched.
+An open authorization that was split before it settled can end up with parts that no
+longer add up: while none of them is classified the split is simply undone and the
+payment returns to review with the amount that was actually charged.
 Declined records are never imported. The imported amount is what was actually
 paid (`paidAmount`/`paidCurrency`, e.g. RSD), falling back to the card-currency
 total. `type` is `atm` for side 13 or MCC 6011.
 
 When Bybit declines or reverses an operation whose expense was already created,
-the expense is not deleted: it gets `voidedAt` and a `voidReason`
+nothing is deleted: every expense that operation produced — including the expenses of
+all of its parts when it was split — gets `voidedAt` and a `voidReason` describing the whole operation
 (`{provider:"bybit-card",kind:"declined"|"reversed",txnId,merchantName,amountMinor,currency}`),
 its version increments, and it is excluded from analytics, history totals and
 the MCP history while staying visible in the expense list.

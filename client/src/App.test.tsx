@@ -3,6 +3,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import * as accessFlow from './access-flow'
 import App, { AnalyticsView, BybitReviewView, CapabilityScreen, CreateWorkspaceSheet, EntryView, fallbackAnalytics, formatEntryDate, formatHistoryDate, HistoryView, pagerTabsAt, RecoverySave, SettingsView, useToast, WorkspaceSwitcher } from './App'
+import { splitDraft, SplitSheet } from './screens/Split'
 import * as workspaceApi from './workspace-api'
 import * as workspaceOffline from './workspace-offline'
 import type { AuthenticatedSession, WorkspaceBootstrap } from './types'
@@ -561,11 +562,11 @@ describe('Bybit transaction review', () => {
       occurredAt: transaction.occurredAt, createdAt: '2026-08-10T14:00:00.000Z', updatedAt: '2026-08-10T14:00:00.000Z', version: 1, deletedAt: null,
     }
     vi.spyOn(workspaceApi, 'listBybitCardTransactions').mockResolvedValue({ transactions: [transaction], pendingCount: 1 })
-    vi.spyOn(workspaceApi, 'classifyBybitCardTransaction').mockResolvedValue({ transaction: { ...transaction, reviewStatus: 'classified', expenseId: expense.id }, expense, pendingCount: 0 })
-    vi.spyOn(workspaceApi, 'undoBybitCardTransaction').mockResolvedValue({ transaction, undoneExpenseId: expense.id, pendingCount: 1 })
-    const onExpenseUndo = vi.fn()
+    vi.spyOn(workspaceApi, 'classifyBybitCardTransaction').mockResolvedValue({ transaction: { ...transaction, reviewStatus: 'classified', expenseId: expense.id }, expense, expenses: [expense], pendingCount: 0 })
+    vi.spyOn(workspaceApi, 'undoBybitCardTransaction').mockResolvedValue({ transaction, undoneExpenseId: expense.id, undoneExpenseIds: [expense.id], pendingCount: 1 })
+    const onExpensesUndo = vi.fn()
 
-    render(<BybitReviewView workspaceId="workspace-a" categories={expenseBootstrap().categories} currencies={expenseBootstrap().currencies} online onExpense={vi.fn()} onExpenseUndo={onExpenseUndo} onStatus={vi.fn()}/>)
+    render(<BybitReviewView workspaceId="workspace-a" categories={expenseBootstrap().categories} currencies={expenseBootstrap().currencies} online onExpenses={vi.fn()} onExpensesUndo={onExpensesUndo} onStatus={vi.fn()}/>)
 
     await screen.findByText('Coffee Corner')
     expect(screen.getByLabelText('Сумма').textContent).toBe('12,50')
@@ -583,7 +584,7 @@ describe('Bybit transaction review', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Отменить' }))
     await screen.findByText('Coffee Corner')
-    await waitFor(() => expect(onExpenseUndo).toHaveBeenCalledWith(expense.id))
+    await waitFor(() => expect(onExpensesUndo).toHaveBeenCalledWith([expense.id]))
     expect(screen.getByRole('button', { name: 'Заметка: Встреча с Димой' })).not.toBeNull()
     expect(screen.getByRole('button', { name: 'Продукты' }).getAttribute('aria-pressed')).toBe('true')
   })
@@ -599,7 +600,7 @@ describe('Bybit transaction review', () => {
       .mockResolvedValueOnce({ transactions: [first], pendingCount: 1 })
       .mockResolvedValueOnce({ transactions: [first, second], pendingCount: 2 })
     const onStatus = vi.fn()
-    const props = { workspaceId: 'workspace-a', categories: expenseBootstrap().categories, currencies: expenseBootstrap().currencies, online: true, onExpense: vi.fn(), onExpenseUndo: vi.fn(), onStatus, active: true }
+    const props = { workspaceId: 'workspace-a', categories: expenseBootstrap().categories, currencies: expenseBootstrap().currencies, online: true, onExpenses: vi.fn(), onExpensesUndo: vi.fn(), onStatus, active: true }
 
     const view = render(<BybitReviewView {...props} pendingCount={1}/>)
     await screen.findByText('VERO 3')
@@ -636,7 +637,7 @@ describe('Bybit transaction review', () => {
     vi.spyOn(workspaceApi, 'listBybitCardTransactions').mockResolvedValue({ transactions: [transaction], pendingCount: 1 })
     const classify = vi.spyOn(workspaceApi, 'classifyBybitCardTransaction')
 
-    const { container } = render(<BybitReviewView workspaceId="workspace-a" categories={categories} currencies={expenseBootstrap().currencies} online onExpense={vi.fn()} onExpenseUndo={vi.fn()} onStatus={vi.fn()}/>)
+    const { container } = render(<BybitReviewView workspaceId="workspace-a" categories={categories} currencies={expenseBootstrap().currencies} online onExpenses={vi.fn()} onExpensesUndo={vi.fn()} onStatus={vi.fn()}/>)
     await screen.findByText('Maxi')
 
     const tiles = [...container.querySelectorAll('.main-categories button')].map((node) => node.textContent)
@@ -665,7 +666,7 @@ describe('Bybit transaction review', () => {
       mccCode: '6513', merchantCategory: 'Rent', occurredAt: '2026-08-10T12:00:00.000Z', reviewStatus: 'pending' as const, expenseId: null,
     }
     vi.spyOn(workspaceApi, 'listBybitCardTransactions').mockResolvedValue({ transactions: [transaction], pendingCount: 1 })
-    render(<BybitReviewView workspaceId="workspace-a" categories={expenseBootstrap().categories} currencies={expenseBootstrap().currencies} online onExpense={vi.fn()} onExpenseUndo={vi.fn()} onStatus={vi.fn()}/>)
+    render(<BybitReviewView workspaceId="workspace-a" categories={expenseBootstrap().categories} currencies={expenseBootstrap().currencies} online onExpenses={vi.fn()} onExpensesUndo={vi.fn()} onStatus={vi.fn()}/>)
 
     await screen.findByText('Stan i komunalije')
     const reviewAmount = screen.getByLabelText('Сумма')
@@ -691,7 +692,7 @@ describe('Bybit transaction review', () => {
       mccCode: '5999', merchantCategory: 'Retail', occurredAt: '2026-08-10T12:00:00.000Z', reviewStatus: 'pending' as const, expenseId: null,
     }
     vi.spyOn(workspaceApi, 'listBybitCardTransactions').mockResolvedValue({ transactions: [transaction], pendingCount: 1 })
-    const { container } = render(<BybitReviewView workspaceId="workspace-a" categories={expenseBootstrap().categories} currencies={expenseBootstrap().currencies} online onExpense={vi.fn()} onExpenseUndo={vi.fn()} onStatus={vi.fn()}/>)
+    const { container } = render(<BybitReviewView workspaceId="workspace-a" categories={expenseBootstrap().categories} currencies={expenseBootstrap().currencies} online onExpenses={vi.fn()} onExpensesUndo={vi.fn()} onStatus={vi.fn()}/>)
 
     await screen.findByText('Pending Authorization')
     const warning = screen.getByText('Ожидает списания · сумма может уточниться после расчёта')
@@ -707,10 +708,153 @@ describe('Bybit transaction review', () => {
       mccCode: '5812', merchantCategory: 'Cafe', occurredAt: '2026-08-10T12:00:00.000Z', reviewStatus: 'pending' as const, expenseId: null,
     }
     vi.spyOn(workspaceApi, 'listBybitCardTransactions').mockResolvedValue({ transactions: [settled], pendingCount: 1 })
-    render(<BybitReviewView workspaceId="workspace-a" categories={expenseBootstrap().categories} currencies={expenseBootstrap().currencies} online onExpense={vi.fn()} onExpenseUndo={vi.fn()} onStatus={vi.fn()}/>)
+    render(<BybitReviewView workspaceId="workspace-a" categories={expenseBootstrap().categories} currencies={expenseBootstrap().currencies} online onExpenses={vi.fn()} onExpensesUndo={vi.fn()} onStatus={vi.fn()}/>)
 
     await screen.findByText('Coffee Corner')
     expect(screen.queryByText(/Ожидает списания/)).toBeNull()
+  })
+})
+
+/*
+ * Одним платежом закрывают сразу две категории. Деление отвечает только на вопрос «на какие суммы»:
+ * части операции карты встают в очередь обычными строками, части записи наследуют её категорию.
+ */
+describe('splitting one payment into parts', () => {
+  const categories = [
+    { id: 'products', name: 'Продукты', color: '#758d69', placement: 'main' as const, sortOrder: 0, createdAt: '2026-08-01T00:00:00.000Z', updatedAt: '2026-08-01T00:00:00.000Z', archivedAt: null, version: 1 },
+    { id: 'home', name: 'Для дома', color: '#7d9db4', placement: 'additional' as const, sortOrder: 0, createdAt: '2026-08-01T00:00:00.000Z', updatedAt: '2026-08-01T00:00:00.000Z', archivedAt: null, version: 1 },
+  ]
+  const currencies = [{ code: 'RSD', name: 'Сербский динар', symbol: 'дин.', decimals: 2 }]
+
+  // Последняя часть считается сама, поэтому сумма частей никогда не расходится с платежом.
+  it('keeps the last part equal to what is left', () => {
+    const draft = splitDraft(['800', ''], 120_000, 'RSD', currencies)
+    expect(draft.remainder).toBe(40_000)
+    expect(draft.parts).toEqual([80_000, 40_000])
+    expect(draft.canSave).toBe(true)
+
+    expect(splitDraft(['1200', ''], 120_000, 'RSD', currencies).canSave).toBe(false)
+    expect(splitDraft(['1500', ''], 120_000, 'RSD', currencies).remainder).toBe(-30_000)
+    expect(splitDraft(['', ''], 120_000, 'RSD', currencies).canSave).toBe(false)
+    expect(splitDraft(['500', '200', ''], 120_000, 'RSD', currencies).parts).toEqual([50_000, 20_000, 50_000])
+  })
+
+  const transaction = {
+    id: 'card-transaction-split', txnId: 'bybit-split', orderNo: null, type: 'purchase' as const, settled: true,
+    amountMinor: 120_000, currency: 'RSD', merchantName: 'Maxi', merchantCountry: 'RS', merchantCity: 'Beograd',
+    mccCode: '5411', merchantCategory: 'Grocery', occurredAt: '2026-08-10T12:00:00.000Z', reviewStatus: 'pending' as const,
+    expenseId: null, splitIndex: null, splitCount: null,
+  }
+  const part = (id: string, amountMinor: number, splitIndex: number) => ({ ...transaction, id, amountMinor, splitIndex, splitCount: 2 })
+
+  it('replaces a card payment with its parts and classifies each one on the usual card', async () => {
+    const parts = [part('part-1', 80_000, 1), part('part-2', 40_000, 2)]
+    vi.spyOn(workspaceApi, 'listBybitCardTransactions').mockResolvedValue({ transactions: [transaction], pendingCount: 1 })
+    const split = vi.spyOn(workspaceApi, 'splitBybitCardTransaction').mockResolvedValue({ transactions: parts, pendingCount: 2 })
+    const classify = vi.spyOn(workspaceApi, 'classifyBybitCardTransaction')
+    const onStatus = vi.fn()
+
+    render(<BybitReviewView workspaceId="workspace-a" categories={categories} currencies={currencies} online onExpenses={vi.fn()} onExpensesUndo={vi.fn()} onStatus={onStatus}/>)
+    await screen.findByText('Maxi')
+    expect(screen.queryByText(/Часть/)).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Разделить' }))
+    const sheet = screen.getByRole('dialog', { name: /^Разделить .+ RSD$/ })
+    expect(within(sheet).getByRole('button', { name: /^Разделить на 2 части/ }).hasAttribute('disabled')).toBe(true)
+    fireEvent.change(within(sheet).getByLabelText('Сумма части 1'), { target: { value: '800' } })
+    // Остаток считается на месте, набирать его не нужно.
+    expect(sheet.textContent).toContain('400,00')
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Разделить на 2 части' }))
+
+    await waitFor(() => expect(split).toHaveBeenCalledWith('workspace-a', transaction.id, [80_000, 40_000]))
+    await screen.findByText('Платёж разделён на 2 части')
+    expect(screen.queryByRole('dialog', { name: /^Разделить/ })).toBeNull()
+    // Первая часть открыта как обычная операция очереди — со своей суммой и пометкой, что это половина платежа.
+    expect(screen.getByLabelText('Сумма').textContent).toBe('800,00')
+    expect(screen.getByText('Часть 1 из 2')).not.toBeNull()
+    expect(screen.getByText(/В очереди · 2/)).not.toBeNull()
+    expect(onStatus).toHaveBeenLastCalledWith({ pendingCount: 2 })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Продукты' }))
+    fireEvent.click(screen.getByRole('button', { name: /^Сохранить 800/ }))
+    await waitFor(() => expect(classify).toHaveBeenCalledWith('workspace-a', 'part-1', 'products', '', []))
+  })
+
+  it('puts a split payment back together while no part is recorded', async () => {
+    const parts = [part('part-1', 80_000, 1), part('part-2', 40_000, 2)]
+    vi.spyOn(workspaceApi, 'listBybitCardTransactions').mockResolvedValue({ transactions: parts, pendingCount: 2 })
+    const unsplit = vi.spyOn(workspaceApi, 'unsplitBybitCardTransaction')
+      .mockResolvedValue({ transaction, removedTransactionIds: ['part-1', 'part-2'], pendingCount: 1 })
+
+    render(<BybitReviewView workspaceId="workspace-a" categories={categories} currencies={currencies} online onExpenses={vi.fn()} onExpensesUndo={vi.fn()} onStatus={vi.fn()}/>)
+    await screen.findByText('Часть 1 из 2')
+    // У части предлагается обратное действие: делить её ещё раз нельзя.
+    expect(screen.queryByRole('button', { name: 'Разделить' })).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Собрать платёж обратно' }))
+    await waitFor(() => expect(unsplit).toHaveBeenCalledWith('workspace-a', 'part-1'))
+    await waitFor(() => expect(screen.queryByText(/Часть/)).toBeNull())
+    expect(screen.getByLabelText('Сумма').textContent?.replace(/\s/g, ' ')).toBe('1 200,00')
+    expect(screen.getByText(/В очереди · 1/)).not.toBeNull()
+  })
+
+  it('splits a saved expense, opens the new part and can put it back', async () => {
+    const expense = {
+      id: 'expense-a', amountMinor: 300_000, currency: 'RSD', categoryId: 'products', note: 'Maxi',
+      occurredAt: '2026-08-10T12:00:00.000Z', createdAt: '2026-08-10T12:00:00.000Z', updatedAt: '2026-08-10T12:00:00.000Z',
+      version: 3, deletedAt: null, tagIds: [],
+    }
+    const parts = [{ ...expense, amountMinor: 200_000, version: 4 }, { ...expense, id: 'expense-b', amountMinor: 100_000, version: 1 }]
+    const split = vi.spyOn(workspaceApi, 'splitExpense').mockResolvedValue({ expenses: parts })
+    const remove = vi.spyOn(workspaceApi, 'deleteExpense').mockResolvedValue(undefined)
+    const update = vi.spyOn(workspaceApi, 'updateExpense').mockResolvedValue({ ...expense, version: 5 })
+    const bootstrap = expenseBootstrap({ categories, currencies, expenses: [expense] })
+    const setBootstrap = vi.fn()
+    const setCurrentId = vi.fn()
+
+    render(<EntryView userId="user-a" workspaceId="workspace-a" workspace={bootstrap.workspace} bootstrap={bootstrap} setBootstrap={setBootstrap} currentId={expense.id} setCurrentId={setCurrentId} refreshPending={vi.fn()} onDraftDirtyChange={vi.fn()} active/>)
+
+    expect(screen.getByRole('button', { name: 'Разделить' })).not.toBeNull()
+    expect(screen.queryByRole('button', { name: 'Отменить' })).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Разделить' }))
+    const sheet = screen.getByRole('dialog', { name: /^Разделить .+ RSD$/ })
+    fireEvent.change(within(sheet).getByLabelText('Сумма части 1'), { target: { value: '2000' } })
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Разделить на 2 части' }))
+
+    await waitFor(() => expect(split).toHaveBeenCalledWith('workspace-a', expense.id, 3, [200_000, 100_000]))
+    await screen.findByText('Разделено на 2 части')
+    // Открывается вторая часть: ради неё и делили, категорию ей меняют обычными плитками.
+    expect(setCurrentId).toHaveBeenLastCalledWith('expense-b')
+    const updated = setBootstrap.mock.calls.at(-1)![0](bootstrap)
+    expect(updated.expenses.map((item: { id: string; amountMinor: number }) => [item.id, item.amountMinor]))
+      .toEqual([['expense-a', 200_000], ['expense-b', 100_000]])
+
+    fireEvent.click(screen.getByRole('button', { name: 'Отменить' }))
+    await waitFor(() => expect(remove).toHaveBeenCalledWith('workspace-a', 'expense-b', 1))
+    await waitFor(() => expect(update).toHaveBeenCalledWith('workspace-a', 'expense-a', expect.objectContaining({ version: 4, amountMinor: 300_000 })))
+    await screen.findByText('Запись снова целиком')
+  })
+
+  it('refuses to save until the parts add up', () => {
+    const onSubmit = vi.fn()
+    render(<SplitSheet totalMinor={120_000} currency="RSD" currencies={currencies} onClose={vi.fn()} onSubmit={onSubmit}/>)
+
+    const sheet = screen.getByRole('dialog', { name: /^Разделить .+ RSD$/ })
+    fireEvent.change(within(sheet).getByLabelText('Сумма части 1'), { target: { value: '1500' } })
+    expect(sheet.textContent).toContain('Части больше платежа на 300,00 RSD')
+
+    fireEvent.change(within(sheet).getByLabelText('Сумма части 1'), { target: { value: '1200' } })
+    expect(sheet.textContent).toContain('На последнюю часть ничего не осталось')
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Разделить на 2 части' }))
+    expect(onSubmit).not.toHaveBeenCalled()
+
+    // Третья часть отрезается от остатка, а не от уже названных сумм.
+    fireEvent.change(within(sheet).getByLabelText('Сумма части 1'), { target: { value: '900' } })
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Ещё часть' }))
+    fireEvent.change(within(sheet).getByLabelText('Сумма части 2'), { target: { value: '200' } })
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Разделить на 3 части' }))
+    expect(onSubmit).toHaveBeenCalledWith([90_000, 20_000, 10_000])
   })
 })
 

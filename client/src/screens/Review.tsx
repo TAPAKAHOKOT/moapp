@@ -1,19 +1,22 @@
 import { useEffect, useRef, useState } from 'react'
-import { WorkspaceApiError as ApiError, classifyBybitCardTransaction, ignoreBybitCardTransaction, listBybitCardTransactions, undoBybitCardTransaction } from '../workspace-api'
+import { WorkspaceApiError as ApiError, classifyBybitCardTransaction, ignoreBybitCardTransaction, listBybitCardTransactions, splitBybitCardTransaction, undoBybitCardTransaction, unsplitBybitCardTransaction } from '../workspace-api'
 import type { BybitCardStatus, BybitCardTransaction, Category, Currency, Expense, Tag } from '../types'
 import { Toast, tap, useConfirm, useDialog, useToast } from '../ui'
-import { amountNumber, amountSize } from '../format'
+import { amountNumber, amountSize, pluralRu } from '../format'
 import { ExtrasRow, NoteSheet, TAG_COLORS, createTagOrReuse } from '../tags'
 import { CategorySheet, CategoryTiles, saveButtonLabel } from './Entry'
+import { SplitSheet } from './Split'
 
-export type ReviewAction={transaction:BybitCardTransaction;expense?:Expense;categoryId?:string;comment:string;tagIds:string[]}
+export type ReviewAction={transaction:BybitCardTransaction;expenses?:Expense[];categoryId?:string;comment:string;tagIds:string[]}
 
-export function BybitReviewView({ workspaceId, categories, currencies, tags=[], onTag=()=>{}, online, onExpense, onExpenseUndo, onStatus, pendingCount=0, active=true }: {workspaceId:string;categories:Category[];currencies:Currency[];tags?:Tag[];onTag?:(tag:Tag)=>void;online:boolean;onExpense:(expense:Expense)=>void;onExpenseUndo:(expenseId:string)=>void;onStatus:(status:Partial<BybitCardStatus>&Pick<BybitCardStatus,'pendingCount'>)=>void;pendingCount?:number;active?:boolean}) {
+export function BybitReviewView({ workspaceId, categories, currencies, tags=[], onTag=()=>{}, online, onExpenses, onExpensesUndo, onStatus, pendingCount=0, active=true }: {workspaceId:string;categories:Category[];currencies:Currency[];tags?:Tag[];onTag?:(tag:Tag)=>void;online:boolean;onExpenses:(expenses:Expense[])=>void;onExpensesUndo:(expenseIds:string[])=>void;onStatus:(status:Partial<BybitCardStatus>&Pick<BybitCardStatus,'pendingCount'>)=>void;pendingCount?:number;active?:boolean}) {
   const [items,setItems]=useState<BybitCardTransaction[]>([])
   const [comment,setComment]=useState('')
   const [noteSheet,setNoteSheet]=useState(false)
   const [selectedCategoryId,setSelectedCategoryId]=useState<string|null>(null)
   const [categorySheet,setCategorySheet]=useState(false)
+  const [splitSheet,setSplitSheet]=useState(false)
+  const [splitError,setSplitError]=useState('')
   const [selectedTagIds,setSelectedTagIds]=useState<string[]>([])
   const [loading,setLoading]=useState(true)
   const [busy,setBusy]=useState(false)
@@ -40,18 +43,44 @@ export function BybitReviewView({ workspaceId, categories, currencies, tags=[], 
     }).catch(()=>{/* the queue already on screen stays usable; the next trigger retries */}).finally(()=>{refreshing.current=false})
     return()=>{controller.abort();refreshing.current=false}
   },[active,pendingCount,workspaceId]) // eslint-disable-line react-hooks/exhaustive-deps
-  const resetDraft=()=>{setComment('');setSelectedCategoryId(null);setSelectedTagIds([]);setCategorySheet(false);setNoteSheet(false)}
+  const resetDraft=()=>{setComment('');setSelectedCategoryId(null);setSelectedTagIds([]);setCategorySheet(false);setNoteSheet(false);setSplitSheet(false);setSplitError('')}
   const removeCurrent=(transaction:BybitCardTransaction,pendingCount:number)=>{setItems((value)=>value.filter((item)=>item.id!==transaction.id));resetDraft();onStatus({pendingCount})}
   const undo=async(action:ReviewAction)=>{
     if(busy||!online)return;setBusy(true);setError('')
-    try{const result=await undoBybitCardTransaction(workspaceId,action.transaction.id,action.expense);if(result.undoneExpenseId)onExpenseUndo(result.undoneExpenseId);setItems((value)=>[result.transaction,...value.filter((item)=>item.id!==result.transaction.id)]);setComment(action.comment);setSelectedCategoryId(action.categoryId??null);setSelectedTagIds(action.tagIds);onStatus({pendingCount:result.pendingCount});tap(6)}
+    try{const result=await undoBybitCardTransaction(workspaceId,action.transaction.id,action.expenses);if(result.undoneExpenseIds?.length)onExpensesUndo(result.undoneExpenseIds);setItems((value)=>[result.transaction,...value.filter((item)=>item.id!==result.transaction.id)]);setComment(action.comment);setSelectedCategoryId(action.categoryId??null);setSelectedTagIds(action.tagIds);onStatus({pendingCount:result.pendingCount});tap(6)}
     catch(reason){setError(reason instanceof ApiError?reason.message:'Не удалось отменить последнее действие')}
     finally{setBusy(false)}
   }
   const classify=async(categoryId:string)=>{
     if(!current||busy||!online)return;const transaction=current;const action:ReviewAction={transaction,categoryId,comment,tagIds:selectedTagIds};setSelectedCategoryId(categoryId);setBusy(true);setError('')
-    try{const result=await classifyBybitCardTransaction(workspaceId,transaction.id,categoryId,comment,selectedTagIds);action.expense=result.expense;onExpense(result.expense);removeCurrent(transaction,result.pendingCount);notify('Расход добавлен',{label:'Отменить',run:()=>void undo(action)});tap(8)}
+    try{const result=await classifyBybitCardTransaction(workspaceId,transaction.id,categoryId,comment,selectedTagIds);action.expenses=result.expenses;onExpenses(result.expenses);removeCurrent(transaction,result.pendingCount);notify('Расход добавлен',{label:'Отменить',run:()=>void undo(action)});tap(8)}
     catch(reason){setError(reason instanceof ApiError?reason.message:'Не удалось сохранить расход')}
+    finally{setBusy(false)}
+  }
+  /*
+   * «Разделить» ничего не записывает: платёж заменяется своими частями, и каждая встаёт в очередь
+   * обычной строкой — категорию, теги и заметку она получает на этой же карточке, как любая операция.
+   */
+  const split=async(amounts:number[])=>{
+    if(!current||busy||!online)return;const transaction=current;setBusy(true);setSplitError('')
+    try{
+      const result=await splitBybitCardTransaction(workspaceId,transaction.id,amounts)
+      setItems((value)=>[...result.transactions,...value.filter((item)=>item.id!==transaction.id)])
+      resetDraft();onStatus({pendingCount:result.pendingCount});tap(8)
+      notify(`Платёж разделён на ${result.transactions.length} ${pluralRu(result.transactions.length,['часть','части','частей'])}`)
+    }
+    catch(reason){setSplitError(reason instanceof ApiError?reason.message:'Не удалось разделить платёж')}
+    finally{setBusy(false)}
+  }
+  // «Собрать обратно» возвращает платёж целиком: части исчезают вместе со своими черновиками.
+  const unsplit=async()=>{
+    if(!current||busy||!online)return;const transaction=current;setBusy(true);setError('')
+    try{
+      const result=await unsplitBybitCardTransaction(workspaceId,transaction.id)
+      setItems((value)=>[result.transaction,...value.filter((item)=>!result.removedTransactionIds.includes(item.id))])
+      resetDraft();onStatus({pendingCount:result.pendingCount});tap(6)
+    }
+    catch(reason){setError(reason instanceof ApiError?reason.message:'Не удалось собрать платёж обратно')}
     finally{setBusy(false)}
   }
   const ignore=async()=>{
@@ -64,7 +93,7 @@ export function BybitReviewView({ workspaceId, categories, currencies, tags=[], 
   return <><section className="page bybit-review-page" aria-labelledby="bybit-review-title">
     <h1 className="sr-only" id="bybit-review-title">Операции с карты Bybit</h1>
     {loading?<p className="management-state" role="status">Загружаем операции…</p>:current?(()=>{const amountText=amountNumber(current.amountMinor,current.currency,currencies);return <>
-      <header className="topline review-topline"><div><p className="eyebrow">В очереди · {items.length}</p><p className="review-date">{new Date(current.occurredAt).toLocaleString('ru-RU',{weekday:'short',day:'numeric',month:'long',hour:'2-digit',minute:'2-digit'})}</p></div></header>
+      <header className="topline review-topline"><div><p className="eyebrow">В очереди · {items.length}</p><p className="review-date">{new Date(current.occurredAt).toLocaleString('ru-RU',{weekday:'short',day:'numeric',month:'long',hour:'2-digit',minute:'2-digit'})}</p></div>{current.splitIndex&&current.splitCount?<span className="review-part">Часть {current.splitIndex} из {current.splitCount}</span>:null}</header>
       <div className="amount-row"><output className="amount-value" data-size={amountSize(amountText)} aria-label="Сумма">{amountText}</output><span className="review-currency">{current.currency}</span></div>
       <div className="review-scroll">
       {/* Мерчант и предупреждение делят слот постоянной высоты: очередь разбирают пачкой, и
@@ -79,9 +108,14 @@ export function BybitReviewView({ workspaceId, categories, currencies, tags=[], 
       <ExtrasRow tags={tags} selected={selectedTagIds} note={comment} disabled={busy} online={online} onChange={setSelectedTagIds} onNote={()=>setNoteSheet(true)} onCreate={(name)=>createTagOrReuse(workspaceId,name,TAG_COLORS[tags.length%TAG_COLORS.length]??null,onTag)}/>
       </div>
       <button type="button" className="primary review-save" disabled={busy||!online||!save?.canSave} onClick={()=>{if(selectedCategoryId)void classify(selectedCategoryId)}}>{busy?'Сохраняем…':save?.label}</button>
-      <div className="review-secondary"><button type="button" disabled={busy||items.length<2} onClick={skip}>Пропустить</button><button type="button" disabled={busy||!online} onClick={()=>void ignore()}>Это не расход</button></div>
+      {/* Одним платежом закрывают сразу две категории. У части первая кнопка предлагает обратное действие:
+          собрать платёж целиком, если разделили не так. Делить часть ещё раз нельзя — сначала собрать. */}
+      <div className="review-secondary three">{current.splitIndex
+        ?<button type="button" disabled={busy||!online} onClick={()=>void unsplit()} aria-label="Собрать платёж обратно">Собрать</button>
+        :<button type="button" disabled={busy||!online} onClick={()=>{tap(6);setSplitError('');setSplitSheet(true)}}>Разделить</button>}<button type="button" disabled={busy||items.length<2} onClick={skip}>Пропустить</button><button type="button" disabled={busy||!online} onClick={()=>void ignore()}>Это не расход</button></div>
       {categorySheet&&<CategorySheet categories={additional} selectedId={selectedCategoryId??undefined} onClose={()=>setCategorySheet(false)} onPick={(category)=>{setSelectedCategoryId(category.id);setCategorySheet(false)}}/>}
       {noteSheet&&<NoteSheet value={comment} onClose={()=>setNoteSheet(false)} onSave={(note)=>{setComment(note);setNoteSheet(false)}}/>}
+      {splitSheet&&<SplitSheet totalMinor={current.amountMinor} currency={current.currency} currencies={currencies} busy={busy} error={splitError} onClose={()=>{setSplitSheet(false);setSplitError('')}} onSubmit={(amounts)=>void split(amounts)}/>}
     </>})():<div className="review-done"><span>✓</span><h3>Всё разобрано</h3><p>Новые операции появятся после следующего обновления.</p></div>}
     {!online&&<p className="management-state" role="status">Без сети можно только просматривать операции. Категория сохранится после подключения.</p>}
     {error&&<p className="form-error" role="alert">{error}</p>}

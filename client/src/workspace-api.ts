@@ -3,7 +3,7 @@ import { appTimeZone } from './utils'
 import type {
   AnalyticsData, AuthenticatedSession, BybitCardStatus, BybitCardTransaction, BybitRegion, Category, DeviceLinkMetadata, DeviceLinkPreview, DeviceSession, Expense, InvitationMetadata,
   InvitationPreview, Participant, RecoveryPrepareResponse, RecoveryPreview, SessionState, SyncResult, UserProfile, WorkspaceBootstrap,
-  Tag, WorkspaceOutboxItem, WorkspaceSummary,
+  Tag, ExpenseSplitPart, WorkspaceOutboxItem, WorkspaceSummary,
 } from './types'
 
 type ErrorEnvelope = { error?: { code?: string; message?: string; details?: unknown }; message?: string }
@@ -41,6 +41,10 @@ const SERVER_ERROR_MESSAGES: Record<string, string> = {
   VALIDATION: 'Проверьте заполненные данные.',
   VERSION_CONFLICT: 'Данные на сервере уже изменились. Обновите экран и повторите действие.',
   UNDO_CONFLICT: 'Созданный расход уже изменился, поэтому отменить его из разбора нельзя.',
+  SPLIT_MISMATCH: 'Сумма частей должна совпадать с суммой платежа.',
+  SPLIT_IN_USE: 'Одна из частей уже записана в историю. Сначала отмените её.',
+  ALREADY_SPLIT: 'Это уже часть разделённого платежа.',
+  EXPENSE_VOIDED: 'Платёж не прошёл, поэтому разделить его нельзя. Сначала «Учитывать всё равно».',
   BYBIT_KEY_NOT_READ_ONLY: 'Создайте для Moapp отдельный read-only API-ключ Bybit.',
   BYBIT_CARD_PERMISSION_MISSING: 'У API-ключа не включено разрешение Bybit Card.',
   BYBIT_RATE_LIMITED: 'Bybit временно ограничил частоту запросов. Подождите немного и повторите.',
@@ -258,6 +262,12 @@ export function createExpense(workspaceId: string, expense: Omit<Expense, 'creat
 export function updateExpense(workspaceId: string, expenseId: string, update: Partial<Expense> & Pick<Expense, 'version'>, signal?: AbortSignal) { assertMutationsAllowed(); return request<Expense>(workspacePath(workspaceId, `/expenses/${encodeURIComponent(expenseId)}`), { method: 'PATCH', body: JSON.stringify(update), signal }) }
 export function includeExpense(workspaceId: string, expenseId: string, version: number, signal?: AbortSignal) { assertMutationsAllowed(); return request<Expense>(workspacePath(workspaceId, `/expenses/${encodeURIComponent(expenseId)}/include`), { method: 'POST', body: JSON.stringify({ version }), signal }) }
 export async function deleteExpense(workspaceId: string, expenseId: string, version: number, signal?: AbortSignal): Promise<void> { assertMutationsAllowed(); return request<void>(workspacePath(workspaceId, `/expenses/${encodeURIComponent(expenseId)}`), { method: 'DELETE', body: JSON.stringify({ version }), signal }) }
+/** Одна запись расходится на части: первая остаётся тем же расходом, остальные становятся новыми и наследуют её категорию. */
+export function splitExpense(workspaceId: string, expenseId: string, version: number, amounts: number[], signal?: AbortSignal) {
+  assertMutationsAllowed()
+  const parts: ExpenseSplitPart[] = amounts.map((amountMinor) => ({ amountMinor }))
+  return request<{ expenses: Expense[] }>(workspacePath(workspaceId, `/expenses/${encodeURIComponent(expenseId)}/split`), { method: 'POST', body: JSON.stringify({ version, parts }), signal })
+}
 export function listCategories(workspaceId: string, signal?: AbortSignal) { return request<{ categories: Category[] }>(workspacePath(workspaceId, '/categories'), { signal }) }
 export function createCategory(workspaceId: string, category: Omit<Category, 'version' | 'createdAt' | 'updatedAt' | 'archivedAt'>, signal?: AbortSignal) {
   assertMutationsAllowed()
@@ -302,15 +312,26 @@ export function listBybitCardTransactions(workspaceId: string, signal?: AbortSig
 }
 export function classifyBybitCardTransaction(workspaceId: string, transactionId: string, categoryId: string, comment: string, tagIds: string[] = [], signal?: AbortSignal) {
   assertMutationsAllowed()
-  return request<{ transaction: BybitCardTransaction; expense: Expense; pendingCount: number }>(bybitCardPath(workspaceId, `/transactions/${encodeURIComponent(transactionId)}/classify`), { method: 'POST', body: JSON.stringify({ categoryId, comment, tagIds }), signal })
+  return request<{ transaction: BybitCardTransaction; expense: Expense; expenses: Expense[]; pendingCount: number }>(bybitCardPath(workspaceId, `/transactions/${encodeURIComponent(transactionId)}/classify`), { method: 'POST', body: JSON.stringify({ categoryId, comment, tagIds }), signal })
+}
+/** Платёж распадается на части: каждая встаёт в очередь отдельной строкой со своей суммой. */
+export function splitBybitCardTransaction(workspaceId: string, transactionId: string, amounts: number[], signal?: AbortSignal) {
+  assertMutationsAllowed()
+  return request<{ transactions: BybitCardTransaction[]; pendingCount: number }>(bybitCardPath(workspaceId, `/transactions/${encodeURIComponent(transactionId)}/split`), { method: 'POST', body: JSON.stringify({ amounts }), signal })
+}
+/** Собрать части обратно в один платёж; работает, пока ни одна из них не записана в историю. */
+export function unsplitBybitCardTransaction(workspaceId: string, transactionId: string, signal?: AbortSignal) {
+  assertMutationsAllowed()
+  return request<{ transaction: BybitCardTransaction; removedTransactionIds: string[]; pendingCount: number }>(bybitCardPath(workspaceId, `/transactions/${encodeURIComponent(transactionId)}/unsplit`), { method: 'POST', body: JSON.stringify({}), signal })
 }
 export function ignoreBybitCardTransaction(workspaceId: string, transactionId: string, signal?: AbortSignal) {
   assertMutationsAllowed()
   return request<{ pendingCount: number }>(bybitCardPath(workspaceId, `/transactions/${encodeURIComponent(transactionId)}/ignore`), { method: 'POST', body: JSON.stringify({}), signal })
 }
-export function undoBybitCardTransaction(workspaceId: string, transactionId: string, expense?: Pick<Expense, 'id'|'version'>, signal?: AbortSignal) {
+export function undoBybitCardTransaction(workspaceId: string, transactionId: string, expenses?: Pick<Expense, 'id'|'version'>[], signal?: AbortSignal) {
   assertMutationsAllowed()
-  return request<{ transaction: BybitCardTransaction; undoneExpenseId: string|null; pendingCount: number }>(bybitCardPath(workspaceId, `/transactions/${encodeURIComponent(transactionId)}/undo`), { method: 'POST', body: JSON.stringify(expense?{expenseId:expense.id,expenseVersion:expense.version}:{}), signal })
+  const body = expenses?.length ? { expenses: expenses.map((expense) => ({ id: expense.id, version: expense.version })) } : {}
+  return request<{ transaction: BybitCardTransaction; undoneExpenseId: string|null; undoneExpenseIds: string[]; pendingCount: number }>(bybitCardPath(workspaceId, `/transactions/${encodeURIComponent(transactionId)}/undo`), { method: 'POST', body: JSON.stringify(body), signal })
 }
 
 export function buildExpenseOperation(userId: string, workspaceId: string, type: WorkspaceOutboxItem['type'], expense: Expense, operationId: string, createdAt: string): WorkspaceOutboxItem {

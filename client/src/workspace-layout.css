@@ -2109,3 +2109,121 @@ button.settings-row:disabled .settings-row-value {
   word-break: break-all;
   pointer-events: none;
 }
+
+/* Разделить платёж на части: строки «сумма — категория», последняя всегда держит остаток. */
+.review-secondary.three {
+  grid-template-columns: 1fr 1fr 1fr;
+}
+
+.review-secondary.three button:first-child {
+  color: var(--sage);
+}
+
+.entry-save .entry-split {
+  color: var(--sage);
+  white-space: nowrap;
+}
+
+.entry-save .entry-split:disabled {
+  color: var(--text-disabled);
+}
+
+/* Слой соседней записи неактивен целиком, но во время свайпа он должен выглядеть как живой. */
+.entry-lower-preview .entry-split:disabled {
+  color: var(--sage);
+}
+
+.split-rows {
+  display: grid;
+  gap: 8px;
+  margin: 4px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.split-row {
+  display: grid;
+  grid-template-columns: 1rem 1fr;
+  align-items: center;
+  gap: 10px;
+}
+
+.split-row:has(.split-remove) {
+  grid-template-columns: 1rem 1fr auto;
+}
+
+.split-ordinal {
+  color: var(--text-tertiary);
+  font-size: 13px;
+  font-weight: 700;
+  text-align: center;
+}
+
+.split-sheet .split-amount {
+  margin: 0;
+  padding: 12px;
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.split-amount.static {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: center;
+  min-height: 45px;
+  padding: 4px 12px;
+  border: 1px dashed var(--line);
+  border-radius: 13px;
+  color: var(--muted);
+}
+
+.split-amount.static small {
+  font-size: 10px;
+  color: var(--text-tertiary);
+}
+
+/* «Часть 2 из 3» в шапке разбора: строка очереди помнит, что она половина одного платежа. */
+.review-part {
+  align-self: center;
+  padding: 5px 9px;
+  border-radius: 10px;
+  background: var(--soft);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.review-topline {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.split-remove {
+  color: var(--muted);
+}
+
+.split-add {
+  justify-self: start;
+  margin-top: 4px;
+  padding: 8px 0;
+  border: 0;
+  background: none;
+  color: var(--sage);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.split-hint {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.split-sheet .primary {
+  margin-top: 12px;
+}

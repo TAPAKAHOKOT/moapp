@@ -71,7 +71,7 @@ const seeds = [
   ["other", "Прочее", "additional", 4, "#A8A8A8"]
 ] as const;
 
-const LATEST_SCHEMA_VERSION = 11;
+const LATEST_SCHEMA_VERSION = 13;
 
 type TableCount = {
   categories: number;
@@ -495,6 +495,67 @@ export function openDatabase(path: string): Database.Database {
           db.exec("ALTER TABLE workspaces ADD COLUMN currency TEXT NOT NULL DEFAULT 'RSD'");
           backfillWorkspaceCurrencies(db);
         }
+        // Одна операция карты может распасться на несколько расходов, поэтому связь ведёт расход,
+        // а не колонка `expense_id` операции: возврат и отмена должны находить все части сразу.
+        else if (version === 12) db.exec(`
+          ALTER TABLE expenses ADD COLUMN source_transaction_id TEXT;
+          CREATE INDEX expenses_source_idx ON expenses(workspace_id, source_transaction_id)
+            WHERE source_transaction_id IS NOT NULL;
+          UPDATE expenses SET source_transaction_id = (
+            SELECT t.id FROM bybit_card_transactions t
+            WHERE t.workspace_id = expenses.workspace_id AND t.expense_id = expenses.id
+          ) WHERE EXISTS (
+            SELECT 1 FROM bybit_card_transactions t
+            WHERE t.workspace_id = expenses.workspace_id AND t.expense_id = expenses.id
+          );
+        `);
+        /*
+         * Разделение платежа: операция распадается на части, и каждая часть — обычная строка очереди
+         * со своей суммой и своей категорией. Исходная операция остаётся в состоянии `split`: она уже
+         * не ждёт разбора, но хранит настоящую сумму платежа и возвращается на место, если части собрать обратно.
+         */
+        else if (version === 13) db.exec(`
+          CREATE TABLE bybit_card_transactions_new (
+            id TEXT PRIMARY KEY,
+            connection_id TEXT NOT NULL REFERENCES bybit_card_connections(id) ON DELETE CASCADE,
+            workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+            external_key TEXT NOT NULL,
+            txn_id TEXT,
+            order_no TEXT,
+            side TEXT NOT NULL,
+            trade_status TEXT NOT NULL,
+            provider_status TEXT NOT NULL,
+            amount_minor INTEGER NOT NULL CHECK(amount_minor > 0),
+            currency TEXT NOT NULL CHECK(length(currency)=3),
+            merchant_name TEXT,
+            merchant_country TEXT,
+            merchant_city TEXT,
+            mcc_code TEXT,
+            merchant_category TEXT,
+            occurred_at TEXT NOT NULL,
+            review_status TEXT NOT NULL CHECK(review_status IN ('pending','classified','ignored','split')),
+            expense_id TEXT,
+            split_of_id TEXT REFERENCES bybit_card_transactions_new(id) ON DELETE CASCADE,
+            split_index INTEGER NOT NULL DEFAULT 0 CHECK(split_index >= 0),
+            raw_json TEXT NOT NULL CHECK(json_valid(raw_json)),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(connection_id,external_key),
+            CHECK((split_of_id IS NULL AND split_index = 0) OR (split_of_id IS NOT NULL AND split_index > 0))
+          );
+          INSERT INTO bybit_card_transactions_new
+            (id,connection_id,workspace_id,external_key,txn_id,order_no,side,trade_status,provider_status,amount_minor,currency,
+             merchant_name,merchant_country,merchant_city,mcc_code,merchant_category,occurred_at,review_status,expense_id,
+             split_of_id,split_index,raw_json,created_at,updated_at)
+            SELECT id,connection_id,workspace_id,external_key,txn_id,order_no,side,trade_status,provider_status,amount_minor,currency,
+             merchant_name,merchant_country,merchant_city,mcc_code,merchant_category,occurred_at,review_status,expense_id,
+             NULL,0,raw_json,created_at,updated_at FROM bybit_card_transactions;
+          DROP TABLE bybit_card_transactions;
+          ALTER TABLE bybit_card_transactions_new RENAME TO bybit_card_transactions;
+          CREATE INDEX bybit_card_transactions_review_idx ON bybit_card_transactions(workspace_id,review_status,occurred_at);
+          CREATE INDEX bybit_card_transactions_expense_idx ON bybit_card_transactions(workspace_id,expense_id);
+          CREATE INDEX bybit_card_transactions_split_idx ON bybit_card_transactions(split_of_id,split_index);
+        `);
         db.prepare("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)").run(version, appliedAt);
       }
     });

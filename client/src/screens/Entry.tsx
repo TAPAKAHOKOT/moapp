@@ -1,12 +1,13 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { WorkspaceApiError as ApiError, submitExpenseOperation } from '../workspace-api'
+import { WorkspaceApiError as ApiError, deleteExpense, splitExpense, updateExpense, submitExpenseOperation } from '../workspace-api'
 import { getWorkspacePreference, setWorkspacePreference } from '../app-state'
 import type { Category, Currency, Expense, Tag, WorkspaceSummary } from '../types'
 import { amountToMinor, applyKeypad, cachedNumberFormat, formatAmountInput, isoToLocalInput, localInputToIso, swipeDirection, workspaceCurrency } from '../utils'
 import { ChevronIcon, CurrencySheet, GridIcon, Toast, TrashIcon, prefersReducedMotion, tap, useConfirm, useDialog, useToast } from '../ui'
-import { amountSize, formatEntryDate, formatShortWeekday, inputFromExpense } from '../format'
+import { amountSize, formatEntryDate, formatShortWeekday, inputFromExpense, pluralRu } from '../format'
 import type { Bootstrap } from '../format'
 import { ExtrasRow, NoteSheet, TAG_COLORS, createTagOrReuse } from '../tags'
+import { SplitSheet } from './Split'
 
 export const EMPTY_FORM = { amount: '', currency: 'RSD', note: '', occurredAt: '', tagIds: [] as string[], categoryId: '' }
 
@@ -146,7 +147,8 @@ export function EntryLowerPreview({ main, additional, tags, state }: { main: Cat
   return <>
     <CategoryTiles main={main} additional={additional} selectedId={state.categoryId} inert/>
     <ExtrasRow tags={tags} selected={state.tagIds} note={state.note} inert onChange={() => {}} onNote={() => {}}/>
-    <div className="entry-save"><button type="button" className="primary" tabIndex={-1} disabled={!state.canSave}>{state.saveLabel}</button>{state.key !== 'blank' && <button type="button" className="sheet-cancel ghost" tabIndex={-1} disabled aria-hidden>Отменить</button>}</div>
+    {/* У соседней записи правки нет, поэтому в общем месте стоит «Разделить» — то же, что покажет живой слой после подмены. */}
+    <div className="entry-save"><button type="button" className="primary" tabIndex={-1} disabled={!state.canSave}>{state.saveLabel}</button>{state.key !== 'blank' && <button type="button" className="sheet-cancel entry-split" tabIndex={-1} disabled aria-hidden>Разделить</button>}</div>
   </>
 }
 
@@ -166,6 +168,8 @@ export function EntryView({ userId, workspaceId, workspace, bootstrap, setBootst
   const [currencySheet, setCurrencySheet] = useState(false)
   const [dateSheet, setDateSheet] = useState(false)
   const [noteSheet, setNoteSheet] = useState(false)
+  const [splitSheet, setSplitSheet] = useState(false)
+  const [splitError, setSplitError] = useState('')
   const [saving, setSaving] = useState(false)
   const { toast, notify, dismiss } = useToast()
   const { confirm, confirmation } = useConfirm()
@@ -329,6 +333,53 @@ export function EntryView({ userId, workspaceId, workspace, bootstrap, setBootst
     tap(6)
     setForm((value) => ({ ...value, categoryId: category.id }))
     setCategorySheet(false)
+  }
+
+  /*
+   * Деление спрашивает только суммы: части остаются в категории исходной записи, а меняют её там же,
+   * где обычно — на самой записи. Поэтому сразу после деления открывается вторая часть: она и есть то,
+   * ради чего делили. «Отменить» в тосте собирает запись обратно.
+   */
+  const split = async (amounts: number[]) => {
+    const target = current
+    if (!target || saving) return
+    setSaving(true); setSplitError('')
+    try {
+      const result = await splitExpense(workspaceId, target.id, target.version, amounts)
+      setBootstrap((data) => ({ ...data, expenses: [...result.expenses, ...data.expenses.filter((item) => !result.expenses.some((part) => part.id === item.id))] }))
+      setSplitSheet(false)
+      const count = result.expenses.length
+      const opened = result.expenses[1]
+      if (opened) setCurrentId(opened.id)
+      notify(`Разделено на ${count} ${pluralRu(count, ['часть', 'части', 'частей'])}`, { label: 'Отменить', run: () => void undoSplit(target, result.expenses) })
+      tap(8)
+    } catch (reason) {
+      setSplitError(reason instanceof ApiError ? reason.message : 'Не удалось разделить расход')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  // Собрать запись обратно: новые части удаляются, исходная возвращается к своей сумме.
+  const undoSplit = async (original: Expense, parts: Expense[]) => {
+    if (saving) return
+    setSaving(true)
+    try {
+      const [head, ...rest] = parts
+      for (const part of rest) await deleteExpense(workspaceId, part.id, part.version)
+      const restored = await updateExpense(workspaceId, original.id, {
+        version: head!.version, amountMinor: original.amountMinor, categoryId: original.categoryId,
+        note: original.note, tagIds: original.tagIds ?? [],
+      })
+      setCurrentId(restored.id)
+      setBootstrap((data) => ({ ...data, expenses: [restored, ...data.expenses.filter((item) => item.id !== restored.id && !rest.some((part) => part.id === item.id))] }))
+      notify('Запись снова целиком')
+      tap(6)
+    } catch (reason) {
+      notify(reason instanceof ApiError ? reason.message : 'Не удалось собрать запись обратно')
+    } finally {
+      setSaving(false)
+    }
   }
 
   const restore = async (deleted: Expense) => {
@@ -661,13 +712,18 @@ export function EntryView({ userId, workspaceId, workspace, bootstrap, setBootst
     <div ref={lowerLiveRef} className="entry-lower-live">
     <CategoryTiles main={main} additional={additional} selectedId={selectedCategoryId} disabled={saving} onPick={chooseCategory} onMore={() => setCategorySheet(true)}/>
     <ExtrasRow tags={bootstrap.tags ?? []} selected={form.tagIds} note={form.note} disabled={saving} online={navigator.onLine} onChange={(tagIds) => setForm((value) => ({ ...value, tagIds }))} onNote={() => setNoteSheet(true)} onCreate={(name) => createTagOrReuse(workspaceId, name, TAG_COLORS[(bootstrap.tags ?? []).length % TAG_COLORS.length] ?? null, publishTag)}/>
-    <div className="entry-save"><button type="button" className="primary" disabled={!save.canSave || saving} onClick={() => void submitExpense()}>{saving ? 'Сохраняем…' : save.label}</button>{current && <button type="button" className={`sheet-cancel${dirty && !saving ? '' : ' ghost'}`} disabled={!dirty || saving} aria-hidden={!dirty || saving} tabIndex={dirty && !saving ? undefined : -1} onClick={cancelEdit}>Отменить</button>}</div>
+    {/* Правку записи отменяют, а нетронутую можно разделить на части: два разных ответа на «а если не так»,
+        поэтому они делят одно место рядом с сохранением и никогда не спорят друг с другом. */}
+    <div className="entry-save"><button type="button" className="primary" disabled={!save.canSave || saving} onClick={() => void submitExpense()}>{saving ? 'Сохраняем…' : save.label}</button>{current && (dirty
+      ? <button type="button" className={`sheet-cancel${saving ? ' ghost' : ''}`} disabled={saving} aria-hidden={saving} tabIndex={saving ? -1 : undefined} onClick={cancelEdit}>Отменить</button>
+      : <button type="button" className="sheet-cancel entry-split" disabled={saving || jumpingNew || Boolean(current.pending) || !navigator.onLine} onClick={() => { tap(6); setSplitError(''); setSplitSheet(true) }}>Разделить</button>)}</div>
     </div>
     {swipePreview && <div ref={lowerPreviewRef} className="entry-lower-preview" aria-hidden="true" inert><EntryLowerPreview main={main} additional={additional} tags={bootstrap.tags ?? []} state={swipePreview}/></div>}
     </div>
     {dateSheet && <DateSheet value={form.occurredAt} onClose={() => setDateSheet(false)} onPick={(value) => { setForm({ ...form, occurredAt: value }); setDateSheet(false) }}/>}
     {categorySheet && <CategorySheet categories={additional} selectedId={selectedCategoryId ?? undefined} onClose={() => setCategorySheet(false)} onPick={chooseCategory}/>}
     {noteSheet && <NoteSheet value={form.note} onClose={() => setNoteSheet(false)} onSave={(note) => { setForm({ ...form, note }); setNoteSheet(false) }}/>}
+    {splitSheet && current && <SplitSheet totalMinor={current.amountMinor} currency={current.currency} currencies={bootstrap.currencies} busy={saving} error={splitError} onClose={() => { setSplitSheet(false); setSplitError('') }} onSubmit={(amounts) => void split(amounts)}/>}
     {currencySheet && <CurrencySheet
       currencies={bootstrap.currencies}
       used={usedCurrencies}
