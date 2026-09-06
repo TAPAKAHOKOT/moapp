@@ -45,6 +45,15 @@ export type Expense = {
   pending?: boolean
 }
 
+/** Часть разделённого платежа: без `note`/`tagIds` она наследует их у исходной записи. */
+export type ExpenseSplitPart = {
+  amountMinor: number
+  /** Без категории часть остаётся в категории исходной записи. */
+  categoryId?: string
+  note?: string | null
+  tagIds?: string[]
+}
+
 export type ExpenseVoidReason = {
   provider: 'bybit-card'
   kind: 'declined' | 'reversed'
@@ -80,8 +89,11 @@ export type BybitCardTransaction = {
   mccCode: string | null
   merchantCategory: string | null
   occurredAt: string
-  reviewStatus: 'pending' | 'classified' | 'ignored'
+  reviewStatus: 'pending' | 'classified' | 'ignored' | 'split'
   expenseId: string | null
+  /** Часть разделённого платежа: её номер и общее число частей. У целой операции — null. */
+  splitIndex?: number | null
+  splitCount?: number | null
   /** false while Bybit still holds the authorization; the amount may change when it settles */
   settled: boolean
 }

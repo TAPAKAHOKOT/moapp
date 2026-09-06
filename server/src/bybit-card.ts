@@ -1,6 +1,6 @@
 import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import { createExpense, deleteExpense, EXPENSE_SELECT, expenseJson, type ExpenseRow } from "./expenses.js";
+import { createExpense, deleteExpense, EXPENSE_SELECT, expenseJson, MAX_EXPENSE_PARTS, type ExpenseRow } from "./expenses.js";
 import { hasWorkspaceMembership, noStore, requireMutationOrigin, workspaceContext } from "./tenant-domain-guard.js";
 import { isCurrency, jsonError, minorDigits } from "./validation.js";
 
@@ -53,6 +53,9 @@ type ConnectionRow = {
 type TransactionRow = {
   id: string;
   workspace_id: string;
+  connection_id: string;
+  external_key: string;
+  raw_json: string;
   txn_id: string | null;
   order_no: string | null;
   side: string;
@@ -66,8 +69,11 @@ type TransactionRow = {
   occurred_at: string;
   trade_status: string;
   provider_status: string;
-  review_status: "pending" | "classified" | "ignored";
+  review_status: "pending" | "classified" | "ignored" | "split";
   expense_id: string | null;
+  split_of_id: string | null;
+  split_index: number;
+  split_count?: number;
 };
 
 /* Reviewable rows: settled payments (trade 1) and open authorizations (trade 0) that Bybit accepted. */
@@ -289,7 +295,10 @@ function storedProviderMetadata(record: AssetRecord): string {
   });
 }
 
+// Число частей всегда приходит из строки (QUEUE_SELECT): вторым параметром его брать нельзя,
+// иначе `rows.map(transactionJson)` подставит сюда индекс массива.
 function transactionJson(row: TransactionRow) {
+  const splitCount = row.split_count ?? 0;
   return {
     id: row.id,
     txnId: row.txn_id,
@@ -305,8 +314,82 @@ function transactionJson(row: TransactionRow) {
     occurredAt: row.occurred_at,
     reviewStatus: row.review_status,
     expenseId: row.expense_id,
+    /* Часть разделённого платежа знает свой номер и сколько всего частей: карточка говорит «Часть 2 из 3». */
+    splitIndex: row.split_of_id ? row.split_index : null,
+    splitCount: row.split_of_id ? splitCount : null,
     settled: row.trade_status === "1"
   };
+}
+
+/* Строка очереди вместе с числом частей своего платежа: у целой операции их нет. */
+const QUEUE_SELECT = `SELECT t.*, (SELECT count(*) FROM bybit_card_transactions s WHERE s.split_of_id=t.split_of_id) split_count
+  FROM bybit_card_transactions t`;
+
+function readTransaction(app: FastifyInstance, workspaceId: string, id: string): TransactionRow | undefined {
+  return app.db.prepare(`${QUEUE_SELECT} WHERE t.workspace_id=? AND t.id=?`).get(workspaceId, id) as TransactionRow | undefined;
+}
+
+/* Брошено внутри транзакции отмены, чтобы уже удалённые части вернулись на место. */
+class UndoConflict extends Error {}
+
+/* Брошено внутри транзакции разбора: неудачная часть должна отменить уже созданные, а не оставить их сиротами. */
+class ClassifyFailed extends Error {
+  constructor(readonly code: string | undefined, readonly reason: string) { super(reason); }
+}
+
+/*
+ * Разделение платежа спрашивает только суммы: части встают в очередь обычными строками,
+ * а категорию, теги и заметку каждая получает на привычной карточке разбора.
+ */
+export function parseSplitAmounts(value: unknown, totalMinor: number): { amounts: number[] } | { error: string; code: string } {
+  if (!Array.isArray(value) || value.length < 2) return { error: "amounts must list at least two parts", code: "VALIDATION" };
+  if (value.length > MAX_EXPENSE_PARTS) return { error: `amounts must list at most ${MAX_EXPENSE_PARTS} parts`, code: "VALIDATION" };
+  if (!value.every((item) => Number.isSafeInteger(item) && (item as number) > 0)) {
+    return { error: "each amount must be a positive safe integer", code: "VALIDATION" };
+  }
+  const amounts = value as number[];
+  if (amounts.reduce((total, amount) => total + amount, 0) !== totalMinor) {
+    return { error: "amounts must add up to the operation amount", code: "SPLIT_MISMATCH" };
+  }
+  return { amounts };
+}
+
+function listParts(app: FastifyInstance, workspaceId: string, parentId: string): TransactionRow[] {
+  return app.db.prepare(`${QUEUE_SELECT} WHERE t.workspace_id=? AND t.split_of_id=? ORDER BY t.split_index`)
+    .all(workspaceId, parentId) as TransactionRow[];
+}
+
+function insertParts(app: FastifyInstance, parent: TransactionRow, amounts: number[], now: string): void {
+  const insert = app.db.prepare(`INSERT INTO bybit_card_transactions
+    (id,connection_id,workspace_id,external_key,txn_id,order_no,side,trade_status,provider_status,amount_minor,currency,
+      merchant_name,merchant_country,merchant_city,mcc_code,merchant_category,occurred_at,review_status,expense_id,
+      split_of_id,split_index,raw_json,created_at,updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'pending',NULL,?,?,?,?,?)`);
+  amounts.forEach((amountMinor, index) => insert.run(
+    randomUUID(), parent.connection_id, parent.workspace_id, `${parent.external_key}#${index + 1}`, parent.txn_id, parent.order_no,
+    parent.side, parent.trade_status, parent.provider_status, amountMinor, parent.currency, parent.merchant_name,
+    parent.merchant_country, parent.merchant_city, parent.mcc_code, parent.merchant_category, parent.occurred_at,
+    parent.id, index + 1, parent.raw_json, now, now
+  ));
+}
+
+/* Собрать платёж обратно можно, пока ни одна часть не записана в историю. */
+function collapseSplit(app: FastifyInstance, workspaceId: string, parentId: string, now: string): boolean {
+  const classified = app.db.prepare(`SELECT count(*) count FROM bybit_card_transactions
+    WHERE workspace_id=? AND split_of_id=? AND review_status='classified'`).get(workspaceId, parentId) as { count: number };
+  if (classified.count) return false;
+  app.db.prepare("DELETE FROM bybit_card_transactions WHERE workspace_id=? AND split_of_id=?").run(workspaceId, parentId);
+  app.db.prepare(`UPDATE bybit_card_transactions SET review_status='pending',updated_at=?
+    WHERE workspace_id=? AND id=? AND review_status='split'`).run(now, workspaceId, parentId);
+  return true;
+}
+
+/* Расходы, рождённые одной операцией карты: их может быть несколько, если операцию разделили. */
+function linkedExpenses(app: FastifyInstance, workspaceId: string, transactionId: string) {
+  // Части возвращаются в том порядке, в каком их записали: у них совпадает created_at, поэтому решает rowid.
+  const rows = app.db.prepare(`${EXPENSE_SELECT} WHERE e.workspace_id=? AND e.source_transaction_id=? AND e.deleted_at IS NULL
+    ORDER BY e.created_at,e.rowid`).all(workspaceId, transactionId) as ExpenseRow[];
+  return rows.map(expenseJson);
 }
 
 function connectionStatus(app: FastifyInstance, workspaceId: string) {
@@ -392,8 +475,16 @@ export async function syncBybitCard(app: FastifyInstance, workspaceId: string, f
         SET trade_status=?,provider_status=?,raw_json=?,updated_at=?,
           review_status=CASE WHEN review_status='pending' THEN 'ignored' ELSE review_status END
         WHERE connection_id=? AND external_key=?`);
-      const linkedExpense = app.db.prepare(`SELECT expense_id,txn_id,merchant_name,amount_minor,currency FROM bybit_card_transactions
-        WHERE connection_id=? AND external_key=? AND review_status='classified' AND expense_id IS NOT NULL`);
+      /* Платёж мог быть разделён на части — снимаются расходы и самой операции, и каждой её части. */
+      const linkedExpenses = app.db.prepare(`SELECT e.id expense_id,t.txn_id,t.merchant_name,t.amount_minor,t.currency
+        FROM bybit_card_transactions t
+        JOIN bybit_card_transactions p ON p.id=t.id OR p.split_of_id=t.id
+        JOIN expenses e ON e.workspace_id=p.workspace_id AND e.source_transaction_id=p.id AND e.deleted_at IS NULL
+        WHERE t.connection_id=? AND t.external_key=?`);
+      /* Части не приходят от провайдера по своему ключу, поэтому из очереди их убирает отдельный запрос. */
+      const voidParts = app.db.prepare(`UPDATE bybit_card_transactions SET updated_at=?,
+          review_status=CASE WHEN review_status='pending' THEN 'ignored' ELSE review_status END
+        WHERE split_of_id=(SELECT id FROM bybit_card_transactions WHERE connection_id=? AND external_key=?)`);
       /* The expense stays in history but leaves every total until the person decides what to do with it. */
       const voidExpense = app.db.prepare(`UPDATE expenses SET voided_at=?,void_reason=?,updated_at=?,version=version+1
         WHERE workspace_id=? AND id=? AND deleted_at IS NULL AND voided_at IS NULL`);
@@ -404,23 +495,24 @@ export async function syncBybitCard(app: FastifyInstance, workspaceId: string, f
         const state = recordState(record);
         if (state === "void") {
           /* A declined or reversed operation leaves the queue; an already classified expense is marked as declined. */
-          const linked = linkedExpense.get(connection.id, externalKey) as
-            { expense_id: string; txn_id: string | null; merchant_name: string | null; amount_minor: number; currency: string } | undefined;
+          const linked = linkedExpenses.all(connection.id, externalKey) as
+            Array<{ expense_id: string; txn_id: string | null; merchant_name: string | null; amount_minor: number; currency: string }>;
           voidRow.run(String(record.tradeStatus ?? ""), String(record.status ?? ""), storedProviderMetadata(record), now, connection.id, externalKey);
-          if (linked) {
+          voidParts.run(now, connection.id, externalKey);
+          for (const part of linked) {
             const reason = JSON.stringify({
               provider: "bybit-card", kind: String(record.tradeStatus ?? "") === "3" ? "reversed" : "declined",
-              txnId: linked.txn_id, merchantName: linked.merchant_name, amountMinor: linked.amount_minor, currency: linked.currency
+              txnId: part.txn_id, merchantName: part.merchant_name, amountMinor: part.amount_minor, currency: part.currency
             });
-            voidExpense.run(now, reason, now, workspaceId, linked.expense_id);
+            voidExpense.run(now, reason, now, workspaceId, part.expense_id);
           }
           continue;
         }
         const amount = amountOf(record);
         if (!amount) continue;
         const side = String(record.side ?? "");
-        const existed = app.db.prepare("SELECT 1 FROM bybit_card_transactions WHERE connection_id=? AND external_key=?")
-          .get(connection.id, externalKey);
+        const existed = app.db.prepare("SELECT id,amount_minor,review_status FROM bybit_card_transactions WHERE connection_id=? AND external_key=?")
+          .get(connection.id, externalKey) as { id: string; amount_minor: number; review_status: string } | undefined;
         insert.run(
           randomUUID(), connection.id, workspaceId, externalKey, text(record.txnId), text(record.orderNo), side,
           String(record.tradeStatus ?? ""), String(record.status ?? ""), amount.amountMinor, amount.currency,
@@ -429,6 +521,14 @@ export async function syncBybitCard(app: FastifyInstance, workspaceId: string, f
           null, storedProviderMetadata(record), now, now
         );
         if (!existed && reviewableSide(side)) imported += 1;
+        /*
+         * Открытая авторизация могла быть разделена до расчёта, а списалась другая сумма: части перестали
+         * складываться в платёж. Пока ни одна из них не записана в историю, разделение просто распускается —
+         * платёж возвращается в очередь целиком, уже с настоящей суммой.
+         */
+        if (existed?.review_status === "split" && existed.amount_minor !== amount.amountMinor) {
+          collapseSplit(app, workspaceId, existed.id, now);
+        }
       }
       app.db.prepare(`UPDATE bybit_card_connections SET last_synced_at=?,status='active',last_error=NULL,updated_at=? WHERE id=?`)
         .run(now, now, connection.id);
@@ -517,12 +617,13 @@ export async function registerBybitCardRoutes(app: FastifyInstance, options: { f
     const { workspaceId } = workspaceContext(request);
     const requestedLimit = Number((request.query as { limit?: string }).limit ?? 100);
     if (!Number.isInteger(requestedLimit) || requestedLimit < 1) return fail(reply, 400, "VALIDATION", "limit must be a positive integer");
-    const rows = app.db.prepare(`SELECT * FROM bybit_card_transactions
-      WHERE workspace_id=? AND review_status='pending' AND ${REVIEWABLE_ROW_FILTER}
-      ORDER BY occurred_at,id LIMIT ?`).all(workspaceId, Math.min(200, requestedLimit)) as TransactionRow[];
+    const rows = app.db.prepare(`${QUEUE_SELECT}
+      WHERE t.workspace_id=? AND t.review_status='pending' AND ${REVIEWABLE_ROW_FILTER.replace(/(\w+_status)/g, "t.$1")}
+      ORDER BY t.occurred_at,t.split_index,t.id LIMIT ?`).all(workspaceId, Math.min(200, requestedLimit)) as TransactionRow[];
     return { transactions: rows.map(transactionJson), pendingCount: connectionStatus(app, workspaceId).pendingCount };
   });
 
+  /* Операция (или часть разделённого платежа) кладётся в одну категорию — это всегда один расход. */
   app.post(`${prefix}/transactions/:transactionId/classify`, { preHandler: [app.requireWorkspaceMember, mutation], onSend: noStore }, async (request, reply) => {
     const { workspaceId, userId } = workspaceContext(request);
     const transactionId = (request.params as { transactionId: string }).transactionId;
@@ -532,30 +633,85 @@ export async function registerBybitCardRoutes(app: FastifyInstance, options: { f
     if (!categoryId) return fail(reply, 400, "VALIDATION", "categoryId is required");
     if (body.tagIds !== undefined && (!Array.isArray(body.tagIds) || body.tagIds.some((item) => typeof item !== "string"))) return fail(reply, 400, "VALIDATION", "tagIds must be an array of tag ids");
     const tagIds = (body.tagIds as string[] | undefined) ?? [];
-    const outcome = app.db.transaction(() => {
+    const classification = app.db.transaction(() => {
       if (!hasWorkspaceMembership(app, workspaceId, userId)) return { kind: "missing" as const };
-      const row = app.db.prepare("SELECT * FROM bybit_card_transactions WHERE workspace_id=? AND id=?")
-        .get(workspaceId, transactionId) as TransactionRow | undefined;
+      const row = readTransaction(app, workspaceId, transactionId);
       if (!row) return { kind: "missing" as const };
-      if (row.review_status === "classified" && row.expense_id) {
-        const expense = app.db.prepare(`${EXPENSE_SELECT} WHERE e.workspace_id=? AND e.id=?`).get(workspaceId, row.expense_id) as ExpenseRow | undefined;
-        return expense ? { kind: "classified" as const, row, expense: expenseJson(expense) } : { kind: "reviewed" as const };
+      if (row.review_status === "classified") {
+        const expenses = linkedExpenses(app, workspaceId, transactionId);
+        return expenses.length ? { kind: "classified" as const, row, expenses } : { kind: "reviewed" as const };
       }
       if (row.review_status !== "pending") return { kind: "reviewed" as const };
-      const note = [row.merchant_name, comment].filter((part, index, parts) => part && parts.indexOf(part) === index).join(" · ").slice(0, 500) || null;
+      const note = [row.merchant_name, comment].filter((value, index, values) => value && values.indexOf(value) === index).join(" · ").slice(0, 500) || null;
       const created = createExpense(app, workspaceId, {
         id: randomUUID(), amountMinor: row.amount_minor, currency: row.currency, categoryId,
         occurredAt: row.occurred_at, note, tagIds
-      });
-      if ("error" in created) return { kind: "expense-error" as const, error: created.error, code: created.code };
+      }, row.id);
+      if ("error" in created) throw new ClassifyFailed(created.code, created.error);
       app.db.prepare(`UPDATE bybit_card_transactions SET review_status='classified',expense_id=?,updated_at=? WHERE workspace_id=? AND id=?`)
         .run(created.expense.id, new Date().toISOString(), workspaceId, transactionId);
-      return { kind: "classified" as const, row: { ...row, review_status: "classified", expense_id: created.expense.id } as TransactionRow, expense: created.expense };
-    })();
+      return { kind: "classified" as const, row: { ...row, review_status: "classified", expense_id: created.expense.id } as TransactionRow, expenses: [created.expense] };
+    });
+    let outcome;
+    try { outcome = classification(); }
+    catch (error) {
+      if (!(error instanceof ClassifyFailed)) throw error;
+      return fail(reply, 400, error.code ?? "VALIDATION", error.reason);
+    }
     if (outcome.kind === "missing") return fail(reply, 404, "NOT_FOUND", "Imported transaction not found");
     if (outcome.kind === "reviewed") return fail(reply, 409, "ALREADY_REVIEWED", "Imported transaction was already reviewed");
-    if (outcome.kind === "expense-error") return fail(reply, 400, outcome.code ?? "VALIDATION", outcome.error);
-    return { transaction: transactionJson(outcome.row), expense: outcome.expense, pendingCount: connectionStatus(app, workspaceId).pendingCount };
+    return {
+      transaction: transactionJson(outcome.row), expense: outcome.expenses[0]!, expenses: outcome.expenses,
+      pendingCount: connectionStatus(app, workspaceId).pendingCount
+    };
+  });
+
+  /* «Разделить»: платёж превращается в несколько строк очереди, каждая со своей суммой. */
+  app.post(`${prefix}/transactions/:transactionId/split`, { preHandler: [app.requireWorkspaceMember, mutation], onSend: noStore }, async (request, reply) => {
+    const { workspaceId, userId } = workspaceContext(request);
+    const transactionId = (request.params as { transactionId: string }).transactionId;
+    const body = (request.body ?? {}) as { amounts?: unknown };
+    const outcome = app.db.transaction(() => {
+      if (!hasWorkspaceMembership(app, workspaceId, userId)) return { kind: "missing" as const };
+      const row = readTransaction(app, workspaceId, transactionId);
+      if (!row) return { kind: "missing" as const };
+      if (row.split_of_id) return { kind: "already-part" as const };
+      if (row.review_status !== "pending") return { kind: "reviewed" as const };
+      const parsed = parseSplitAmounts(body.amounts, row.amount_minor);
+      if ("error" in parsed) return { kind: "invalid" as const, error: parsed.error, code: parsed.code };
+      const now = new Date().toISOString();
+      insertParts(app, row, parsed.amounts, now);
+      app.db.prepare("UPDATE bybit_card_transactions SET review_status='split',updated_at=? WHERE workspace_id=? AND id=?")
+        .run(now, workspaceId, transactionId);
+      return { kind: "split" as const, parts: listParts(app, workspaceId, row.id) };
+    })();
+    if (outcome.kind === "missing") return fail(reply, 404, "NOT_FOUND", "Imported transaction not found");
+    if (outcome.kind === "already-part") return fail(reply, 409, "ALREADY_SPLIT", "This is already a part of a split payment");
+    if (outcome.kind === "reviewed") return fail(reply, 409, "ALREADY_REVIEWED", "Imported transaction was already reviewed");
+    if (outcome.kind === "invalid") return fail(reply, 400, outcome.code, outcome.error);
+    return { transactions: outcome.parts.map((part) => transactionJson(part)), pendingCount: connectionStatus(app, workspaceId).pendingCount };
+  });
+
+  /* «Собрать обратно»: части исчезают, платёж возвращается в очередь целиком. Работает, пока ни одна часть не записана. */
+  app.post(`${prefix}/transactions/:transactionId/unsplit`, { preHandler: [app.requireWorkspaceMember, mutation], onSend: noStore }, async (request, reply) => {
+    const { workspaceId, userId } = workspaceContext(request);
+    const transactionId = (request.params as { transactionId: string }).transactionId;
+    const outcome = app.db.transaction(() => {
+      if (!hasWorkspaceMembership(app, workspaceId, userId)) return { kind: "missing" as const };
+      const row = readTransaction(app, workspaceId, transactionId);
+      if (!row) return { kind: "missing" as const };
+      const parent = row.split_of_id ? readTransaction(app, workspaceId, row.split_of_id) : row;
+      if (!parent || parent.review_status !== "split") return { kind: "missing" as const };
+      const removed = listParts(app, workspaceId, parent.id).map((part) => part.id);
+      if (!collapseSplit(app, workspaceId, parent.id, new Date().toISOString())) return { kind: "conflict" as const };
+      return { kind: "merged" as const, row: readTransaction(app, workspaceId, parent.id)!, removed };
+    })();
+    if (outcome.kind === "missing") return fail(reply, 404, "NOT_FOUND", "Split payment not found");
+    if (outcome.kind === "conflict") return fail(reply, 409, "SPLIT_IN_USE", "A part of this payment is already recorded; undo it first");
+    return {
+      transaction: transactionJson(outcome.row), removedTransactionIds: outcome.removed,
+      pendingCount: connectionStatus(app, workspaceId).pendingCount
+    };
   });
 
   app.post(`${prefix}/transactions/:transactionId/ignore`, { preHandler: [app.requireWorkspaceMember, mutation], onSend: noStore }, async (request, reply) => {
@@ -570,35 +726,51 @@ export async function registerBybitCardRoutes(app: FastifyInstance, options: { f
     return { pendingCount: connectionStatus(app, workspaceId).pendingCount };
   });
 
+  /* Отмена снимает всю операцию целиком: разделённая операция возвращается в очередь только вместе со всеми частями. */
   app.post(`${prefix}/transactions/:transactionId/undo`, { preHandler: [app.requireWorkspaceMember, mutation], onSend: noStore }, async (request, reply) => {
     const { workspaceId, userId } = workspaceContext(request);
     const transactionId = (request.params as { transactionId: string }).transactionId;
-    const body = (request.body ?? {}) as { expenseId?: unknown; expenseVersion?: unknown };
+    const body = (request.body ?? {}) as { expenseId?: unknown; expenseVersion?: unknown; expenses?: unknown };
+    const requested = Array.isArray(body.expenses) ? body.expenses
+      : typeof body.expenseId === "string" ? [{ id: body.expenseId, version: body.expenseVersion }]
+      : [];
+    const claimed = requested.every((item) => item && typeof item === "object"
+      && typeof (item as { id?: unknown }).id === "string" && Number.isInteger((item as { version?: unknown }).version))
+      ? requested as Array<{ id: string; version: number }>
+      : null;
     const outcome = app.db.transaction(() => {
       if (!hasWorkspaceMembership(app, workspaceId, userId)) return { kind: "missing" as const };
-      const row = app.db.prepare("SELECT * FROM bybit_card_transactions WHERE workspace_id=? AND id=?")
-        .get(workspaceId, transactionId) as TransactionRow | undefined;
+      const row = readTransaction(app, workspaceId, transactionId);
       if (!row) return { kind: "missing" as const };
-      if (row.review_status === "pending") return { kind: "undone" as const, row, expenseId: null };
+      if (row.review_status === "pending") return { kind: "undone" as const, row, expenseIds: [] as string[] };
       if (row.review_status === "classified") {
-        if (typeof body.expenseId !== "string" || !Number.isInteger(body.expenseVersion) || body.expenseId !== row.expense_id) {
-          return { kind: "conflict" as const };
+        const linked = linkedExpenses(app, workspaceId, transactionId);
+        if (!claimed || !linked.length || claimed.length !== linked.length) return { kind: "conflict" as const };
+        const matches = linked.every((expense) => claimed.some((item) => item.id === expense.id && item.version === expense.version));
+        if (!matches) return { kind: "conflict" as const };
+        for (const expense of linked) {
+          const removed = deleteExpense(app, workspaceId, expense.id, expense.version);
+          if (removed.error) throw new UndoConflict();
         }
-        const removed = deleteExpense(app, workspaceId, body.expenseId, body.expenseVersion as number);
-        if (removed.error) return { kind: "conflict" as const };
         app.db.prepare(`UPDATE bybit_card_transactions SET review_status='pending',expense_id=NULL,updated_at=?
-          WHERE workspace_id=? AND id=? AND review_status='classified' AND expense_id=?`)
-          .run(new Date().toISOString(), workspaceId, transactionId, body.expenseId);
-        return { kind: "undone" as const, row: { ...row, review_status: "pending", expense_id: null } as TransactionRow, expenseId: body.expenseId };
+          WHERE workspace_id=? AND id=? AND review_status='classified'`)
+          .run(new Date().toISOString(), workspaceId, transactionId);
+        return { kind: "undone" as const, row: { ...row, review_status: "pending", expense_id: null } as TransactionRow, expenseIds: linked.map((expense) => expense.id) };
       }
       app.db.prepare(`UPDATE bybit_card_transactions SET review_status='pending',updated_at=?
         WHERE workspace_id=? AND id=? AND review_status='ignored'`)
         .run(new Date().toISOString(), workspaceId, transactionId);
-      return { kind: "undone" as const, row: { ...row, review_status: "pending" } as TransactionRow, expenseId: null };
-    })();
-    if (outcome.kind === "missing") return fail(reply, 404, "NOT_FOUND", "Imported transaction not found");
-    if (outcome.kind === "conflict") return fail(reply, 409, "UNDO_CONFLICT", "The created expense was already changed and cannot be undone here");
-    return { transaction: transactionJson(outcome.row), undoneExpenseId: outcome.expenseId, pendingCount: connectionStatus(app, workspaceId).pendingCount };
+      return { kind: "undone" as const, row: { ...row, review_status: "pending" } as TransactionRow, expenseIds: [] as string[] };
+    });
+    let result;
+    try { result = outcome(); }
+    catch (error) { if (error instanceof UndoConflict) result = { kind: "conflict" as const }; else throw error; }
+    if (result.kind === "missing") return fail(reply, 404, "NOT_FOUND", "Imported transaction not found");
+    if (result.kind === "conflict") return fail(reply, 409, "UNDO_CONFLICT", "The created expense was already changed and cannot be undone here");
+    return {
+      transaction: transactionJson(result.row), undoneExpenseId: result.expenseIds[0] ?? null, undoneExpenseIds: result.expenseIds,
+      pendingCount: connectionStatus(app, workspaceId).pendingCount
+    };
   });
 }
 

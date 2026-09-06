@@ -69,14 +69,15 @@ const mockFetch: typeof fetch = async (input, init) => {
       txnId: "old", orderNo: "old-order", mccCode: "5411"
     }),
     payment({
-      basicAmount: "12.460000000000000000", transactionAmount: "12.220000000000000000", transactionCurrencyAmount: "12.4600000000",
+      tradeStatus: phase >= 4 ? "3" : "1", basicAmount: "12.460000000000000000", transactionAmount: "12.220000000000000000", transactionCurrencyAmount: "12.4600000000",
       paidAmount: "1234.000000000000000000", txnCreate: at(1), merchName: "WOLT", merchCity: "Belgrade", merchCountry: "SRB",
       txnId: "new", orderNo: "new-order", mccCode: "5812", merchCategoryDesc: "Eating Places"
     }),
-    /* An open authorization: reviewable immediately, settled in phase 2 with a slightly different amount. */
+    /* An open authorization: reviewable immediately, settled in phase 2 and re-settled at another amount in phase 3. */
     payment({
       tradeStatus: phase === 1 ? "0" : "1", basicAmount: "5.000000000000000000", transactionAmount: "4.900000000000000000", transactionCurrencyAmount: "5.0000000000",
-      paidAmount: phase === 1 ? "500.000000000000000000" : "550.000000000000000000", txnCreate: at(2), merchName: "Pending", merchCountry: "SRB", txnId: "pending", mccCode: "5411"
+      paidAmount: phase === 1 ? "500.000000000000000000" : phase >= 3 ? "600.000000000000000000" : "550.000000000000000000",
+      txnCreate: at(2), merchName: "Pending", merchCountry: "SRB", txnId: "pending", mccCode: "5411"
     }),
     /* An open authorization that Bybit reverses in phase 2: it must leave the review queue. */
     payment({
@@ -290,4 +291,130 @@ test("review actions can be safely undone and disconnect keeps the final expense
   assert.equal(disconnected.statusCode, 204, disconnected.body);
   assert.equal((app.db.prepare("SELECT count(*) count FROM bybit_card_transactions WHERE workspace_id=?").get(workspaceId) as { count: number }).count, 0);
   assert.equal((app.db.prepare("SELECT count(*) count FROM expenses WHERE workspace_id=? AND deleted_at IS NULL").get(workspaceId) as { count: number }).count, 2);
+});
+
+/*
+ * Одним платежом закрывают сразу две категории. «Разделить» отвечает только на вопрос «на какие суммы»:
+ * части встают в очередь обычными строками и разбираются каждая на своей карточке.
+ */
+test("a payment splits into ordinary queue rows and can be put back together", async () => {
+  const reconnected = await app.inject({
+    method: "POST",
+    url: `/api/workspaces/${workspaceId}/integrations/bybit-card`,
+    headers: { ...origin, ...contextHeaders() },
+    payload: { apiKey: "read-only-card-key", apiSecret: "super-secret", region: "global" }
+  });
+  assert.equal(reconnected.statusCode, 201, reconnected.body);
+  assert.equal(reconnected.json().pendingCount, 2, "the settled WOLT payment and the settled authorization are back in review");
+
+  const rowId = (name: string) => (app.db.prepare(`SELECT id FROM bybit_card_transactions
+    WHERE workspace_id=? AND merchant_name=? AND split_of_id IS NULL`).get(workspaceId, name) as { id: string }).id;
+  const wolt = rowId("WOLT");
+  const post = (path: string, payload: Record<string, unknown>) => app.inject({
+    method: "POST", url: `/api/workspaces/${workspaceId}/integrations/bybit-card/transactions/${path}`,
+    headers: { ...origin, ...contextHeaders() }, payload
+  });
+  const queue = async () => (await app.inject({
+    method: "GET", url: `/api/workspaces/${workspaceId}/integrations/bybit-card/transactions`, headers: contextHeaders()
+  })).json() as { transactions: Array<{ id: string; merchantName: string; amountMinor: number; splitIndex: number | null; splitCount: number | null }>; pendingCount: number };
+
+  const uneven = await post(`${wolt}/split`, { amounts: [100000, 20000] });
+  assert.equal(uneven.statusCode, 400, uneven.body);
+  assert.equal(uneven.json().error.code, "SPLIT_MISMATCH");
+  assert.equal((await queue()).pendingCount, 2, "a rejected split leaves the payment whole");
+
+  const split = await post(`${wolt}/split`, { amounts: [100000, 23400] });
+  assert.equal(split.statusCode, 200, split.body);
+  assert.equal(split.json().pendingCount, 3, "the payment leaves the queue and its two parts enter it");
+  const parts = split.json().transactions as Array<{ id: string; amountMinor: number; merchantName: string; occurredAt: string; splitIndex: number; splitCount: number }>;
+  assert.deepEqual(parts.map((part) => [part.amountMinor, part.splitIndex, part.splitCount]), [[100000, 1, 2], [23400, 2, 2]]);
+  for (const part of parts) {
+    assert.equal(part.merchantName, "WOLT", "a part carries the merchant of its payment");
+    assert.equal(part.occurredAt, parts[0]!.occurredAt);
+  }
+  const afterSplit = await queue();
+  assert.deepEqual(afterSplit.transactions.filter((item) => item.merchantName === "WOLT").map((item) => [item.amountMinor, item.splitIndex, item.splitCount]),
+    [[100000, 1, 2], [23400, 2, 2]], "parts are listed in order and know they are halves of one payment");
+
+  const again = await post(`${parts[0]!.id}/split`, { amounts: [50000, 50000] });
+  assert.equal(again.statusCode, 409, again.body);
+  assert.equal(again.json().error.code, "ALREADY_SPLIT", "a part is put back together, not split further");
+
+  const classified = await post(`${parts[0]!.id}/classify`, { categoryId: "products", comment: "Trolley" });
+  assert.equal(classified.statusCode, 200, classified.body);
+  assert.equal(classified.json().expense.amountMinor, 100000);
+  assert.equal(classified.json().expense.note, "WOLT · Trolley", "a part is classified exactly like a whole payment");
+  assert.equal(classified.json().pendingCount, 2);
+
+  const busy = await post(`${parts[1]!.id}/unsplit`, {});
+  assert.equal(busy.statusCode, 409, busy.body);
+  assert.equal(busy.json().error.code, "SPLIT_IN_USE", "a recorded part must be undone before the payment is whole again");
+
+  const undone = await post(`${parts[0]!.id}/undo`, { expenses: [{ id: classified.json().expense.id, version: classified.json().expense.version }] });
+  assert.equal(undone.statusCode, 200, undone.body);
+  const merged = await post(`${parts[1]!.id}/unsplit`, {});
+  assert.equal(merged.statusCode, 200, merged.body);
+  assert.equal(merged.json().transaction.id, wolt);
+  assert.equal(merged.json().transaction.amountMinor, 123400);
+  assert.equal(merged.json().transaction.splitIndex, null);
+  assert.equal(merged.json().pendingCount, 2);
+  assert.equal((app.db.prepare("SELECT count(*) count FROM bybit_card_transactions WHERE split_of_id IS NOT NULL").get() as { count: number }).count, 0,
+    "the parts are gone once the payment is whole again");
+});
+
+/* Незакрытая авторизация могла быть разделена до расчёта: если сумма изменилась, деление распускается само. */
+test("a settled amount that no longer matches the parts puts the payment back together", async () => {
+  const pending = (app.db.prepare(`SELECT id FROM bybit_card_transactions
+    WHERE workspace_id=? AND merchant_name='Pending' AND split_of_id IS NULL`).get(workspaceId) as { id: string }).id;
+  const split = await app.inject({
+    method: "POST", url: `/api/workspaces/${workspaceId}/integrations/bybit-card/transactions/${pending}/split`,
+    headers: { ...origin, ...contextHeaders() }, payload: { amounts: [30000, 25000] }
+  });
+  assert.equal(split.statusCode, 200, split.body);
+
+  phase = 3;
+  app.db.prepare("UPDATE bybit_card_connections SET last_synced_at=? WHERE workspace_id=?").run(new Date(Date.now() - 10 * 60_000).toISOString(), workspaceId);
+  const sync = await app.inject({
+    method: "POST", url: `/api/workspaces/${workspaceId}/integrations/bybit-card/sync`,
+    headers: { ...origin, ...contextHeaders() }, payload: {}
+  });
+  assert.equal(sync.statusCode, 200, sync.body);
+
+  const row = app.db.prepare("SELECT amount_minor,review_status FROM bybit_card_transactions WHERE id=?").get(pending) as { amount_minor: number; review_status: string };
+  assert.deepEqual(row, { amount_minor: 60000, review_status: "pending" }, "the payment is back in review with the amount that was actually charged");
+  assert.equal((app.db.prepare("SELECT count(*) count FROM bybit_card_transactions WHERE split_of_id=?").get(pending) as { count: number }).count, 0);
+});
+
+test("a reversal marks the expenses of every part as declined", async () => {
+  const wolt = (app.db.prepare(`SELECT id FROM bybit_card_transactions
+    WHERE workspace_id=? AND merchant_name='WOLT' AND split_of_id IS NULL`).get(workspaceId) as { id: string }).id;
+  const post = (path: string, payload: Record<string, unknown>) => app.inject({
+    method: "POST", url: `/api/workspaces/${workspaceId}/integrations/bybit-card/transactions/${path}`,
+    headers: { ...origin, ...contextHeaders() }, payload
+  });
+  const split = await post(`${wolt}/split`, { amounts: [80000, 43400] });
+  assert.equal(split.statusCode, 200, split.body);
+  const recorded = [];
+  for (const [index, part] of (split.json().transactions as Array<{ id: string }>).entries()) {
+    const classified = await post(`${part.id}/classify`, { categoryId: index === 0 ? "products" : "eating-out", comment: "" });
+    assert.equal(classified.statusCode, 200, classified.body);
+    recorded.push(classified.json().expense as { id: string; version: number });
+  }
+
+  phase = 4;
+  app.db.prepare("UPDATE bybit_card_connections SET last_synced_at=? WHERE workspace_id=?").run(new Date(Date.now() - 10 * 60_000).toISOString(), workspaceId);
+  const sync = await app.inject({
+    method: "POST", url: `/api/workspaces/${workspaceId}/integrations/bybit-card/sync`,
+    headers: { ...origin, ...contextHeaders() }, payload: {}
+  });
+  assert.equal(sync.statusCode, 200, sync.body);
+
+  for (const expense of recorded) {
+    const voided = await app.inject({ method: "GET", url: `/api/workspaces/${workspaceId}/expenses/${expense.id}`, headers: contextHeaders() });
+    assert.equal(voided.statusCode, 200, voided.body);
+    assert.equal(voided.json().deletedAt, null);
+    assert.ok(voided.json().voidedAt, "a reversal reaches every part, not only the first");
+    assert.deepEqual(voided.json().voidReason, { provider: "bybit-card", kind: "reversed", txnId: "new", merchantName: "WOLT", amountMinor: 123400, currency: "RSD" },
+      "the mark describes the payment, not the part");
+  }
 });

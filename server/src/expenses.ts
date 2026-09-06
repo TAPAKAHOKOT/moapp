@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { hasWorkspaceMembership, noStore, rejectsWorkspaceId, requireMutationOrigin, sendWorkspaceNotFound, workspaceContext } from "./tenant-domain-guard.js";
 import { isCurrency, isTimestamp, isUuid, jsonError } from "./validation.js";
@@ -16,6 +17,7 @@ export type ExpenseRow = {
   deleted_at: string | null;
   voided_at: string | null;
   void_reason: string | null;
+  source_transaction_id: string | null;
   tag_ids?: string | null;
 };
 
@@ -53,6 +55,16 @@ type ExpenseJson = ReturnType<typeof expenseJson>;
 type ExpenseChange = { expense?: ExpenseJson; error?: string; code?: string; current?: ExpenseJson };
 
 export const MAX_EXPENSE_TAGS = 20;
+
+/* Один платёж делится на несколько расходов; больше десяти частей — это уже не «разделить», а отдельные записи. */
+export const MAX_EXPENSE_PARTS = 10;
+
+export type ExpenseSplitPart = {
+  amountMinor: number;
+  categoryId: string;
+  note?: string | null;
+  tagIds?: string[];
+};
 
 // Теги хранятся в таблице связей, но наружу расход всегда уходит вместе со списком их id,
 // поэтому каждая выборка расходов идёт через этот SELECT с алиасом `e`.
@@ -122,10 +134,15 @@ function readExpense(app: FastifyInstance, workspaceId: string, id: string): Exp
   return app.db.prepare(`${EXPENSE_SELECT} WHERE e.workspace_id=? AND e.id=?`).get(workspaceId, id) as ExpenseRow | undefined;
 }
 
+/*
+ * `sourceTransactionId` is never taken from the request body: only the provider review path passes it,
+ * so a client cannot claim that an expense of its own came from a card operation.
+ */
 export function createExpense(
   app: FastifyInstance,
   workspaceId: string,
-  input: ExpenseInput
+  input: ExpenseInput,
+  sourceTransactionId: string | null = null
 ): { status: "created" | "existing"; expense: ExpenseJson } | { error: string; code?: string; current?: ExpenseJson } {
   const error = validate(input);
   if (error) return { error };
@@ -148,10 +165,10 @@ export function createExpense(
   if (missingTag(app, workspaceId, tagIds)) return { error: "Tag not found", code: "TAG_INVALID" };
   const now = new Date().toISOString();
   app.db.prepare(`INSERT INTO expenses
-    (workspace_id,id,amount_minor,currency,category_id,occurred_at,note,version,created_at,updated_at)
-    VALUES (?,?,?,?,?,?,?,1,?,?)`)
+    (workspace_id,id,amount_minor,currency,category_id,occurred_at,note,version,created_at,updated_at,source_transaction_id)
+    VALUES (?,?,?,?,?,?,?,1,?,?,?)`)
     .run(workspaceId, input.id, input.amountMinor, input.currency, input.categoryId,
-      new Date(input.occurredAt).toISOString(), normalizedNote(input.note), now, now);
+      new Date(input.occurredAt).toISOString(), normalizedNote(input.note), now, now, sourceTransactionId);
   if (tagIds.length) replaceTags(app, workspaceId, input.id, tagIds);
   return { status: "created", expense: expenseJson(readExpense(app, workspaceId, input.id)!) };
 }
@@ -211,6 +228,93 @@ export function includeExpense(app: FastifyInstance, workspaceId: string, id: st
   app.db.prepare(`UPDATE expenses SET voided_at=NULL,void_reason=NULL,updated_at=?,version=version+1
     WHERE workspace_id=? AND id=? AND version=?`).run(new Date().toISOString(), workspaceId, id, version);
   return { expense: expenseJson(readExpense(app, workspaceId, id)!) };
+}
+
+/*
+ * Разделение расхода. Части заменяют собой исходную запись: первая переписывает её саму,
+ * остальные становятся новыми расходами того же дня, валюты и происхождения. Сумма частей
+ * обязана совпасть с исходной — иначе это уже правка суммы, а не деление. Часть без
+ * `categoryId` остаётся в категории исходной записи.
+ */
+export function parseSplitParts(value: unknown, totalMinor: number, defaultCategoryId: string): { parts: ExpenseSplitPart[] } | { error: string; code: string } {
+  if (!Array.isArray(value) || value.length < 2) return { error: "parts must list at least two parts", code: "VALIDATION" };
+  if (value.length > MAX_EXPENSE_PARTS) return { error: `parts must list at most ${MAX_EXPENSE_PARTS} parts`, code: "VALIDATION" };
+  const parts: ExpenseSplitPart[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object") return { error: "each part must be an object", code: "VALIDATION" };
+    const part = item as Record<string, unknown>;
+    if (!Number.isSafeInteger(part.amountMinor) || (part.amountMinor as number) <= 0) {
+      return { error: "each part needs a positive amountMinor", code: "VALIDATION" };
+    }
+    if (part.categoryId !== undefined && (typeof part.categoryId !== "string" || !part.categoryId)) {
+      return { error: "categoryId must be a category of the workspace", code: "VALIDATION" };
+    }
+    if (part.note !== undefined && part.note !== null && (typeof part.note !== "string" || part.note.length > 500)) {
+      return { error: "note must be at most 500 characters", code: "VALIDATION" };
+    }
+    if (part.tagIds !== undefined && !validTagIds(part.tagIds)) {
+      return { error: `tagIds must be a unique array of at most ${MAX_EXPENSE_TAGS} tag ids`, code: "VALIDATION" };
+    }
+    parts.push({
+      amountMinor: part.amountMinor as number,
+      categoryId: (part.categoryId as string | undefined) ?? defaultCategoryId,
+      ...(part.note === undefined ? {} : { note: part.note as string | null }),
+      ...(part.tagIds === undefined ? {} : { tagIds: part.tagIds as string[] })
+    });
+  }
+  const sum = parts.reduce((total, part) => total + part.amountMinor, 0);
+  if (sum !== totalMinor) return { error: "parts must add up to the expense amount", code: "SPLIT_MISMATCH" };
+  return { parts };
+}
+
+/* Брошено внутри транзакции, чтобы неудачная часть откатила уже применённые. */
+export class ExpenseSplitError extends Error {
+  constructor(readonly change: ExpenseChange) { super(change.error ?? "split failed"); }
+}
+
+export function splitExpense(
+  app: FastifyInstance,
+  workspaceId: string,
+  id: string,
+  version: number,
+  rawParts: unknown
+): { expenses: ExpenseJson[] } {
+  const current = readExpense(app, workspaceId, id);
+  if (!current || current.deleted_at) throw new ExpenseSplitError({ error: "Expense not found", code: "NOT_FOUND" });
+  if (current.version !== version) {
+    throw new ExpenseSplitError({ error: "Expense was changed", code: "VERSION_CONFLICT", current: expenseJson(current) });
+  }
+  if (current.voided_at) {
+    throw new ExpenseSplitError({ error: "A declined expense cannot be split", code: "EXPENSE_VOIDED", current: expenseJson(current) });
+  }
+  // Части спрашивают только суммы: категория, заметка и теги наследуются, а меняются потом на самой записи.
+  const parsed = parseSplitParts(rawParts, current.amount_minor, current.category_id);
+  if ("error" in parsed) throw new ExpenseSplitError(parsed);
+  const inheritedTags = parseTagIds(current.tag_ids);
+  const [first, ...rest] = parsed.parts;
+  const head = updateExpense(app, workspaceId, id, {
+    version,
+    amountMinor: first!.amountMinor,
+    categoryId: first!.categoryId,
+    note: first!.note === undefined ? current.note : first!.note,
+    tagIds: first!.tagIds ?? inheritedTags
+  });
+  if (head.error || !head.expense) throw new ExpenseSplitError(head);
+  const expenses = [head.expense];
+  for (const part of rest) {
+    const created = createExpense(app, workspaceId, {
+      id: randomUUID(),
+      amountMinor: part.amountMinor,
+      currency: current.currency,
+      categoryId: part.categoryId,
+      occurredAt: current.occurred_at,
+      note: part.note === undefined ? current.note : part.note,
+      tagIds: part.tagIds ?? inheritedTags
+    }, current.source_transaction_id);
+    if ("error" in created) throw new ExpenseSplitError(created);
+    expenses.push(created.expense);
+  }
+  return { expenses };
 }
 
 function sendResult(reply: FastifyReply, result: ExpenseChange) {
@@ -298,6 +402,23 @@ export async function registerExpenseRoutes(app: FastifyInstance): Promise<void>
       return { member: true as const, result: includeExpense(app, workspaceId, (request.params as { id: string }).id, version!) };
     })();
     return outcome.member ? sendResult(reply, outcome.result) : sendWorkspaceNotFound(reply);
+  });
+
+  app.post(`${prefix}/:id/split`, { preHandler: [app.requireWorkspaceMember, requireMutation], onSend: noStore }, async (request, reply) => {
+    if (rejectsWorkspaceId(request.body)) return reply.code(400).send(jsonError("VALIDATION", "workspaceId is defined by the route"));
+    const { workspaceId, userId } = workspaceContext(request);
+    const body = (request.body ?? {}) as { version?: unknown; parts?: unknown };
+    if (!Number.isInteger(body.version)) return reply.code(400).send(jsonError("VALIDATION", "version is required"));
+    try {
+      const outcome = app.db.transaction(() => {
+        if (!hasWorkspaceMembership(app, workspaceId, userId)) return { member: false as const };
+        return { member: true as const, result: splitExpense(app, workspaceId, (request.params as { id: string }).id, body.version as number, body.parts) };
+      })();
+      return outcome.member ? reply.send(outcome.result) : sendWorkspaceNotFound(reply);
+    } catch (error) {
+      if (error instanceof ExpenseSplitError) return sendResult(reply, error.change);
+      throw error;
+    }
   });
 
   app.delete(`${prefix}/:id`, { preHandler: [app.requireWorkspaceMember, requireMutation], onSend: noStore }, async (request, reply) => {
