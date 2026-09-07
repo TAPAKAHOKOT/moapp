@@ -103,6 +103,15 @@ test("a split is refused unless the parts add up to the untouched expense", asyn
   assert.equal(stale.json().error.code, "VERSION_CONFLICT");
   assert.equal(stale.json().error.details.current.amountMinor, 100000);
 
+  // Пять частей — предел (MAX_EXPENSE_PARTS), и клиентский шит держит ровно этот же.
+  const tooMany = await api("POST", `/expenses/${original.id}/split`, {
+    version: original.version,
+    parts: Array.from({ length: 6 }, () => ({ amountMinor: 100000 / 6, categoryId: "products" }))
+  });
+  assert.equal(tooMany.statusCode, 400, tooMany.body);
+  assert.equal(tooMany.json().error.code, "VALIDATION");
+  assert.match(tooMany.json().error.message, /at most 5 parts/);
+
   const missingCategory = await api("POST", `/expenses/${original.id}/split`, {
     version: original.version, parts: [{ amountMinor: 60000, categoryId: "products" }, { amountMinor: 40000, categoryId: "nope" }]
   });

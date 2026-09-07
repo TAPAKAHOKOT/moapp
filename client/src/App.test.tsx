@@ -911,6 +911,33 @@ describe('splitting one payment into parts', () => {
     expect(onSubmit).toHaveBeenCalledWith([90_000, 20_000, 10_000])
   })
 
+  // Пять частей — предел: кнопка остаётся на месте выключенной, а не исчезает вместе с рядом.
+  it('adds one part per tap and stops at five without losing the button', () => {
+    render(<SplitSheet totalMinor={120_000} currency="RSD" currencies={currencies} onClose={vi.fn()} onSubmit={vi.fn()}/>)
+    const sheet = screen.getByRole('dialog', { name: /^Разделить .+ RSD$/ })
+    const more = () => within(sheet).getByRole('button', { name: 'Ещё часть' })
+    const parts = () => within(sheet).getAllByRole('listitem').length
+    expect(parts()).toBe(2)
+
+    // Два нажатия в одном такте React добавляют ровно две части, а не одну и не три.
+    act(() => { more().click(); more().click() })
+    expect(parts()).toBe(4)
+
+    fireEvent.click(more())
+    expect(parts()).toBe(5)
+    expect(more().hasAttribute('disabled')).toBe(true)
+    // На пределе даже пачка нажатий не добавляет шестую: предел считается внутри обновления.
+    act(() => { more().click(); more().click() })
+    expect(parts()).toBe(5)
+
+    // Нулевой остаток тоже выключает кнопку, а не убирает её.
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Убрать часть 1' }))
+    expect(parts()).toBe(4)
+    fireEvent.change(within(sheet).getByLabelText('Сумма части 1'), { target: { value: '1200' } })
+    expect(sheet.textContent).toContain('На последнюю часть ничего не осталось')
+    expect(more().hasAttribute('disabled')).toBe(true)
+  })
+
   // Быстрый двойной тап по крестику уносил соседнюю часть: шит съезжал вниз, а строки — вверх.
   it('takes out one part per tap however fast the cross is tapped', () => {
     vi.useFakeTimers()

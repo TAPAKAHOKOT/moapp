@@ -2218,6 +2218,11 @@ button.settings-row:disabled .settings-row-value {
   font-weight: 700;
 }
 
+/* На пределе частей и на нулевом остатке кнопка остаётся на месте, но перестаёт звать нажать. */
+.split-add:disabled {
+  color: var(--text-tertiary);
+}
+
 .split-hint {
   margin: 6px 0 0;
   color: var(--muted);
