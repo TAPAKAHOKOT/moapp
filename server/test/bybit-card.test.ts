@@ -349,6 +349,10 @@ test("a payment splits into ordinary queue rows and can be put back together", a
   const busy = await post(`${parts[1]!.id}/unsplit`, {});
   assert.equal(busy.statusCode, 409, busy.body);
   assert.equal(busy.json().error.code, "SPLIT_IN_USE", "a recorded part must be undone before the payment is whole again");
+  assert.deepEqual((busy.json().error.details.recorded as Array<{ splitIndex: number; splitCount: number; amountMinor: number; currency: string; expenses: Array<{ id: string; version: number; categoryId: string }> }>)
+    .map((part) => [part.splitIndex, part.splitCount, part.amountMinor, part.currency, part.expenses.map((expense) => [expense.id, expense.version, expense.categoryId])]),
+    [[1, 2, 100000, "RSD", [[classified.json().expense.id, classified.json().expense.version, "products"]]]],
+    "the refusal names the recorded parts so the screen can offer to remove them");
 
   const undone = await post(`${parts[0]!.id}/undo`, { expenses: [{ id: classified.json().expense.id, version: classified.json().expense.version }] });
   assert.equal(undone.statusCode, 200, undone.body);
@@ -360,6 +364,40 @@ test("a payment splits into ordinary queue rows and can be put back together", a
   assert.equal(merged.json().pendingCount, 2);
   assert.equal((app.db.prepare("SELECT count(*) count FROM bybit_card_transactions WHERE split_of_id IS NOT NULL").get() as { count: number }).count, 0,
     "the parts are gone once the payment is whole again");
+});
+
+/* «Собрать части» умеет убрать записанные части сразу, но только по названным версиям расходов. */
+test("collecting the parts removes the already recorded ones when their expenses are named", async () => {
+  const wolt = (app.db.prepare(`SELECT id FROM bybit_card_transactions
+    WHERE workspace_id=? AND merchant_name='WOLT' AND split_of_id IS NULL`).get(workspaceId) as { id: string }).id;
+  const post = (path: string, payload: Record<string, unknown>) => app.inject({
+    method: "POST", url: `/api/workspaces/${workspaceId}/integrations/bybit-card/transactions/${path}`,
+    headers: { ...origin, ...contextHeaders() }, payload
+  });
+  const split = await post(`${wolt}/split`, { amounts: [23400, 100000] });
+  assert.equal(split.statusCode, 200, split.body);
+  const parts = split.json().transactions as Array<{ id: string }>;
+  const classified = await post(`${parts[0]!.id}/classify`, { categoryId: "products", comment: "" });
+  assert.equal(classified.statusCode, 200, classified.body);
+  const expense = classified.json().expense as { id: string; version: number };
+
+  const stale = await post(`${parts[1]!.id}/unsplit`, { expenses: [{ id: expense.id, version: expense.version + 1 }] });
+  assert.equal(stale.statusCode, 409, stale.body);
+  assert.equal(stale.json().error.code, "SPLIT_IN_USE", "a version that does not match is asked about again, not applied");
+  const stillThere = await app.inject({ method: "GET", url: `/api/workspaces/${workspaceId}/expenses/${expense.id}`, headers: contextHeaders() });
+  assert.equal(stillThere.statusCode, 200, "the refused attempt leaves the recorded part untouched");
+  assert.equal(stillThere.json().deletedAt, null);
+
+  const merged = await post(`${parts[1]!.id}/unsplit`, { expenses: [{ id: expense.id, version: expense.version }] });
+  assert.equal(merged.statusCode, 200, merged.body);
+  assert.deepEqual(merged.json().undoneExpenseIds, [expense.id], "the removed records come back so the history can drop them");
+  assert.equal(merged.json().transaction.id, wolt);
+  assert.equal(merged.json().transaction.amountMinor, 123400);
+  assert.equal(merged.json().transaction.reviewStatus, "pending");
+  assert.equal(merged.json().pendingCount, 2);
+  assert.equal((app.db.prepare("SELECT count(*) count FROM bybit_card_transactions WHERE split_of_id IS NOT NULL").get() as { count: number }).count, 0);
+  const gone = await app.inject({ method: "GET", url: `/api/workspaces/${workspaceId}/expenses/${expense.id}`, headers: contextHeaders() });
+  assert.ok(gone.statusCode === 404 || gone.json().deletedAt, "the part's expense is no longer in the history");
 });
 
 /* Незакрытая авторизация могла быть разделена до расчёта: если сумма изменилась, деление распускается само. */

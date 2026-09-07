@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { WorkspaceApiError as ApiError, classifyBybitCardTransaction, ignoreBybitCardTransaction, listBybitCardTransactions, splitBybitCardTransaction, undoBybitCardTransaction, unsplitBybitCardTransaction } from '../workspace-api'
+import { WorkspaceApiError as ApiError, classifyBybitCardTransaction, ignoreBybitCardTransaction, listBybitCardTransactions, recordedSplitParts, splitBybitCardTransaction, undoBybitCardTransaction, unsplitBybitCardTransaction, type RecordedSplitPart } from '../workspace-api'
 import type { BybitCardStatus, BybitCardTransaction, Category, Currency, Expense, Tag } from '../types'
 import { Toast, tap, useConfirm, useDialog, useToast } from '../ui'
 import { amountNumber, amountSize, pluralRu } from '../format'
@@ -72,16 +72,41 @@ export function BybitReviewView({ workspaceId, categories, currencies, tags=[], 
     catch(reason){setSplitError(reason instanceof ApiError?reason.message:'Не удалось разделить платёж')}
     finally{setBusy(false)}
   }
-  // «Собрать обратно» возвращает платёж целиком: части исчезают вместе со своими черновиками.
-  const unsplit=async()=>{
+  /*
+   * «Собрать части» возвращает платёж целиком: части исчезают вместе со своими черновиками.
+   * Записанная часть не пропадает молча — шит снизу называет её и предлагает удалить запись тут же,
+   * а повторный запрос несёт расходы с версиями, чтобы правку с другого устройства не снесло вслепую.
+   */
+  const unsplit=async(expenses:Array<{id:string;version:number}>=[])=>{
     if(!current||busy||!online)return;const transaction=current;setBusy(true);setError('')
+    let recorded:RecordedSplitPart[]=[]
     try{
-      const result=await unsplitBybitCardTransaction(workspaceId,transaction.id)
+      const result=await unsplitBybitCardTransaction(workspaceId,transaction.id,expenses)
+      if(result.undoneExpenseIds.length)onExpensesUndo(result.undoneExpenseIds)
       setItems((value)=>[result.transaction,...value.filter((item)=>!result.removedTransactionIds.includes(item.id))])
       resetDraft();onStatus({pendingCount:result.pendingCount});tap(6)
+      if(result.undoneExpenseIds.length)notify(`Платёж собран, ${result.undoneExpenseIds.length>1?'записи частей удалены':'запись части удалена'}`)
     }
-    catch(reason){setError(reason instanceof ApiError?reason.message:'Не удалось собрать платёж обратно')}
+    catch(reason){
+      recorded=recordedSplitParts(reason)
+      if(!recorded.length)setError(reason instanceof ApiError?reason.message:'Не удалось собрать части платежа')
+    }
     finally{setBusy(false)}
+    if(recorded.length)await askRecorded(recorded)
+  }
+  const askRecorded=async(recorded:RecordedSplitPart[])=>{
+    const claims=recorded.flatMap((part)=>part.expenses.map((expense)=>({id:expense.id,version:expense.version})))
+    const listing=recorded.flatMap((part)=>part.expenses.map((expense)=>{
+      const category=categories.find((item)=>item.id===expense.categoryId)
+      return `часть ${part.splitIndex} — ${amountNumber(expense.amountMinor,expense.currency,currencies)} ${expense.currency}${category?`, ${category.name}`:''}`
+    })).join('; ')
+    const many=claims.length>1
+    if(await confirm({
+      title:many?'Части уже записаны':'Часть уже записана',
+      message:`В истории ${many?'лежат':'лежит'}: ${listing}. Чтобы собрать платёж целиком, ${many?'эти записи':'эту запись'} придётся удалить.`,
+      confirmLabel:many?'Удалить записи и собрать':'Удалить запись и собрать',
+      danger:true
+    }))await unsplit(claims)
   }
   const ignore=async()=>{
     if(!current||busy||!online||!await confirm({title:'Это не расход?',message:'Операция исчезнет из очереди и не попадёт в историю. Сразу после этого её можно вернуть.',confirmLabel:'Это не расход',danger:true}))return
@@ -111,7 +136,7 @@ export function BybitReviewView({ workspaceId, categories, currencies, tags=[], 
       {/* Одним платежом закрывают сразу две категории. У части первая кнопка предлагает обратное действие:
           собрать платёж целиком, если разделили не так. Делить часть ещё раз нельзя — сначала собрать. */}
       <div className="review-secondary three">{current.splitIndex
-        ?<button type="button" disabled={busy||!online} onClick={()=>void unsplit()} aria-label="Собрать платёж обратно">Собрать</button>
+        ?<button type="button" disabled={busy||!online} onClick={()=>void unsplit()}>Собрать части</button>
         :<button type="button" disabled={busy||!online} onClick={()=>{tap(6);setSplitError('');setSplitSheet(true)}}>Разделить</button>}<button type="button" disabled={busy||items.length<2} onClick={skip}>Пропустить</button><button type="button" disabled={busy||!online} onClick={()=>void ignore()}>Это не расход</button></div>
       {categorySheet&&<CategorySheet categories={additional} selectedId={selectedCategoryId??undefined} onClose={()=>setCategorySheet(false)} onPick={(category)=>{setSelectedCategoryId(category.id);setCategorySheet(false)}}/>}
       {noteSheet&&<NoteSheet value={comment} onClose={()=>setNoteSheet(false)} onSave={(note)=>{setComment(note);setNoteSheet(false)}}/>}

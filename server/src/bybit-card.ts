@@ -392,6 +392,28 @@ function linkedExpenses(app: FastifyInstance, workspaceId: string, transactionId
   return rows.map(expenseJson);
 }
 
+/* Заявка на отмену: расход называют вместе с версией, иначе правку с другого устройства снесло бы молча. */
+function expenseClaims(body: { expenseId?: unknown; expenseVersion?: unknown; expenses?: unknown }): Array<{ id: string; version: number }> | null {
+  const requested = Array.isArray(body.expenses) ? body.expenses
+    : typeof body.expenseId === "string" ? [{ id: body.expenseId, version: body.expenseVersion }]
+    : [];
+  const valid = requested.every((item) => item && typeof item === "object"
+    && typeof (item as { id?: unknown }).id === "string" && Number.isInteger((item as { version?: unknown }).version));
+  return valid ? requested as Array<{ id: string; version: number }> : null;
+}
+
+/* Записанные части для ответа 409: экран говорит, что именно уйдёт из истории, если собирать платёж. */
+function recordedPartsJson(app: FastifyInstance, workspaceId: string, rows: TransactionRow[]) {
+  return rows.map((row) => ({
+    id: row.id,
+    splitIndex: row.split_index,
+    splitCount: row.split_count ?? rows.length,
+    amountMinor: row.amount_minor,
+    currency: row.currency,
+    expenses: linkedExpenses(app, workspaceId, row.id)
+  }));
+}
+
 function connectionStatus(app: FastifyInstance, workspaceId: string) {
   const row = app.db.prepare("SELECT * FROM bybit_card_connections WHERE workspace_id=?").get(workspaceId) as ConnectionRow | undefined;
   if (!row) return { connected: false as const, pendingCount: 0 };
@@ -692,25 +714,53 @@ export async function registerBybitCardRoutes(app: FastifyInstance, options: { f
     return { transactions: outcome.parts.map((part) => transactionJson(part)), pendingCount: connectionStatus(app, workspaceId).pendingCount };
   });
 
-  /* «Собрать обратно»: части исчезают, платёж возвращается в очередь целиком. Работает, пока ни одна часть не записана. */
+  /*
+   * «Собрать части»: части исчезают, платёж возвращается в очередь целиком.
+   * Записанные части не сносятся молча — без `expenses` ответ 409 перечисляет их вместе с расходами,
+   * чтобы экран мог спросить и повторить запрос уже с точными версиями.
+   */
   app.post(`${prefix}/transactions/:transactionId/unsplit`, { preHandler: [app.requireWorkspaceMember, mutation], onSend: noStore }, async (request, reply) => {
     const { workspaceId, userId } = workspaceContext(request);
     const transactionId = (request.params as { transactionId: string }).transactionId;
-    const outcome = app.db.transaction(() => {
+    const claimed = expenseClaims((request.body ?? {}) as { expenses?: unknown });
+    const run = app.db.transaction(() => {
       if (!hasWorkspaceMembership(app, workspaceId, userId)) return { kind: "missing" as const };
       const row = readTransaction(app, workspaceId, transactionId);
       if (!row) return { kind: "missing" as const };
       const parent = row.split_of_id ? readTransaction(app, workspaceId, row.split_of_id) : row;
       if (!parent || parent.review_status !== "split") return { kind: "missing" as const };
-      const removed = listParts(app, workspaceId, parent.id).map((part) => part.id);
-      if (!collapseSplit(app, workspaceId, parent.id, new Date().toISOString())) return { kind: "conflict" as const };
-      return { kind: "merged" as const, row: readTransaction(app, workspaceId, parent.id)!, removed };
-    })();
+      const parts = listParts(app, workspaceId, parent.id);
+      const removed = parts.map((part) => part.id);
+      const recorded = parts.filter((part) => part.review_status === "classified");
+      const undone: string[] = [];
+      if (recorded.length) {
+        const linked = recorded.flatMap((part) => linkedExpenses(app, workspaceId, part.id));
+        // Отмена только по названным версиям: расход, изменённый на другом устройстве, не удаляют вслепую.
+        const named = claimed !== null && claimed.length === linked.length
+          && linked.every((expense) => claimed.some((item) => item.id === expense.id && item.version === expense.version));
+        if (!named) return { kind: "conflict" as const, recorded: recordedPartsJson(app, workspaceId, recorded) };
+        for (const expense of linked) {
+          if (deleteExpense(app, workspaceId, expense.id, expense.version).error) throw new UndoConflict();
+          undone.push(expense.id);
+        }
+        app.db.prepare(`UPDATE bybit_card_transactions SET review_status='pending',expense_id=NULL,updated_at=?
+          WHERE workspace_id=? AND split_of_id=? AND review_status='classified'`)
+          .run(new Date().toISOString(), workspaceId, parent.id);
+      }
+      if (!collapseSplit(app, workspaceId, parent.id, new Date().toISOString())) throw new UndoConflict();
+      return { kind: "merged" as const, row: readTransaction(app, workspaceId, parent.id)!, removed, undone };
+    });
+    let outcome;
+    try { outcome = run(); }
+    catch (error) { if (error instanceof UndoConflict) outcome = { kind: "stale" as const }; else throw error; }
     if (outcome.kind === "missing") return fail(reply, 404, "NOT_FOUND", "Split payment not found");
-    if (outcome.kind === "conflict") return fail(reply, 409, "SPLIT_IN_USE", "A part of this payment is already recorded; undo it first");
+    if (outcome.kind === "stale") return fail(reply, 409, "UNDO_CONFLICT", "The recorded part was already changed and cannot be undone here");
+    if (outcome.kind === "conflict") {
+      return reply.code(409).send(jsonError("SPLIT_IN_USE", "A part of this payment is already recorded; undo it first", { recorded: outcome.recorded }));
+    }
     return {
       transaction: transactionJson(outcome.row), removedTransactionIds: outcome.removed,
-      pendingCount: connectionStatus(app, workspaceId).pendingCount
+      undoneExpenseIds: outcome.undone, pendingCount: connectionStatus(app, workspaceId).pendingCount
     };
   });
 
@@ -730,14 +780,7 @@ export async function registerBybitCardRoutes(app: FastifyInstance, options: { f
   app.post(`${prefix}/transactions/:transactionId/undo`, { preHandler: [app.requireWorkspaceMember, mutation], onSend: noStore }, async (request, reply) => {
     const { workspaceId, userId } = workspaceContext(request);
     const transactionId = (request.params as { transactionId: string }).transactionId;
-    const body = (request.body ?? {}) as { expenseId?: unknown; expenseVersion?: unknown; expenses?: unknown };
-    const requested = Array.isArray(body.expenses) ? body.expenses
-      : typeof body.expenseId === "string" ? [{ id: body.expenseId, version: body.expenseVersion }]
-      : [];
-    const claimed = requested.every((item) => item && typeof item === "object"
-      && typeof (item as { id?: unknown }).id === "string" && Number.isInteger((item as { version?: unknown }).version))
-      ? requested as Array<{ id: string; version: number }>
-      : null;
+    const claimed = expenseClaims((request.body ?? {}) as { expenseId?: unknown; expenseVersion?: unknown; expenses?: unknown });
     const outcome = app.db.transaction(() => {
       if (!hasWorkspaceMembership(app, workspaceId, userId)) return { kind: "missing" as const };
       const row = readTransaction(app, workspaceId, transactionId);
