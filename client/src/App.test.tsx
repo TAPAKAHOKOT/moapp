@@ -910,6 +910,37 @@ describe('splitting one payment into parts', () => {
     fireEvent.click(within(sheet).getByRole('button', { name: 'Разделить на 3 части' }))
     expect(onSubmit).toHaveBeenCalledWith([90_000, 20_000, 10_000])
   })
+
+  // Быстрый двойной тап по крестику уносил соседнюю часть: шит съезжал вниз, а строки — вверх.
+  it('takes out one part per tap however fast the cross is tapped', () => {
+    vi.useFakeTimers()
+    try {
+      const onSubmit = vi.fn()
+      const onClose = vi.fn()
+      render(<SplitSheet totalMinor={120_000} currency="RSD" currencies={currencies} onClose={onClose} onSubmit={onSubmit}/>)
+      const sheet = screen.getByRole('dialog', { name: /^Разделить .+ RSD$/ })
+      const amounts = () => within(sheet).getAllByRole('textbox').map((input) => (input as HTMLInputElement).value)
+      for (const _ of [1, 2]) fireEvent.click(within(sheet).getByRole('button', { name: 'Ещё часть' }))
+      for (const [index, value] of ['100', '200', '300'].entries()) {
+        fireEvent.change(within(sheet).getByLabelText(`Сумма части ${index + 1}`), { target: { value } })
+      }
+      expect(amounts()).toEqual(['100', '200', '300'])
+
+      // Второе нажатие двойного тапа приходит на то же место экрана, куда уже подъехал сосед.
+      const [first, neighbour] = within(sheet).getAllByRole('button', { name: /^Убрать часть/ })
+      fireEvent.click(first!)
+      fireEvent.click(neighbour!)
+      expect(amounts()).toEqual(['200', '300'])
+      expect(onClose).not.toHaveBeenCalled()
+
+      // Когда список осел, крестик снова слушается.
+      act(() => { vi.advanceTimersByTime(500) })
+      fireEvent.click(within(sheet).getByRole('button', { name: 'Убрать часть 1' }))
+      expect(amounts()).toEqual(['300'])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })
 
 describe('settings identity transitions', () => {
