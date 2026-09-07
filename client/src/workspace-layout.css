@@ -2135,9 +2135,6 @@ button.settings-row:disabled .settings-row-value {
 
 .split-rows {
   display: grid;
-  /* Убранная строка держит высоту списка (шит не должен ездить под пальцем), поэтому
-     оставшееся место копится снизу, а не растягивает оставшиеся строки. */
-  align-content: start;
   gap: 8px;
   margin: 4px 0 0;
   padding: 0;

@@ -49,40 +49,37 @@ export function SplitSheet({ totalMinor, currency, currencies, busy = false, err
 }) {
   const [rows, setRows] = useState<Array<{ id: number; amount: string }>>(() => [{ id: 0, amount: '' }, { id: 1, amount: '' }])
   const nextId = useRef(2)
-  const rowsRef = useRef<HTMLOListElement>(null)
   /*
-   * Шит прижат к низу экрана, а строки идут сверху, поэтому убранная часть двигала всё сразу:
-   * шит уезжал вниз, оставшиеся строки — вверх. Второе нажатие приходило уже по соседнему крестику
-   * или вовсе по «Закрыть», унося лишнюю часть или все набранные суммы. Поэтому список больше не
-   * сжимается сразу: убранная строка оставляет за собой пустое место, и шит стоит там, где стоял,
-   * пока палец не займётся чем-то другим — новой частью или суммой. А повторное нажатие в первые
-   * мгновения не считается вовсе: это ещё тот же тап, а не выбор второй части.
+   * Шит прижат к низу экрана, а строки идут сверху, поэтому убранная часть двигает всё сразу:
+   * шит съезжает вниз, оставшиеся строки — вверх (растёт он так же, только наоборот). Значит
+   * второе нажатие быстрого двойного тапа приходит уже не туда, куда целился палец: на крестик
+   * соседа, на «Ещё часть» или прямо на «Закрыть» — и уносит лишнюю часть или все набранные суммы.
+   * Поэтому сразу после убранной строки шит эти мгновения ничего не слушает: пусть человек сначала
+   * увидит, что получилось. Само окно при этом сужается и растягивается одинаково, без задержек.
    */
-  const [heldHeight, setHeldHeight] = useState(0)
-  const tapped = useRef(false)
+  const settling = useRef(false)
   const forget = useRef<ReturnType<typeof setTimeout>>(undefined)
   useEffect(() => () => clearTimeout(forget.current), [])
   const dialogRef = useDialog(onClose, !busy)
   const decimals = currencies.find((item) => item.code === currency)?.decimals ?? 2
   const draft = splitDraft(rows.map((row) => row.amount), totalMinor, currency, currencies)
-  // Первая же цифра означает, что палец ушёл с крестиков: список можно отпустить и сжать.
-  const change = (id: number, amount: string) => { setHeldHeight(0); setRows((value) => value.map((row) => (row.id === id ? { ...row, amount } : row))) }
-  const addRow = () => { tap(6); setHeldHeight(0); setRows((value) => [...value.slice(0, -1), { id: nextId.current++, amount: '' }, value[value.length - 1]!]) }
+  const change = (id: number, amount: string) => setRows((value) => value.map((row) => (row.id === id ? { ...row, amount } : row)))
+  const addRow = () => { if (settling.current) return; tap(6); setRows((value) => [...value.slice(0, -1), { id: nextId.current++, amount: '' }, value[value.length - 1]!]) }
   // Строка убирается по своему номеру, а не по месту в списке: перепутать соседа уже нечем.
   const removeRow = (id: number) => {
-    if (tapped.current) return
-    tapped.current = true
+    if (settling.current) return
+    settling.current = true
     clearTimeout(forget.current)
-    forget.current = setTimeout(() => { tapped.current = false }, REPEAT_TAP_MS)
-    setHeldHeight(rowsRef.current?.offsetHeight ?? 0)
+    forget.current = setTimeout(() => { settling.current = false }, REPEAT_TAP_MS)
     tap(5)
     setRows((value) => (value.length > 2 ? value.filter((row) => row.id !== id) : value))
   }
+  const close = () => { if (!settling.current) onClose() }
   // Подсказка говорит только о беде: остаток в строке и так виден, объяснять его словами нечего.
   const hint = draft.remainder < 0 ? `Части больше платежа на ${amountNumber(-draft.remainder, currency, currencies)} ${currency}`
     : draft.remainder === 0 ? 'На последнюю часть ничего не осталось'
     : ''
-  return <div className="sheet-backdrop" onMouseDown={() => { if (!busy) onClose() }}>
+  return <div className="sheet-backdrop" onMouseDown={() => { if (!busy) close() }}>
     <form
       ref={dialogRef as React.Ref<HTMLFormElement>}
       className="bottom-sheet editor split-sheet"
@@ -96,9 +93,9 @@ export function SplitSheet({ totalMinor, currency, currencies, busy = false, err
       <div className="sheet-handle"/>
       <div className="sheet-title">
         <h2 id="split-title">Разделить {amountNumber(totalMinor, currency, currencies)} {currency}</h2>
-        <button type="button" className="icon-button" disabled={busy} onClick={onClose} aria-label="Закрыть">×</button>
+        <button type="button" className="icon-button" disabled={busy} onClick={close} aria-label="Закрыть">×</button>
       </div>
-      <ol className="split-rows" ref={rowsRef} style={heldHeight ? { minHeight: heldHeight } : undefined}>
+      <ol className="split-rows">
         {rows.map((row, index) => {
           const last = index === rows.length - 1
           return <li key={row.id} className={last ? 'split-row remainder' : 'split-row'}>

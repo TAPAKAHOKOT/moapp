@@ -933,10 +933,17 @@ describe('splitting one payment into parts', () => {
       expect(amounts()).toEqual(['200', '300'])
       expect(onClose).not.toHaveBeenCalled()
 
-      // Когда список осел, крестик снова слушается.
+      // «Закрыть» в эти же мгновения не слушается: на его месте только что был крестик.
+      fireEvent.click(within(sheet).getByRole('button', { name: 'Закрыть' }))
+      expect(onClose).not.toHaveBeenCalled()
+
+      // Когда список осел, и крестик, и «Закрыть» снова слушаются.
       act(() => { vi.advanceTimersByTime(500) })
       fireEvent.click(within(sheet).getByRole('button', { name: 'Убрать часть 1' }))
       expect(amounts()).toEqual(['300'])
+      act(() => { vi.advanceTimersByTime(500) })
+      fireEvent.click(within(sheet).getByRole('button', { name: 'Закрыть' }))
+      expect(onClose).toHaveBeenCalled()
     } finally {
       vi.useRealTimers()
     }
