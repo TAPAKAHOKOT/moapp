@@ -51,9 +51,9 @@ export function SplitSheet({ totalMinor, currency, currencies, busy = false, err
   const change = (index: number, amount: string) => setAmounts((value) => value.map((item, position) => (position === index ? amount : item)))
   const addRow = () => { tap(6); setAmounts((value) => [...value.slice(0, -1), '', value[value.length - 1]!]) }
   const removeRow = (index: number) => { tap(5); setAmounts((value) => value.filter((_, position) => position !== index)) }
+  // Подсказка говорит только о беде: остаток в строке и так виден, объяснять его словами нечего.
   const hint = draft.remainder < 0 ? `Части больше платежа на ${amountNumber(-draft.remainder, currency, currencies)} ${currency}`
     : draft.remainder === 0 ? 'На последнюю часть ничего не осталось'
-    : !draft.valid ? 'Укажите суммы частей — последняя посчитается сама'
     : ''
   return <div className="sheet-backdrop" onMouseDown={() => { if (!busy) onClose() }}>
     <form
