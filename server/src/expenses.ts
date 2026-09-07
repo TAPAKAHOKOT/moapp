@@ -57,7 +57,7 @@ type ExpenseChange = { expense?: ExpenseJson; error?: string; code?: string; cur
 export const MAX_EXPENSE_TAGS = 20;
 
 /* Один платёж делится на несколько расходов; больше десяти частей — это уже не «разделить», а отдельные записи. */
-export const MAX_EXPENSE_PARTS = 10;
+export const MAX_EXPENSE_PARTS = 5;
 
 export type ExpenseSplitPart = {
   amountMinor: number;
