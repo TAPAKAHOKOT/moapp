@@ -319,10 +319,21 @@ export function splitBybitCardTransaction(workspaceId: string, transactionId: st
   assertMutationsAllowed()
   return request<{ transactions: BybitCardTransaction[]; pendingCount: number }>(bybitCardPath(workspaceId, `/transactions/${encodeURIComponent(transactionId)}/split`), { method: 'POST', body: JSON.stringify({ amounts }), signal })
 }
-/** Собрать части обратно в один платёж; работает, пока ни одна из них не записана в историю. */
-export function unsplitBybitCardTransaction(workspaceId: string, transactionId: string, signal?: AbortSignal) {
+/**
+ * Собрать части обратно в один платёж. Пока ни одна не записана — просто собирает; записанные части
+ * сервер не сносит молча, а возвращает 409 SPLIT_IN_USE со списком: повтор с их расходами и версиями удаляет записи.
+ */
+export function unsplitBybitCardTransaction(workspaceId: string, transactionId: string, expenses: Array<{ id: string; version: number }> = [], signal?: AbortSignal) {
   assertMutationsAllowed()
-  return request<{ transaction: BybitCardTransaction; removedTransactionIds: string[]; pendingCount: number }>(bybitCardPath(workspaceId, `/transactions/${encodeURIComponent(transactionId)}/unsplit`), { method: 'POST', body: JSON.stringify({}), signal })
+  return request<{ transaction: BybitCardTransaction; removedTransactionIds: string[]; undoneExpenseIds: string[]; pendingCount: number }>(bybitCardPath(workspaceId, `/transactions/${encodeURIComponent(transactionId)}/unsplit`), { method: 'POST', body: JSON.stringify({ expenses }), signal })
+}
+
+export type RecordedSplitPart = { id: string; splitIndex: number; splitCount: number; amountMinor: number; currency: string; expenses: Expense[] }
+/** Части разделённого платежа, которые уже лежат в истории: их перечисляет отказ «Собрать части». */
+export function recordedSplitParts(error: unknown): RecordedSplitPart[] {
+  if (!(error instanceof WorkspaceApiError) || error.code !== 'SPLIT_IN_USE') return []
+  const recorded = (error.details as { recorded?: unknown } | undefined)?.recorded
+  return Array.isArray(recorded) ? recorded as RecordedSplitPart[] : []
 }
 export function ignoreBybitCardTransaction(workspaceId: string, transactionId: string, signal?: AbortSignal) {
   assertMutationsAllowed()

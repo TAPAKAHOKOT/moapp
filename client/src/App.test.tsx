@@ -784,18 +784,72 @@ describe('splitting one payment into parts', () => {
     const parts = [part('part-1', 80_000, 1), part('part-2', 40_000, 2)]
     vi.spyOn(workspaceApi, 'listBybitCardTransactions').mockResolvedValue({ transactions: parts, pendingCount: 2 })
     const unsplit = vi.spyOn(workspaceApi, 'unsplitBybitCardTransaction')
-      .mockResolvedValue({ transaction, removedTransactionIds: ['part-1', 'part-2'], pendingCount: 1 })
+      .mockResolvedValue({ transaction, removedTransactionIds: ['part-1', 'part-2'], undoneExpenseIds: [], pendingCount: 1 })
 
     render(<BybitReviewView workspaceId="workspace-a" categories={categories} currencies={currencies} online onExpenses={vi.fn()} onExpensesUndo={vi.fn()} onStatus={vi.fn()}/>)
     await screen.findByText('Часть 1 из 2')
     // У части предлагается обратное действие: делить её ещё раз нельзя.
     expect(screen.queryByRole('button', { name: 'Разделить' })).toBeNull()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Собрать платёж обратно' }))
-    await waitFor(() => expect(unsplit).toHaveBeenCalledWith('workspace-a', 'part-1'))
+    fireEvent.click(screen.getByRole('button', { name: 'Собрать части' }))
+    await waitFor(() => expect(unsplit).toHaveBeenCalledWith('workspace-a', 'part-1', []))
     await waitFor(() => expect(screen.queryByText(/Часть/)).toBeNull())
     expect(screen.getByLabelText('Сумма').textContent?.replace(/\s/g, ' ')).toBe('1 200,00')
     expect(screen.getByText(/В очереди · 1/)).not.toBeNull()
+  })
+
+  // Записанная часть не просто мешает собрать платёж: шит снизу называет её и удаляет запись по кнопке.
+  it('offers to drop the already recorded part before collecting the payment', async () => {
+    const parts = [part('part-1', 80_000, 1), part('part-2', 40_000, 2)]
+    const recorded = {
+      id: 'part-1', splitIndex: 1, splitCount: 2, amountMinor: 80_000, currency: 'RSD',
+      expenses: [{
+        id: 'expense-part-1', amountMinor: 80_000, currency: 'RSD', categoryId: 'products', note: null,
+        occurredAt: '2026-08-10T12:00:00.000Z', createdAt: '2026-08-10T12:00:00.000Z', updatedAt: '2026-08-10T12:00:00.000Z',
+        version: 2, deletedAt: null, tagIds: [],
+      }],
+    }
+    vi.spyOn(workspaceApi, 'listBybitCardTransactions').mockResolvedValue({ transactions: [parts[1]!], pendingCount: 1 })
+    const unsplit = vi.spyOn(workspaceApi, 'unsplitBybitCardTransaction')
+      .mockRejectedValueOnce(new workspaceApi.WorkspaceApiError(409, 'SPLIT_IN_USE', 'Одна из частей уже записана в историю.', { recorded: [recorded] }))
+      .mockResolvedValue({ transaction, removedTransactionIds: ['part-1', 'part-2'], undoneExpenseIds: ['expense-part-1'], pendingCount: 1 })
+    const onExpensesUndo = vi.fn()
+
+    render(<BybitReviewView workspaceId="workspace-a" categories={categories} currencies={currencies} online onExpenses={vi.fn()} onExpensesUndo={onExpensesUndo} onStatus={vi.fn()}/>)
+    await screen.findByText('Часть 2 из 2')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Собрать части' }))
+    const sheet = await screen.findByRole('alertdialog', { name: 'Часть уже записана' })
+    // Шит говорит, что именно уйдёт из истории: сумму, категорию и номер части.
+    expect(sheet.textContent).toContain('часть 1')
+    expect(sheet.textContent).toContain('800,00 RSD')
+    expect(sheet.textContent).toContain('Продукты')
+    // Пока не подтвердили — запись на месте.
+    expect(unsplit).toHaveBeenCalledTimes(1)
+
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Удалить запись и собрать' }))
+    await waitFor(() => expect(unsplit).toHaveBeenLastCalledWith('workspace-a', 'part-2', [{ id: 'expense-part-1', version: 2 }]))
+    await waitFor(() => expect(onExpensesUndo).toHaveBeenCalledWith(['expense-part-1']))
+    await waitFor(() => expect(screen.queryByText(/Часть/)).toBeNull())
+    expect(screen.getByText('Платёж собран, запись части удалена')).not.toBeNull()
+  })
+
+  it('keeps the recorded part when the sheet is dismissed', async () => {
+    const parts = [part('part-1', 80_000, 1), part('part-2', 40_000, 2)]
+    vi.spyOn(workspaceApi, 'listBybitCardTransactions').mockResolvedValue({ transactions: [parts[1]!], pendingCount: 1 })
+    const unsplit = vi.spyOn(workspaceApi, 'unsplitBybitCardTransaction')
+      .mockRejectedValue(new workspaceApi.WorkspaceApiError(409, 'SPLIT_IN_USE', 'Одна из частей уже записана в историю.', {
+        recorded: [{ id: 'part-1', splitIndex: 1, splitCount: 2, amountMinor: 80_000, currency: 'RSD', expenses: [] }],
+      }))
+
+    render(<BybitReviewView workspaceId="workspace-a" categories={categories} currencies={currencies} online onExpenses={vi.fn()} onExpensesUndo={vi.fn()} onStatus={vi.fn()}/>)
+    await screen.findByText('Часть 2 из 2')
+    fireEvent.click(screen.getByRole('button', { name: 'Собрать части' }))
+    const sheet = await screen.findByRole('alertdialog')
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Отмена' }))
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull())
+    expect(unsplit).toHaveBeenCalledTimes(1)
+    expect(screen.getByText('Часть 2 из 2')).not.toBeNull()
   })
 
   it('splits a saved expense, opens the new part and can put it back', async () => {
