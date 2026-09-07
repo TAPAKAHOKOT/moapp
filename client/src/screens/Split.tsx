@@ -7,10 +7,6 @@ import { tap, useDialog } from '../ui'
 // Столько же частей принимает сервер (MAX_EXPENSE_PARTS): дальше это уже отдельные записи, а не деление платежа.
 export const MAX_PARTS = 5
 
-// Второе нажатие в ту же точку в эти мгновения — продолжение того же тапа, а не выбор новой части.
-const REPEAT_TAP_MS = 400
-const REPEAT_TAP_PX = 28
-
 // Последняя часть всегда держит остаток: человек называет только те суммы, которые знает,
 // а сдача считается сама — так деление никогда не расходится с суммой платежа.
 export function splitDraft(amounts: string[], totalMinor: number, currency: string, currencies: Currency[]) {
@@ -50,44 +46,29 @@ export function SplitSheet({ totalMinor, currency, currencies, busy = false, err
 }) {
   const [rows, setRows] = useState<Array<{ id: number; amount: string }>>(() => [{ id: 0, amount: '' }, { id: 1, amount: '' }])
   const nextId = useRef(2)
-  /*
-   * Шит прижат к низу экрана, поэтому убранная строка двигает его вниз, и на месте нажатого крестика
-   * оказывается «Закрыть», а на месте соседнего — крестик соседа. Второе нажатие быстрого двойного
-   * тапа уносило лишнюю часть или все набранные суммы. Поэтому глухой становится не вся шторка, а
-   * только та точка, куда уже нажали: тап по другому крестику слушается сразу, без задержки.
-   */
-  const lastRemoval = useRef({ x: 0, y: 0, at: 0 })
-  const sameSpotAgain = (event: { clientX: number; clientY: number }) => {
-    const { x, y, at } = lastRemoval.current
-    return Date.now() - at < REPEAT_TAP_MS && Math.hypot(event.clientX - x, event.clientY - y) < REPEAT_TAP_PX
-  }
   const dialogRef = useDialog(onClose, !busy)
   const decimals = currencies.find((item) => item.code === currency)?.decimals ?? 2
   const draft = splitDraft(rows.map((row) => row.amount), totalMinor, currency, currencies)
   const change = (id: number, amount: string) => setRows((value) => value.map((row) => (row.id === id ? { ...row, amount } : row)))
   /*
-   * Каждое нажатие добавляет ровно одну часть: «Ещё часть» стоит на месте и ничего не подменяет.
-   * Предел считается внутри самого обновления, а не по отрисованному списку: два нажатия подряд
-   * попадают в один такт React и оба видели бы старую длину.
+   * Каждое нажатие — ровно одна часть, как бы быстро ни нажимали. Оба счёта решает само обновление,
+   * а не отрисованный список: пачка нажатий попадает в один такт React, и все они видели бы старую
+   * длину. Строка при этом называется своим номером, а не местом в списке, поэтому два тапа по
+   * разным крестикам убирают именно свои части, даже если пришли одновременно.
    */
   const addRow = () => {
-    if (draft.remainder <= 0) return
     tap(6)
     setRows((value) => (value.length >= MAX_PARTS ? value : [...value.slice(0, -1), { id: nextId.current++, amount: '' }, value[value.length - 1]!]))
   }
-  // Строка убирается по своему номеру, а не по месту в списке: перепутать соседа уже нечем.
-  const removeRow = (id: number, event: { clientX: number; clientY: number }) => {
-    if (sameSpotAgain(event)) return
-    lastRemoval.current = { x: event.clientX, y: event.clientY, at: Date.now() }
+  const removeRow = (id: number) => {
     tap(5)
     setRows((value) => (value.length > 2 ? value.filter((row) => row.id !== id) : value))
   }
-  const close = (event: { clientX: number; clientY: number }) => { if (!sameSpotAgain(event)) onClose() }
   // Подсказка говорит только о беде: остаток в строке и так виден, объяснять его словами нечего.
   const hint = draft.remainder < 0 ? `Части больше платежа на ${amountNumber(-draft.remainder, currency, currencies)} ${currency}`
     : draft.remainder === 0 ? 'На последнюю часть ничего не осталось'
     : ''
-  return <div className="sheet-backdrop" onMouseDown={(event) => { if (!busy) close(event) }}>
+  return <div className="sheet-backdrop" onMouseDown={() => { if (!busy) onClose() }}>
     <form
       ref={dialogRef as React.Ref<HTMLFormElement>}
       className="bottom-sheet editor split-sheet"
@@ -101,7 +82,7 @@ export function SplitSheet({ totalMinor, currency, currencies, busy = false, err
       <div className="sheet-handle"/>
       <div className="sheet-title">
         <h2 id="split-title">Разделить {amountNumber(totalMinor, currency, currencies)} {currency}</h2>
-        <button type="button" className="icon-button" disabled={busy} onClick={(event) => close(event)} aria-label="Закрыть">×</button>
+        <button type="button" className="icon-button" disabled={busy} onClick={onClose} aria-label="Закрыть">×</button>
       </div>
       <ol className="split-rows">
         {rows.map((row, index) => {
@@ -121,7 +102,7 @@ export function SplitSheet({ totalMinor, currency, currencies, busy = false, err
                   value={formatAmountInput(row.amount)}
                   onChange={(event) => change(row.id, sanitizeAmount(event.target.value, decimals))}
                 />}
-            {!last && rows.length > 2 && <button type="button" className="icon-button split-remove" disabled={busy} onClick={(event) => removeRow(row.id, event)} aria-label={`Убрать часть ${index + 1}`}>×</button>}
+            {!last && rows.length > 2 && <button type="button" className="icon-button split-remove" disabled={busy} onClick={() => removeRow(row.id)} aria-label={`Убрать часть ${index + 1}`}>×</button>}
           </li>
         })}
       </ol>
