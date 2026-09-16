@@ -488,6 +488,20 @@ describe('analytics legend', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Все категории' }))
     expect(legendRows()).toHaveLength(6)
   })
+
+  it('signs an unfolded expense with its tag, and falls back to the card statement name only without one', () => {
+    const now = new Date().toISOString()
+    const tags = [{ id: 'tag-youtube', name: 'ютуб', color: null, sortOrder: 0, createdAt: now, updatedAt: now, version: 1 }]
+    const expense = (id: string, note: string | null, tagIds?: string[]) =>
+      ({ id, amountMinor: 1_000, currency: 'RSD', categoryId: 'products', note, tagIds, occurredAt: now, createdAt: now, updatedAt: now, version: 1, deletedAt: null })
+    const expenses = [expense('tagged', 'GOOGLE *YouTubePremium', ['tag-youtube']), expense('untagged', 'CONTABO* HOLD ONLY')]
+    render(<AnalyticsView userId="analytics-user" workspaceId="analytics-workspace" bootstrap={expenseBootstrap({ tags, expenses })} theme="light" online={false}/>)
+
+    fireEvent.click(screen.getByRole('button', { name: /Продукты/ }))
+    expect(screen.getByText(/#ютуб/)).not.toBeNull()
+    expect(screen.queryByText(/YouTubePremium/)).toBeNull()
+    expect(screen.getByText(/CONTABO\* HOLD ONLY/)).not.toBeNull()
+  })
 })
 
 describe('analytics filters and fallback', () => {
