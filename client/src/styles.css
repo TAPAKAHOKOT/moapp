@@ -1004,11 +1004,12 @@ p {
   text-align: left;
 }
 
+/* Цвет берётся от самой плашки: в тёмной теме она светлая, и белая кнопка на ней пропадала. */
 .toast-undo button {
   border: 0;
   border-radius: 11px;
-  background: #ffffff26;
-  color: #fff;
+  background: color-mix(in srgb, currentColor 15%, transparent);
+  color: inherit;
   font-size: 11px;
   font-weight: 700;
   padding: 8px 12px;
@@ -1016,7 +1017,7 @@ p {
 }
 
 .toast-undo button:active {
-  background: #ffffff3d;
+  background: color-mix(in srgb, currentColor 24%, transparent);
 }
 
 .entry-view {
