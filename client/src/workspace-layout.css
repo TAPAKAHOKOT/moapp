@@ -2141,20 +2141,6 @@ button.settings-row:disabled .settings-row-value {
   color: var(--sage);
 }
 
-.entry-save .entry-split {
-  color: var(--sage);
-  white-space: nowrap;
-}
-
-.entry-save .entry-split:disabled {
-  color: var(--text-disabled);
-}
-
-/* Слой соседней записи неактивен целиком, но во время свайпа он должен выглядеть как живой. */
-.entry-lower-preview .entry-split:disabled {
-  color: var(--sage);
-}
-
 .split-rows {
   display: grid;
   gap: 8px;

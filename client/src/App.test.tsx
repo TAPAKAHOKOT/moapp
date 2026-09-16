@@ -867,44 +867,6 @@ describe('splitting one payment into parts', () => {
     expect(screen.getByText('Часть 2 из 2')).not.toBeNull()
   })
 
-  it('splits a saved expense, opens the new part and can put it back', async () => {
-    const expense = {
-      id: 'expense-a', amountMinor: 300_000, currency: 'RSD', categoryId: 'products', note: 'Maxi',
-      occurredAt: '2026-08-10T12:00:00.000Z', createdAt: '2026-08-10T12:00:00.000Z', updatedAt: '2026-08-10T12:00:00.000Z',
-      version: 3, deletedAt: null, tagIds: [],
-    }
-    const parts = [{ ...expense, amountMinor: 200_000, version: 4 }, { ...expense, id: 'expense-b', amountMinor: 100_000, version: 1 }]
-    const split = vi.spyOn(workspaceApi, 'splitExpense').mockResolvedValue({ expenses: parts })
-    const remove = vi.spyOn(workspaceApi, 'deleteExpense').mockResolvedValue(undefined)
-    const update = vi.spyOn(workspaceApi, 'updateExpense').mockResolvedValue({ ...expense, version: 5 })
-    const bootstrap = expenseBootstrap({ categories, currencies, expenses: [expense] })
-    const setBootstrap = vi.fn()
-    const setCurrentId = vi.fn()
-
-    render(<EntryView userId="user-a" workspaceId="workspace-a" workspace={bootstrap.workspace} bootstrap={bootstrap} setBootstrap={setBootstrap} currentId={expense.id} setCurrentId={setCurrentId} refreshPending={vi.fn()} onDraftDirtyChange={vi.fn()} active/>)
-
-    expect(screen.getByRole('button', { name: 'Разделить' })).not.toBeNull()
-    expect(screen.queryByRole('button', { name: 'Отменить' })).toBeNull()
-
-    fireEvent.click(screen.getByRole('button', { name: 'Разделить' }))
-    const sheet = screen.getByRole('dialog', { name: /^Разделить .+ RSD$/ })
-    fireEvent.change(within(sheet).getByLabelText('Сумма части 1'), { target: { value: '2000' } })
-    fireEvent.click(within(sheet).getByRole('button', { name: 'Разделить на 2 части' }))
-
-    await waitFor(() => expect(split).toHaveBeenCalledWith('workspace-a', expense.id, 3, [200_000, 100_000]))
-    await screen.findByText('Разделено на 2 части')
-    // Открывается вторая часть: ради неё и делили, категорию ей меняют обычными плитками.
-    expect(setCurrentId).toHaveBeenLastCalledWith('expense-b')
-    const updated = setBootstrap.mock.calls.at(-1)![0](bootstrap)
-    expect(updated.expenses.map((item: { id: string; amountMinor: number }) => [item.id, item.amountMinor]))
-      .toEqual([['expense-a', 200_000], ['expense-b', 100_000]])
-
-    fireEvent.click(screen.getByRole('button', { name: 'Отменить' }))
-    await waitFor(() => expect(remove).toHaveBeenCalledWith('workspace-a', 'expense-b', 1))
-    await waitFor(() => expect(update).toHaveBeenCalledWith('workspace-a', 'expense-a', expect.objectContaining({ version: 4, amountMinor: 300_000 })))
-    await screen.findByText('Запись снова целиком')
-  })
-
   it('refuses to save until the parts add up', () => {
     const onSubmit = vi.fn()
     render(<SplitSheet totalMinor={120_000} currency="RSD" currencies={currencies} onClose={vi.fn()} onSubmit={onSubmit}/>)
