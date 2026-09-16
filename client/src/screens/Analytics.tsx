@@ -84,7 +84,9 @@ export function AnalyticsView({ userId, workspaceId, bootstrap, theme, online, t
   const byCategory=data.categories.filter((item)=>item.amountMinor>0).map((item)=>({...item,value:item.amountMinor/divisor}))
   useEffect(()=>{setAllDetails(false)},[period,from,categoryId])
   const categoryDetails=useMemo(()=>categoryId?bootstrap.expenses.filter((expense)=>!expense.deletedAt&&!expense.voidedAt&&expense.categoryId===categoryId).map((expense)=>({expense,date:localDateKey(expense.occurredAt)})).filter((item)=>item.date>=from&&item.date<=analyticsTo).sort((left,right)=>right.expense.occurredAt.localeCompare(left.expense.occurredAt)):[],[bootstrap.expenses,categoryId,from,analyticsTo])
-  const detailCaption=(expense:Expense)=>{if(expense.note)return ` · ${expense.note}`;const names=expenseTagNames(expense,bootstrap.tags??[]);return names.length?` · ${names.map((name)=>`#${name}`).join(' ')}`:''}
+  // Запись подписана тегом — своим словом. Название продавца из выписки карты («OPENAI *CHATGPT SUBSCR») —
+  // подпись на крайний случай: она годится, только когда своего слова у записи нет.
+  const detailCaption=(expense:Expense)=>{const names=expenseTagNames(expense,bootstrap.tags??[]);if(names.length)return ` · ${names.map((name)=>`#${name}`).join(' ')}`;return expense.note?` · ${expense.note}`:''}
   const detailDate=(date:string)=>new Date(`${date}T12:00:00Z`).toLocaleDateString('ru-RU',{timeZone:'UTC',day:'numeric',month:'short'}).replace('.','')
   const serverWeekdays=new Map(data.weekdays.map((point)=>[point.weekday,point.amountMinor/divisor]))
   const weekdayCounts=countCalendarWeekdays(from,analyticsTo)
