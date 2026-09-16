@@ -431,19 +431,34 @@ export function SettingsView({ user, workspace, workspaceId, bootstrap, setBoots
     setBootstrap((b)=>({...b,categories:[category,...b.categories.filter((x)=>x.id!==category.id)]}))
     try{
       const saved=previous?await updateCategory(workspaceId,category.id,category):await createCategory(workspaceId,category)
-      setBootstrap((b)=>({...b,categories:b.categories.map((x)=>x.id===category.id&&matchesOptimistic(x)?saved:x)}))
-      setEditing(null);setAdding(false);setNotice(category.archivedAt?'Категория скрыта':'Категория сохранена')
+      // Сервер мог вернуть скрытую категорию с тем же именем вместо новой: в состоянии она уже есть, поэтому
+      // оптимистичную строку убираем, а старую заменяем возвращённой.
+      const restored=!previous&&saved.id!==category.id
+      setBootstrap((b)=>{
+        const optimistic=b.categories.find((x)=>x.id===category.id)
+        if(optimistic&&!matchesOptimistic(optimistic))return b
+        return{...b,categories:[saved,...b.categories.filter((x)=>x.id!==category.id&&x.id!==saved.id)]}
+      })
+      setEditing(null);setAdding(false)
+      setNotice(category.archivedAt?'Категория скрыта'
+        :restored?`Категория «${saved.name}» вернулась вместе со старыми расходами`
+        :previous?.archivedAt?`Категория «${saved.name}» вернулась`
+        :'Категория сохранена')
     }catch(error){
       setBootstrap((b)=>{
         const optimistic=b.categories.find((x)=>x.id===category.id)
         if(!optimistic||!matchesOptimistic(optimistic))return b
         return{...b,categories:previous?b.categories.map((x)=>x.id===category.id?previous:x):b.categories.filter((x)=>x.id!==category.id)}
       })
-      setNotice(error instanceof ApiError?error.message:'Не удалось сохранить категорию',undefined,true)
+      const occupied=error instanceof ApiError&&error.code==='DUPLICATE'?(error.details as {current?:Category}|undefined)?.current:undefined
+      setNotice(occupied?`Категория «${occupied.name}» уже есть`
+        :error instanceof ApiError?error.message:'Не удалось сохранить категорию',undefined,true)
     }
     refreshPending()
   }
   const activeCategories=bootstrap.categories.filter((x)=>!x.archivedAt).sort((a,b)=>a.placement.localeCompare(b.placement)||a.sortOrder-b.sortOrder)
+  // Скрытые видны только здесь: имя за ними остаётся занятым, поэтому вернуть их нужно уметь без повторного создания.
+  const hiddenCategories=bootstrap.categories.filter((x)=>x.archivedAt).sort((a,b)=>a.name.localeCompare(b.name,'ru'))
   const mainCategories=activeCategories.filter((x)=>x.placement==='main')
   const otherCategories=activeCategories.filter((x)=>x.placement==='additional')
   // Порядок внутри одной группы: сервер принимает полный список активных категорий, поэтому вторая группа идёт как есть.
@@ -516,7 +531,13 @@ export function SettingsView({ user, workspace, workspaceId, bootstrap, setBoots
       {otherCategories.length>0&&<h3>{mainCategories.length?'За плиткой «Ещё»':'Категории'}</h3>}
       <DragList items={otherCategories} disabled={!online||reordering} onReorder={(ids)=>void reorderGroup('additional',ids)} render={categoryRow}/>
       {!activeCategories.length&&<p className="sheet-copy">Категорий пока нет.</p>}
-      <p className="sheet-copy">{online?'Порядок меняется перетаскиванием за ≡. Скрытые категории остаются у старых расходов.':'Категории меняются только при подключении к сети.'}</p>
+      {hiddenCategories.length>0&&<><h3>Скрытые</h3>
+        {hiddenCategories.map((category)=><div className="management-row hidden-category" key={category.id}>
+          <i style={{background:category.color??'#a9afa5'}}/>
+          <span>{category.name}<small>остаётся у старых расходов</small></span>
+          <button type="button" disabled={!online||reordering} onClick={()=>void save({...category,archivedAt:null})}>Вернуть</button>
+        </div>)}</>}
+      <p className="sheet-copy">{online?'Порядок меняется перетаскиванием за ≡. Скрытые категории остаются у старых расходов, их можно вернуть.':'Категории меняются только при подключении к сети.'}</p>
       <button type="button" className="primary sheet-action" disabled={!online} onClick={()=>setAdding(true)}>Новая категория</button>
     </ListSheet>}
     {sheet==='tags'&&<ListSheet title="Теги" onClose={()=>setSheet(null)}>
@@ -548,5 +569,5 @@ export function CategoryEditor({ category, mainCount, onClose, onSave }:{categor
   }
   const onMain=draft.placement==='main'
   const othersOnMain=mainCount-(category?.placement==='main'?1:0)
-  return <><div className="sheet-backdrop" onMouseDown={()=>{if(!busy)onClose()}}><form ref={dialogRef as React.Ref<HTMLFormElement>} className="bottom-sheet editor" role="dialog" aria-modal="true" aria-labelledby="category-editor-title" noValidate onSubmit={(e)=>{e.preventDefault();void submit(draft)}} onMouseDown={(e)=>e.stopPropagation()}><div className="sheet-handle"/><div className="sheet-title"><h2 id="category-editor-title">{category?'Категория':'Новая категория'}</h2><button type="button" className="icon-button" data-dialog-initial-focus disabled={busy} aria-label="Закрыть" onClick={onClose}>×</button></div><label>Название<input maxLength={40} aria-invalid={Boolean(validation)} value={draft.name} onChange={(e)=>{setValidation('');setDraft({...draft,name:e.target.value})}}/></label>{validation&&<p className="form-error" role="alert">{validation}</p>}<fieldset><legend>Цвет</legend><div className="colors">{TAG_COLORS.map((color,index)=><button aria-label={`Цвет: ${TAG_COLOR_NAMES[index] ?? color}`} aria-pressed={draft.color===color} type="button" key={color} className={draft.color===color?'selected':''} style={{background:color}} onClick={()=>setDraft({...draft,color})}/>)}</div></fieldset><label className="switch-row"><span><b>Показывать на главном экране</b><small>{onMain?`Плиткой рядом с клавиатурой${othersOnMain>=3?' — уже тесно, плиток больше четырёх не помещается':''}`:'Иначе — за плиткой «Ещё»'}</small></span><input type="checkbox" role="switch" checked={onMain} disabled={busy} onChange={(e)=>setDraft({...draft,placement:e.target.checked?'main':'additional'})}/></label><button className="primary" disabled={busy}>{busy?'Сохраняем…':'Сохранить'}</button>{category&&<button type="button" className="danger-link" disabled={busy} onClick={()=>void (async()=>{if(await confirm({title:'Скрыть категорию?',message:'Она пропадёт из выбора, но останется у старых расходов.',confirmLabel:'Скрыть',danger:true}))await submit({...draft,archivedAt:new Date().toISOString()})})()}>Скрыть</button>}</form></div>{confirmation}</>
+  return <><div className="sheet-backdrop" onMouseDown={()=>{if(!busy)onClose()}}><form ref={dialogRef as React.Ref<HTMLFormElement>} className="bottom-sheet editor" role="dialog" aria-modal="true" aria-labelledby="category-editor-title" noValidate onSubmit={(e)=>{e.preventDefault();void submit(draft)}} onMouseDown={(e)=>e.stopPropagation()}><div className="sheet-handle"/><div className="sheet-title"><h2 id="category-editor-title">{category?'Категория':'Новая категория'}</h2><button type="button" className="icon-button" data-dialog-initial-focus disabled={busy} aria-label="Закрыть" onClick={onClose}>×</button></div><label>Название<input maxLength={40} aria-invalid={Boolean(validation)} value={draft.name} onChange={(e)=>{setValidation('');setDraft({...draft,name:e.target.value})}}/></label>{validation&&<p className="form-error" role="alert">{validation}</p>}<fieldset><legend>Цвет</legend><div className="colors">{TAG_COLORS.map((color,index)=><button aria-label={`Цвет: ${TAG_COLOR_NAMES[index] ?? color}`} aria-pressed={draft.color===color} type="button" key={color} className={draft.color===color?'selected':''} style={{background:color}} onClick={()=>setDraft({...draft,color})}/>)}</div></fieldset><label className="switch-row"><span><b>Показывать на главном экране</b><small>{onMain?`Плиткой рядом с клавиатурой${othersOnMain>=3?' — уже тесно, плиток больше четырёх не помещается':''}`:'Иначе — за плиткой «Ещё»'}</small></span><input type="checkbox" role="switch" checked={onMain} disabled={busy} onChange={(e)=>setDraft({...draft,placement:e.target.checked?'main':'additional'})}/></label><button className="primary" disabled={busy}>{busy?'Сохраняем…':'Сохранить'}</button>{category&&<button type="button" className="danger-link" disabled={busy} onClick={()=>void (async()=>{if(await confirm({title:'Скрыть категорию?',message:'Она пропадёт из выбора, но останется у старых расходов. Вернуть её можно в списке категорий.',confirmLabel:'Скрыть',danger:true}))await submit({...draft,archivedAt:new Date().toISOString()})})()}>Скрыть</button>}</form></div>{confirmation}</>
 }
