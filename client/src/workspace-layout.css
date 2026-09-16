@@ -1806,6 +1806,28 @@ button.settings-row:disabled .settings-row-value {
   min-height: 40px;
 }
 
+/* Скрытая категория стоит в одном столбце с активными: цветная метка, имя, кнопка возврата вместо ручки ≡. */
+.list-sheet .hidden-category {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  gap: 7px;
+  width: 100%;
+  margin: 0;
+  padding: 8px 0;
+}
+
+.list-sheet .hidden-category > i {
+  width: 12px;
+  height: 34px;
+  border-radius: 6px;
+}
+
+.list-sheet .hidden-category > span {
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
 .list-sheet .integration-title {
   margin: 4px 0 8px;
 }

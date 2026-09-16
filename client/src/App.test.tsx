@@ -1,12 +1,13 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { useState } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import * as accessFlow from './access-flow'
 import App, { AnalyticsView, BybitReviewView, CapabilityScreen, CreateWorkspaceSheet, EntryView, fallbackAnalytics, formatEntryDate, formatHistoryDate, HistoryView, pagerTabsAt, RecoverySave, SettingsView, useToast, WorkspaceSwitcher } from './App'
 import { splitDraft, SplitSheet } from './screens/Split'
 import * as workspaceApi from './workspace-api'
 import * as workspaceOffline from './workspace-offline'
-import type { AuthenticatedSession, WorkspaceBootstrap } from './types'
+import type { AuthenticatedSession, Category, WorkspaceBootstrap } from './types'
 
 // Фильтры истории выбирают несколько значений: шит остаётся открытым до «Готово».
 function chooseOption(label: string, ...options: string[]) {
@@ -976,6 +977,14 @@ describe('splitting one payment into parts', () => {
   })
 })
 
+function SettingsHarness({ bootstrap: initial }: { bootstrap: WorkspaceBootstrap }) {
+  const [bootstrap, setBootstrap] = useState(initial)
+  const user: AuthenticatedSession = { authenticated: true, user: { id: 'user-a', displayName: 'Аня', recoveryConfigured: true, recoveryGeneration: 1 }, currentSessionId: 'session-a', currentSessionExpiresAt: '2030-01-01T00:00:00.000Z', serverTime: '2026-08-10T14:00:00.000Z', restrictedToRecovery: false, workspaces: [bootstrap.workspace], legacyWorkspaceId: null }
+  return <SettingsView user={user} workspace={bootstrap.workspace} workspaceId={bootstrap.workspaceId} bootstrap={bootstrap} setBootstrap={setBootstrap} pendingCount={0} refreshPending={vi.fn()} onLogout={vi.fn()} theme="system" onThemeChange={vi.fn()} onSession={vi.fn()} online/>
+}
+
+const hiddenHome: Category = { id: 'home', name: 'Для дома', color: '#79a9d1', placement: 'additional', sortOrder: 0, createdAt: '2026-08-01T00:00:00.000Z', updatedAt: '2026-09-01T00:00:00.000Z', archivedAt: '2026-09-01T00:00:00.000Z', version: 2 }
+
 describe('settings identity transitions', () => {
   it('lists settings as plain rows and opens categories in a sheet', async () => {
     vi.spyOn(workspaceApi, 'listMembers').mockResolvedValue({ members: [] })
@@ -996,6 +1005,74 @@ describe('settings identity transitions', () => {
     expect(screen.getByRole('dialog', { name: 'Категории' })).not.toBeNull()
     expect(screen.getByRole('button', { name: 'Новая категория' })).not.toBeNull()
     expect(screen.queryByRole('button', { name: /Поднять категорию/ })).toBeNull()
+  })
+
+  // Скрытая категория держит своё имя, поэтому вернуть её нужно уметь: список скрытых и есть эта возможность.
+  it('lists hidden categories and brings one back', async () => {
+    vi.spyOn(workspaceApi, 'listMembers').mockResolvedValue({ members: [] })
+    vi.spyOn(workspaceApi, 'listSessions').mockResolvedValue({ sessions: [] })
+    vi.spyOn(workspaceApi, 'listInvitations').mockResolvedValue({ invitations: [] })
+    const update = vi.spyOn(workspaceApi, 'updateCategory').mockImplementation(async (_workspaceId, _id, category) => ({ ...hiddenHome, ...category, archivedAt: null, version: 3 }))
+    const bootstrap = expenseBootstrap()
+    render(<SettingsHarness bootstrap={{ ...bootstrap, categories: [...bootstrap.categories, hiddenHome] }}/>)
+
+    // Скрытая не попадает в счётчик строки и в порядок, но видна отдельным списком.
+    expect(screen.getByRole('button', { name: /^Категории/ }).textContent).toContain('1')
+    fireEvent.click(screen.getByRole('button', { name: /^Категории/ }))
+    const sheet = screen.getByRole('dialog', { name: 'Категории' })
+    expect(within(sheet).getByRole('heading', { name: 'Скрытые' })).not.toBeNull()
+    expect(sheet.textContent).toContain('Для дома')
+
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Вернуть' }))
+    await waitFor(() => expect(update).toHaveBeenCalled())
+    expect(update.mock.calls[0]![1]).toBe('home')
+    expect(update.mock.calls[0]![2].archivedAt).toBe(null)
+    expect(await screen.findByText('Категория «Для дома» вернулась')).not.toBeNull()
+    const restored = screen.getByRole('dialog', { name: 'Категории' })
+    expect(within(restored).queryByRole('heading', { name: 'Скрытые' })).toBeNull()
+    expect(within(restored).getByRole('button', { name: 'Для дома' })).not.toBeNull()
+  })
+
+  // Имя скрытой категории занято: сервер отдаёт её же, а не создаёт вторую — в списке остаётся одна строка.
+  it('replaces the new category with the hidden one the server returned', async () => {
+    vi.spyOn(workspaceApi, 'listMembers').mockResolvedValue({ members: [] })
+    vi.spyOn(workspaceApi, 'listSessions').mockResolvedValue({ sessions: [] })
+    vi.spyOn(workspaceApi, 'listInvitations').mockResolvedValue({ invitations: [] })
+    const create = vi.spyOn(workspaceApi, 'createCategory').mockImplementation(async (_workspaceId, category) => ({ ...hiddenHome, placement: category.placement, color: category.color, name: category.name, archivedAt: null, version: 3 }))
+    const bootstrap = expenseBootstrap()
+    render(<SettingsHarness bootstrap={{ ...bootstrap, categories: [...bootstrap.categories, hiddenHome] }}/>)
+
+    fireEvent.click(screen.getByRole('button', { name: /^Категории/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Новая категория' }))
+    const editor = screen.getByRole('dialog', { name: 'Новая категория' })
+    fireEvent.change(within(editor).getByLabelText('Название'), { target: { value: 'Для дома' } })
+    fireEvent.click(within(editor).getByRole('button', { name: 'Сохранить' }))
+    await waitFor(() => expect(create).toHaveBeenCalled())
+
+    expect(await screen.findByText('Категория «Для дома» вернулась вместе со старыми расходами')).not.toBeNull()
+    const sheet = screen.getByRole('dialog', { name: 'Категории' })
+    expect(within(sheet).getAllByRole('button', { name: 'Для дома' }).length).toBe(1)
+    expect(within(sheet).queryByRole('heading', { name: 'Скрытые' })).toBeNull()
+  })
+
+  // Занятое имя живой категории объясняется прямо, а не общим «Такая запись уже существует».
+  it('names the category that already holds the name', async () => {
+    vi.spyOn(workspaceApi, 'listMembers').mockResolvedValue({ members: [] })
+    vi.spyOn(workspaceApi, 'listSessions').mockResolvedValue({ sessions: [] })
+    vi.spyOn(workspaceApi, 'listInvitations').mockResolvedValue({ invitations: [] })
+    const bootstrap = expenseBootstrap()
+    vi.spyOn(workspaceApi, 'createCategory').mockRejectedValue(new workspaceApi.WorkspaceApiError(409, 'DUPLICATE', 'Такая запись уже существует.', { current: bootstrap.categories[0] }))
+    render(<SettingsHarness bootstrap={bootstrap}/>)
+
+    fireEvent.click(screen.getByRole('button', { name: /^Категории/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Новая категория' }))
+    const editor = screen.getByRole('dialog', { name: 'Новая категория' })
+    fireEvent.change(within(editor).getByLabelText('Название'), { target: { value: 'продукты' } })
+    fireEvent.click(within(editor).getByRole('button', { name: 'Сохранить' }))
+
+    // Набранное имя остаётся в открытом редакторе: человеку есть что исправить.
+    expect(await screen.findByText('Категория «Продукты» уже есть')).not.toBeNull()
+    expect((within(screen.getByRole('dialog', { name: 'Новая категория' })).getByLabelText('Название') as HTMLInputElement).value).toBe('продукты')
   })
 
   it('tells the person why «Обновить» fetched nothing from Bybit', async () => {

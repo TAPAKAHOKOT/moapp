@@ -18,6 +18,9 @@ export type CategoryRow = {
 
 const FORBIDDEN_NAME_CHARACTERS = /[\p{Cc}\p{Cf}]/u;
 
+// SQLite NOCASE складывает только латиницу, поэтому имена сравниваем в JS: «Для дома» и «для дома» — одно имя.
+const categoryNameKey = (name: string) => name.toLowerCase();
+
 function normalizeCategoryName(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const normalized = value.normalize("NFKC").trim();
@@ -46,6 +49,11 @@ function duplicateError(error: unknown): boolean {
 export async function registerCategoryRoutes(app: FastifyInstance): Promise<void> {
   const prefix = "/api/workspaces/:workspaceId/categories";
   const requireMutation = (request: import("fastify").FastifyRequest, reply: import("fastify").FastifyReply) => requireMutationOrigin(app, request, reply);
+  const byId = (workspaceId: string, id: string) => app.db.prepare("SELECT * FROM categories WHERE workspace_id=? AND id=?")
+    .get(workspaceId, id) as CategoryRow | undefined;
+  // Имя занимают и скрытые категории: индекс в схеме один на всю таблицу, да и возвращать скрытую нужно именно по имени.
+  const byName = (workspaceId: string, name: string) => (app.db.prepare("SELECT * FROM categories WHERE workspace_id=?")
+    .all(workspaceId) as CategoryRow[]).find((row) => categoryNameKey(row.name) === categoryNameKey(name));
 
   app.get(prefix, { preHandler: app.requireWorkspaceMember, onSend: noStore }, async (request) => {
     const { workspaceId } = workspaceContext(request);
@@ -81,8 +89,7 @@ export async function registerCategoryRoutes(app: FastifyInstance): Promise<void
     try {
       const outcome = app.db.transaction(() => {
         if (!hasWorkspaceMembership(app, workspaceId, userId)) return { member: false as const };
-        const existing = app.db.prepare("SELECT * FROM categories WHERE workspace_id=? AND id=?")
-          .get(workspaceId, id) as CategoryRow | undefined;
+        const existing = byId(workspaceId, id);
         if (existing) {
           const compatible = existing.name === name
             && existing.placement === body.placement
@@ -90,14 +97,22 @@ export async function registerCategoryRoutes(app: FastifyInstance): Promise<void
             && existing.color === color;
           return { member: true as const, existing, compatible };
         }
+        const sameName = byName(workspaceId, name);
         const now = new Date().toISOString();
+        // Скрытая категория держит имя навсегда, поэтому второй такой же не будет: возвращаем старую вместе с её
+        // расходами, а цвет и размещение берём из только что заполненной формы.
+        if (sameName?.archived_at) {
+          app.db.prepare(`UPDATE categories SET name=?,placement=?,sort_order=?,color=?,archived_at=NULL,
+            version=version+1,updated_at=? WHERE workspace_id=? AND id=?`)
+            .run(name, body.placement, sortOrder, color, now, workspaceId, sameName.id);
+          return { member: true as const, restored: byId(workspaceId, sameName.id)! };
+        }
+        if (sameName) return { member: true as const, duplicate: sameName };
         app.db.prepare(`INSERT INTO categories
           (workspace_id,id,name,placement,sort_order,color,version,created_at,updated_at)
           VALUES (?,?,?,?,?,?,1,?,?)`)
           .run(workspaceId, id, name, body.placement, sortOrder, color, now, now);
-        const row = app.db.prepare("SELECT * FROM categories WHERE workspace_id=? AND id=?")
-          .get(workspaceId, id) as CategoryRow;
-        return { member: true as const, created: row };
+        return { member: true as const, created: byId(workspaceId, id)! };
       })();
       if (!outcome.member) return sendWorkspaceNotFound(reply);
       if ("existing" in outcome) {
@@ -105,6 +120,10 @@ export async function registerCategoryRoutes(app: FastifyInstance): Promise<void
           ? reply.code(200).send(categoryJson(outcome.existing))
           : reply.code(409).send(jsonError("IDEMPOTENCY_CONFLICT", "Category id already exists with different fields", { current: categoryJson(outcome.existing) }));
       }
+      if ("duplicate" in outcome) {
+        return reply.code(409).send(jsonError("DUPLICATE", "Category name already exists", { current: categoryJson(outcome.duplicate) }));
+      }
+      if ("restored" in outcome) return reply.code(200).send(categoryJson(outcome.restored));
       return reply.code(201).send(categoryJson(outcome.created));
     } catch (error) {
       if (duplicateError(error)) return reply.code(409).send(jsonError("DUPLICATE", "Category id or name already exists"));
@@ -163,8 +182,7 @@ export async function registerCategoryRoutes(app: FastifyInstance): Promise<void
     try {
       const outcome = app.db.transaction(() => {
         if (!hasWorkspaceMembership(app, workspaceId, userId)) return { member: false as const };
-        const current = app.db.prepare("SELECT * FROM categories WHERE workspace_id=? AND id=?")
-          .get(workspaceId, id) as CategoryRow | undefined;
+        const current = byId(workspaceId, id);
         if (!current) return { member: true as const, missing: true as const };
         if (current.version !== body.version) return { member: true as const, conflict: current };
         const name = body.name === undefined ? current.name : normalizeCategoryName(body.name);
@@ -179,20 +197,23 @@ export async function registerCategoryRoutes(app: FastifyInstance): Promise<void
           && (typeof body.archivedAt !== "string" || Number.isNaN(Date.parse(body.archivedAt)))) {
           return { member: true as const, validation: "archivedAt must be an ISO timestamp or null" };
         }
+        // Переименование в занятое имя не проходит, даже если имя держит скрытая категория: вторая такая же не нужна,
+        // а вернуть старую человек может из списка скрытых — клиент назовёт её по details.
+        const sameName = byName(workspaceId, name);
+        if (sameName && sameName.id !== id) return { member: true as const, duplicate: sameName };
         const archivedAt = body.archivedAt !== undefined
           ? body.archivedAt === null ? null : new Date(body.archivedAt as string).toISOString()
           : body.archived === undefined ? current.archived_at : body.archived ? new Date().toISOString() : null;
         app.db.prepare(`UPDATE categories SET name=?,placement=?,sort_order=?,color=?,archived_at=?,
           version=version+1,updated_at=? WHERE workspace_id=? AND id=? AND version=?`)
           .run(name, placement, sortOrder, color, archivedAt, new Date().toISOString(), workspaceId, id, body.version);
-        const row = app.db.prepare("SELECT * FROM categories WHERE workspace_id=? AND id=?")
-          .get(workspaceId, id) as CategoryRow;
-        return { member: true as const, row };
+        return { member: true as const, row: byId(workspaceId, id)! };
       })();
       if (!outcome.member) return sendWorkspaceNotFound(reply);
       if ("missing" in outcome) return reply.code(404).send(jsonError("NOT_FOUND", "Category not found"));
       if ("conflict" in outcome) return reply.code(409).send(jsonError("VERSION_CONFLICT", "Category was changed", { current: categoryJson(outcome.conflict) }));
       if ("validation" in outcome) return reply.code(400).send(jsonError("VALIDATION", outcome.validation));
+      if ("duplicate" in outcome) return reply.code(409).send(jsonError("DUPLICATE", "Category name already exists", { current: categoryJson(outcome.duplicate) }));
       return categoryJson(outcome.row);
     } catch (error) {
       if (duplicateError(error)) return reply.code(409).send(jsonError("DUPLICATE", "Category name already exists"));
@@ -208,8 +229,7 @@ export async function registerCategoryRoutes(app: FastifyInstance): Promise<void
     if (!Number.isInteger(version)) return reply.code(400).send(jsonError("VALIDATION", "version is required"));
     const outcome = app.db.transaction(() => {
       if (!hasWorkspaceMembership(app, workspaceId, userId)) return { member: false as const };
-      const row = app.db.prepare("SELECT * FROM categories WHERE workspace_id=? AND id=?")
-        .get(workspaceId, id) as CategoryRow | undefined;
+      const row = byId(workspaceId, id);
       if (!row) return { member: true as const, missing: true as const };
       if (row.version !== version) return { member: true as const, conflict: row };
       const now = new Date().toISOString();
