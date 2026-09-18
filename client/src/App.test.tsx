@@ -499,9 +499,28 @@ describe('analytics legend', () => {
     render(<AnalyticsView userId="analytics-user" workspaceId="analytics-workspace" bootstrap={expenseBootstrap({ tags, expenses })} theme="light" online={false}/>)
 
     fireEvent.click(screen.getByRole('button', { name: /Продукты/ }))
-    expect(screen.getByText(/#ютуб/)).not.toBeNull()
-    expect(screen.queryByText(/YouTubePremium/)).toBeNull()
-    expect(screen.getByText(/CONTABO\* HOLD ONLY/)).not.toBeNull()
+    const details = document.querySelectorAll('.legend-detail')
+    expect(details[0].textContent).toMatch(/#ютуб/)
+    expect(details[0].textContent).not.toMatch(/YouTubePremium/)
+    expect(details[1].textContent).toMatch(/CONTABO\* HOLD ONLY/)
+  })
+
+  it('shows what an unfolded category is made of, and narrows its records to the tapped part', () => {
+    const now = new Date().toISOString()
+    const tags = ['впн', 'йеттел'].map((name, index) => ({ id: `tag-${name}`, name, color: null, sortOrder: index, createdAt: now, updatedAt: now, version: 1 }))
+    const expense = (id: string, amountMinor: number, tagIds: string[]) =>
+      ({ id, amountMinor, currency: 'RSD', categoryId: 'products', note: null, tagIds, occurredAt: now, createdAt: now, updatedAt: now, version: 1, deletedAt: null })
+    const expenses = [expense('vpn-1', 30_000, ['tag-впн']), expense('vpn-2', 45_000, ['tag-впн']), expense('phone', 25_000, ['tag-йеттел'])]
+    render(<AnalyticsView userId="analytics-user" workspaceId="analytics-workspace" bootstrap={expenseBootstrap({ tags, expenses })} theme="light" online={false}/>)
+
+    fireEvent.click(screen.getByRole('button', { name: /Продукты/ }))
+    const parts = [...document.querySelectorAll('.legend-group')].map((node) => node.textContent)
+    expect(parts).toEqual([expect.stringMatching(/#впн · 2.*75%/), expect.stringMatching(/#йеттел.*25%/)])
+    expect(document.querySelectorAll('.legend-detail')).toHaveLength(3)
+    fireEvent.click(screen.getByRole('button', { name: /#йеттел/ }))
+    expect(document.querySelectorAll('.legend-detail')).toHaveLength(1)
+    fireEvent.click(screen.getByRole('button', { name: /#йеттел/ }))
+    expect(document.querySelectorAll('.legend-detail')).toHaveLength(3)
   })
 })
 
