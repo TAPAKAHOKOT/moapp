@@ -286,8 +286,8 @@ export function updateTag(workspaceId: string, tagId: string, update: { name?: s
 export function reorderTags(workspaceId: string, ids: string[], signal?: AbortSignal) { assertMutationsAllowed(); return request<{ tags: Tag[] }>(workspacePath(workspaceId, '/tags/order'), { method: 'PUT', body: JSON.stringify({ ids }), signal }) }
 export async function deleteTag(workspaceId: string, tagId: string, version: number, signal?: AbortSignal): Promise<void> { assertMutationsAllowed(); return request<void>(workspacePath(workspaceId, `/tags/${encodeURIComponent(tagId)}`), { method: 'DELETE', body: JSON.stringify({ version }), signal }) }
 export function reorderCategories(workspaceId: string, ids: string[], signal?: AbortSignal) { assertMutationsAllowed(); return request<{ categories: Category[] }>(workspacePath(workspaceId, '/categories/order'), { method: 'PUT', body: JSON.stringify({ ids }), signal }) }
-export function getAnalytics(workspaceId: string, from: string, to: string, currency: string, categoryId?: string, signal?: AbortSignal) {
-  const query = new URLSearchParams({ from, to, currency, tz: appTimeZone() }); if (categoryId) query.set('categoryId', categoryId)
+export function getAnalytics(workspaceId: string, from: string, to: string, currency: string, filter: { categoryId?: string; tagId?: string } = {}, signal?: AbortSignal) {
+  const query = new URLSearchParams({ from, to, currency, tz: appTimeZone() }); if (filter.categoryId) query.set('categoryId', filter.categoryId); if (filter.tagId) query.set('tagId', filter.tagId)
   return request<AnalyticsData>(workspacePath(workspaceId, `/analytics?${query}`), { signal })
 }
 

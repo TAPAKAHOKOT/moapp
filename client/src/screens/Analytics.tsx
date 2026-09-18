@@ -1,7 +1,7 @@
 import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react'
 import { WorkspaceApiError as ApiError, getAnalytics } from '../workspace-api'
 import { getWorkspacePreference, setWorkspacePreference } from '../app-state'
-import type { AnalyticsData, Expense } from '../types'
+import type { AnalyticsData, Expense, Tag } from '../types'
 import { appTimeZone, cachedNumberFormat, convertExpense, countCalendarWeekdays, hasRate, localDateKey, monthDateRange, shiftDateKey, weekDateRange, weekdayFromDateKey, workspaceCurrency } from '../utils'
 import { expenseTagNames } from '../history'
 import { BREAKDOWN_REST, breakdownColors, categoryBreakdown, expenseGroupKeys } from '../breakdown'
@@ -27,6 +27,9 @@ export function AnalyticsView({ userId, workspaceId, bootstrap, theme, online, t
   // Фокус на категории: тап по строке легенды сужает всё выше до неё и раскрывает её записи, второй тап возвращает всё.
   // Отдельного селекта нет — легенда и есть список категорий. Фокус живёт только до перезахода: сохранённый фильтр удивлял бы.
   const [focusedCategoryId,setFocusedCategoryId]=useState<string|null>(null)
+  // Фокус на теге работает так же и вместе с фокусом на категории: «Подписки · #впн». UNTAGGED — записи без тегов.
+  const [focusedTagId,setFocusedTagId]=useState<string|null>(null)
+  const [allTagDetails,setAllTagDetails]=useState(false)
   const [currencySheet, setCurrencySheet] = useState(false)
   const [allDetails,setAllDetails]=useState(false)
   // Доля внутри раскрытой категории: тап по ней оставляет в списке только её записи, второй тап — все.
@@ -41,6 +44,7 @@ export function AnalyticsView({ userId, workspaceId, bootstrap, theme, online, t
   const selectedWeek=weekDateRange(today,weekOffset)
   const selectedMonth=monthDateRange(today,monthOffset)
   const categoryId=focusedCategoryId&&bootstrap.categories.some((category)=>category.id===focusedCategoryId)?focusedCategoryId:null
+  const tagId=focusedTagId===UNTAGGED||focusedTagId&&(bootstrap.tags??[]).some((tag)=>tag.id===focusedTagId)?focusedTagId:null
   const selectedRange=period==='week'?selectedWeek:selectedMonth
   const from=selectedRange.from
   // График обрывается на сегодняшнем дне: ещё не наступившие дни — не нули.
@@ -52,9 +56,9 @@ export function AnalyticsView({ userId, workspaceId, bootstrap, theme, online, t
   const previousSameDays=shiftDateKey(previousRange.from,periodDays-1)
   const previousTo=partial&&previousSameDays<previousRange.to?previousSameDays:previousRange.to
   const expenseRevision=bootstrap.expenses.map((expense)=>`${expense.id}:${expense.version}:${expense.updatedAt}:${expense.deletedAt||''}:${expense.voidedAt||''}:${expense.amountMinor}:${expense.currency}:${expense.categoryId}:${expense.occurredAt}`).join('|')
-  const requestKey=`${expenseRevision}:${from}:${analyticsTo}:${target}:${period}:${categoryId??'all'}:${timeZone}`
-  const fallback=useMemo(()=>fallbackAnalytics(bootstrap,target,from,analyticsTo,categoryId),[bootstrap,target,from,analyticsTo,categoryId])
-  const previousFallback=useMemo(()=>fallbackAnalytics(bootstrap,target,previousRange.from,previousTo,categoryId),[bootstrap,target,previousRange.from,previousTo,categoryId])
+  const requestKey=`${expenseRevision}:${from}:${analyticsTo}:${target}:${period}:${categoryId??'all'}:${tagId??'all'}:${timeZone}`
+  const fallback=useMemo(()=>fallbackAnalytics(bootstrap,target,from,analyticsTo,categoryId,tagId),[bootstrap,target,from,analyticsTo,categoryId,tagId])
+  const previousFallback=useMemo(()=>fallbackAnalytics(bootstrap,target,previousRange.from,previousTo,categoryId,tagId),[bootstrap,target,previousRange.from,previousTo,categoryId,tagId])
   // Ответы сервера запоминаются по ключу периода: возврат к уже виденной неделе не ждёт сети. Пока ответа нет,
   // показан локальный расчёт по тем же курсам дня, так что число не меняется дважды.
   const cache=useRef(new Map<string,{data:AnalyticsData;previousTotalMinor:number|null}>())
@@ -65,7 +69,8 @@ export function AnalyticsView({ userId, workspaceId, bootstrap, theme, online, t
     const cached=cache.current.get(requestKey)
     if(cached){setRemote({key:requestKey,...cached});setAnalyticsOffline(false);setAnalyticsLoading(false);return()=>controller.abort()}
     setAnalyticsLoading(true)
-    Promise.all([getAnalytics(workspaceId,from,analyticsTo,target,categoryId??undefined,controller.signal),getAnalytics(workspaceId,previousRange.from,previousTo,target,categoryId??undefined,controller.signal)]).then(([result,previous])=>{
+    const filter={categoryId:categoryId??undefined,tagId:tagId??undefined}
+    Promise.all([getAnalytics(workspaceId,from,analyticsTo,target,filter,controller.signal),getAnalytics(workspaceId,previousRange.from,previousTo,target,filter,controller.signal)]).then(([result,previous])=>{
       if(!active)return
       const entry={data:result,previousTotalMinor:previous.totalMinor}
       cache.current.set(requestKey,entry)
@@ -73,7 +78,7 @@ export function AnalyticsView({ userId, workspaceId, bootstrap, theme, online, t
       setRemote({key:requestKey,...entry});setAnalyticsOffline(false);setAnalyticsLoading(false)
     }).catch((reason)=>{if(active&&!controller.signal.aborted){setRemote(null);setAnalyticsOffline(true);setAnalyticsError(reason instanceof ApiError?reason.message:'Сервер аналитики недоступен');setAnalyticsLoading(false)}})
     return()=>{active=false;controller.abort()}
-  },[workspaceId,from,analyticsTo,target,categoryId,previousRange.from,previousTo,requestKey,online,retryEpoch])
+  },[workspaceId,from,analyticsTo,target,categoryId,tagId,previousRange.from,previousTo,requestKey,online,retryEpoch])
   // Индикатор загрузки появляется только если сервер думает дольше 300 мс, и не трогает раскладку.
   const [slowLoading,setSlowLoading]=useState(false)
   useEffect(()=>{if(!analyticsLoading){setSlowLoading(false);return}const timer=setTimeout(()=>setSlowLoading(true),300);return()=>clearTimeout(timer)},[analyticsLoading])
@@ -85,12 +90,19 @@ export function AnalyticsView({ userId, workspaceId, bootstrap, theme, online, t
   const dailyMap=new Map(data.daily.map((point)=>[point.date,point.amountMinor/divisor]))
   const byDay=days.map((date)=>dailyMap.get(date)||0)
   const byCategory=data.categories.filter((item)=>item.amountMinor>0).map((item)=>({...item,value:item.amountMinor/divisor}))
-  useEffect(()=>{setAllDetails(false);setGroupKey(null)},[period,from,categoryId])
-  const categoryDetails=useMemo(()=>categoryId?bootstrap.expenses.filter((expense)=>!expense.deletedAt&&!expense.voidedAt&&expense.categoryId===categoryId).map((expense)=>({expense,date:localDateKey(expense.occurredAt)})).filter((item)=>item.date>=from&&item.date<=analyticsTo).sort((left,right)=>right.expense.occurredAt.localeCompare(left.expense.occurredAt)):[],[bootstrap.expenses,categoryId,from,analyticsTo])
+  useEffect(()=>{setAllDetails(false);setAllTagDetails(false);setGroupKey(null)},[period,from,categoryId,tagId])
+  // Записи периода под обоими фокусами — из них раскрываются и категория, и тег.
+  const focusedDetails=useMemo(()=>bootstrap.expenses.filter((expense)=>!expense.deletedAt&&!expense.voidedAt&&(!categoryId||expense.categoryId===categoryId)&&hasTag(expense,tagId,bootstrap.tags??[])).map((expense)=>({expense,date:localDateKey(expense.occurredAt)})).filter((item)=>item.date>=from&&item.date<=analyticsTo).sort((left,right)=>right.expense.occurredAt.localeCompare(left.expense.occurredAt)),[bootstrap.expenses,bootstrap.tags,categoryId,tagId,from,analyticsTo])
+  const categoryDetails=categoryId?focusedDetails:[]
+  const tagDetails=tagId?focusedDetails:[]
+  const byTag=(data.tags??[]).filter((item)=>item.amountMinor>0).map((item)=>({...item,id:item.tagId??UNTAGGED,label:item.tagId?`#${item.name}`:'Без тега',value:item.amountMinor/divisor})).sort((left,right)=>Number(!left.tagId)-Number(!right.tagId))
+  const tagShades=breakdownColors(theme==='dark'?'#b1cfa3':CHART_COLOR,byTag.filter((item)=>item.tagId).map((item)=>({key:item.id})))
+  const tagColors=byTag.map((item)=>item.tagId?item.color||tagShades[byTag.filter((other)=>other.tagId).indexOf(item)]:'#a9afa5')
+  const showTags=Boolean(tagId||byTag.some((item)=>item.tagId))
   const focusedColor=categoryId?bootstrap.categories.find((category)=>category.id===categoryId)?.color||'#a9afa5':'#a9afa5'
   const breakdown=useMemo(()=>categoryBreakdown(categoryDetails.filter(({expense})=>hasRate(bootstrap.rates,expense.currency,target,localDateKey(expense.occurredAt))).map(({expense})=>({expense,value:convertExpense(expense,target,bootstrap.currencies,bootstrap.rates)})),bootstrap.tags??[]),[categoryDetails,bootstrap.rates,bootstrap.currencies,bootstrap.tags,target])
-  // Одна доля на 100% ничего не объясняет — разбивка появляется, когда частей хотя бы две.
-  const groups=breakdown.groups.length>1?breakdown.groups:[]
+  // Одна доля из одной записи повторяет саму запись — такую разбивку не показываем. «#кофе · 2 — 100%» уже говорит, на что ушли деньги.
+  const groups=breakdown.groups.length>1||breakdown.groups[0]?.count>1?breakdown.groups:[]
   const groupColors=breakdownColors(focusedColor,groups)
   const groupTotal=groups.reduce((sum,group)=>sum+group.value,0)
   const activeGroup=groups.some((group)=>group.key===groupKey)?groupKey:null
@@ -100,6 +112,8 @@ export function AnalyticsView({ userId, workspaceId, bootstrap, theme, online, t
   // Запись подписана тегом — своим словом. Название продавца из выписки карты («OPENAI *CHATGPT SUBSCR») —
   // подпись на крайний случай: она годится, только когда своего слова у записи нет.
   const detailCaption=(expense:Expense)=>{const names=expenseTagNames(expense,bootstrap.tags??[]);if(names.length)return ` · ${names.map((name)=>`#${name}`).join(' ')}`;return expense.note?` · ${expense.note}`:''}
+  // В теге запись подписана категорией — тег и так известен; остальные теги и продавец помогают узнать запись.
+  const tagCaption=(expense:Expense)=>{const others=expenseTagNames(expense,bootstrap.tags??[]).filter((name)=>tagId===UNTAGGED||(bootstrap.tags??[]).find((tag)=>tag.id===tagId)?.name!==name);return ` · ${[categoryName(expense.categoryId),others.map((name)=>`#${name}`).join(' '),others.length?'':expense.note??''].filter(Boolean).join(' · ')}`}
   const detailDate=(date:string)=>new Date(`${date}T12:00:00Z`).toLocaleDateString('ru-RU',{timeZone:'UTC',day:'numeric',month:'short'}).replace('.','')
   const serverWeekdays=new Map(data.weekdays.map((point)=>[point.weekday,point.amountMinor/divisor]))
   const weekdayCounts=countCalendarWeekdays(from,analyticsTo)
@@ -111,10 +125,14 @@ export function AnalyticsView({ userId, workspaceId, bootstrap, theme, online, t
   const shownPerDay=useTweenedNumber(total/elapsedDays)
   const weekRange=formatWeekRange(selectedWeek.from,selectedWeek.to)
   const monthLabel=new Date(`${selectedMonth.from}T12:00:00Z`).toLocaleDateString('ru-RU',{timeZone:'UTC',month:'long',year:'numeric'})
-  const focusedName=categoryId?bootstrap.categories.find((category)=>category.id===categoryId)?.name:null
+  const focusedTagLabel=tagId?tagId===UNTAGGED?'Без тега':`#${(bootstrap.tags??[]).find((tag)=>tag.id===tagId)?.name}`:null
+  const focusedName=[categoryId?bootstrap.categories.find((category)=>category.id===categoryId)?.name:null,focusedTagLabel].filter(Boolean).join(' · ')||null
+  const categoryName=(id:string)=>bootstrap.categories.find((category)=>category.id===id)?.name??''
   // О пересчёте валют говорим только когда он есть: в периоде встретились расходы не в валюте аналитики.
   const hasForeign=bootstrap.expenses.some((expense)=>{if(expense.deletedAt||expense.voidedAt||expense.currency===target)return false;const date=localDateKey(expense.occurredAt);return date>=from&&date<=analyticsTo})
   const focus=(id:string)=>{tap(4);setAllDetails(false);setRateInfo(false);setFocusedCategoryId((current)=>current===id?null:id)}
+  const focusTag=(id:string)=>{tap(4);setAllTagDetails(false);setRateInfo(false);setFocusedTagId((current)=>current===id?null:id)}
+  const detailRow=({expense,date}:{expense:Expense;date:string},caption:string)=><div key={expense.id} className="legend-detail"><span><b>{detailDate(date)}</b>{caption}</span><span className="legend-value"><b>{money(expense.amountMinor,expense.currency,bootstrap.currencies)}</b>{expense.currency!==target&&<small>≈ {formatAnalyticsAmount(convertExpense(expense,target,bootstrap.currencies,bootstrap.rates),target)}</small>}</span></div>
   // Пустое пространство и пустой период — разные случаи: в первом человек ещё не знает, что тут вообще будет.
   const anyExpenses=bootstrap.expenses.some((expense)=>!expense.deletedAt)
   const emptyPeriod=anyExpenses?'В этом периоде ещё нет расходов':'Появится после первых трат: сколько за месяц и на что'
@@ -129,7 +147,8 @@ export function AnalyticsView({ userId, workspaceId, bootstrap, theme, online, t
     {period==='month'&&<div className="week-navigator"><button type="button" onClick={()=>setMonthOffset((value)=>value-1)} aria-label="Предыдущий месяц">‹</button><div><b>{monthOffset===0?'Текущий месяц':monthOffset===-1?'Прошлый месяц':'Выбранный месяц'}</b><span>{monthLabel}</span></div><button type="button" onClick={()=>setMonthOffset((value)=>Math.min(0,value+1))} disabled={monthOffset===0} aria-label="Следующий месяц">›</button></div>}
     {statusLine&&<div className={`rate-caption${analyticsOffline?' cached':''}`} role="status">{statusLine}</div>}
     <div className="chart-card"><div><h2>Динамика</h2><p>{period==='week'?'Понедельник — воскресенье':'По дням выбранного месяца'}</p></div>{data.convertedCount?<div className="line-chart"><Suspense fallback={<ChartSkeleton/>}><AnalyticsChart kind="line" labels={days.map((d)=>new Date(`${d}T12:00`).toLocaleDateString('ru-RU',period==='week'?{weekday:'short'}:{day:'numeric',month:'short'}))} values={byDay} color={chartColor} fillColor={theme==='dark'?'rgba(177,207,163,.14)':'rgba(117,141,105,.12)'} pointRadius={period==='week'?3:0} target={target} textColor={chartText} gridColor={chartGrid} maxTicksLimit={period==='week'?7:6}/></Suspense></div>:<AnalyticsEmpty>{data.expenseCount?'Нет курса для выбранной валюты':emptyPeriod}</AnalyticsEmpty>}</div>
-    <div className={`chart-card${byCategory.length?' split':''}`}><div><h2>Категории</h2><p>{categoryId?'Только эта категория':period==='week'?'За неделю':'За месяц'}</p></div>{byCategory.length?<><div className="donut-wrap"><Suspense fallback={<ChartSkeleton/>}><AnalyticsChart kind="doughnut" labels={donut.map((x)=>x.name)} values={donut.map((x)=>x.value)} colors={donut.map((x)=>x.color)} target={target}/></Suspense><span>{formatCompactNumber(total)}</span></div><div className="legend">{byCategory.map((x)=>{const focused=categoryId===x.categoryId;const rows=focused?categoryDetails.filter(({expense})=>inGroup(expense)):[];const shown=allDetails?rows:rows.slice(0,LEGEND_DETAIL_LIMIT);return <div key={x.categoryId} className={`legend-item${focused?' open':''}`}><button type="button" className="legend-row" aria-expanded={focused} onClick={()=>focus(x.categoryId)}><i style={{background:x.color||'#a9afa5'}}/><span>{x.name}</span><span className="legend-value"><b>{formatAnalyticsAmount(x.value,target)}</b><small className={focused?'ghost':undefined} aria-hidden={focused||undefined}>{Math.round(x.value/total*100)||0}%</small></span>{focused?<span className="legend-close" aria-hidden="true">×</span>:<ChevronIcon/>}</button>{focused&&<div className="legend-details">{groups.length>0&&<div className="legend-groups" role="group" aria-label="Из чего сложилась категория">{groups.map((group,index)=><button key={group.key} type="button" className={`legend-group${activeGroup===group.key?' selected':''}${activeGroup&&activeGroup!==group.key?' dim':''}`} aria-pressed={activeGroup===group.key} onClick={()=>pickGroup(group.key)}><i style={{background:groupColors[index]}}/><span>{group.label}{group.count>1&&<small> · {group.count}</small>}</span><span className="legend-value"><b>{formatAnalyticsAmount(group.value,target)}</b><small>{Math.round(group.value/(groupTotal||1)*100)}%</small></span></button>)}</div>}{rows.length?<>{shown.map(({expense,date})=><div key={expense.id} className="legend-detail"><span><b>{detailDate(date)}</b>{detailCaption(expense)}</span><span className="legend-value"><b>{money(expense.amountMinor,expense.currency,bootstrap.currencies)}</b>{expense.currency!==target&&<small>≈ {formatAnalyticsAmount(convertExpense(expense,target,bootstrap.currencies,bootstrap.rates),target)}</small>}</span></div>)}{rows.length>shown.length&&<button type="button" className="legend-more" onClick={()=>setAllDetails(true)}>Показать все · {rows.length}</button>}</>:<p className="legend-empty">На этом устройстве нет записей этой категории за период.</p>}</div>}</div>})}{categoryId&&<button type="button" className="legend-all" onClick={()=>focus(categoryId)}>Все категории</button>}</div></>:<AnalyticsEmpty>{emptyPeriod}</AnalyticsEmpty>}</div>
+    <div className={`chart-card${byCategory.length?' split':''}`}><div><h2>Категории</h2><p>{categoryId?'Только эта категория':tagId?`Только ${focusedTagLabel}`:period==='week'?'За неделю':'За месяц'}</p></div>{byCategory.length?<><div className="donut-wrap"><Suspense fallback={<ChartSkeleton/>}><AnalyticsChart kind="doughnut" labels={donut.map((x)=>x.name)} values={donut.map((x)=>x.value)} colors={donut.map((x)=>x.color)} target={target}/></Suspense><span>{formatCompactNumber(total)}</span></div><div className="legend">{byCategory.map((x)=>{const focused=categoryId===x.categoryId;const rows=focused?categoryDetails.filter(({expense})=>inGroup(expense)):[];const shown=allDetails?rows:rows.slice(0,LEGEND_DETAIL_LIMIT);return <div key={x.categoryId} className={`legend-item${focused?' open':''}`}><button type="button" className="legend-row" aria-expanded={focused} onClick={()=>focus(x.categoryId)}><i style={{background:x.color||'#a9afa5'}}/><span>{x.name}</span><span className="legend-value"><b>{formatAnalyticsAmount(x.value,target)}</b><small className={focused?'ghost':undefined} aria-hidden={focused||undefined}>{Math.round(x.value/total*100)||0}%</small></span>{focused?<span className="legend-close" aria-hidden="true">×</span>:<ChevronIcon/>}</button>{focused&&<div className="legend-details">{groups.length>0&&<div className="legend-groups" role="group" aria-label="Из чего сложилась категория">{groups.map((group,index)=><button key={group.key} type="button" className={`legend-group${activeGroup===group.key?' selected':''}${activeGroup&&activeGroup!==group.key?' dim':''}`} aria-pressed={activeGroup===group.key} onClick={()=>pickGroup(group.key)}><i style={{background:groupColors[index]}}/><span>{group.label}{group.count>1&&<small> · {group.count}</small>}</span><span className="legend-value"><b>{formatAnalyticsAmount(group.value,target)}</b><small>{Math.round(group.value/(groupTotal||1)*100)}%</small></span></button>)}</div>}{rows.length?<>{shown.map((item)=>detailRow(item,detailCaption(item.expense)))}{rows.length>shown.length&&<button type="button" className="legend-more" onClick={()=>setAllDetails(true)}>Показать все · {rows.length}</button>}</>:<p className="legend-empty">На этом устройстве нет записей этой категории за период.</p>}</div>}</div>})}{categoryId&&<button type="button" className="legend-all" onClick={()=>focus(categoryId)}>Все категории</button>}</div></>:<AnalyticsEmpty>{emptyPeriod}</AnalyticsEmpty>}</div>
+    {showTags&&<div className={`chart-card${byTag.length?' split':''}`}><div><h2>Теги</h2><p>{tagId?'Только этот тег':categoryId?'В этой категории':period==='week'?'За неделю':'За месяц'}</p></div>{byTag.length?<><div className="donut-wrap"><Suspense fallback={<ChartSkeleton/>}><AnalyticsChart kind="doughnut" labels={byTag.map((x)=>x.label)} values={byTag.map((x)=>x.value)} colors={tagColors} target={target}/></Suspense><span>{formatCompactNumber(total)}</span></div><div className="legend tag-legend">{byTag.map((x,index)=>{const focused=tagId===x.id;const shown=allTagDetails?tagDetails:tagDetails.slice(0,LEGEND_DETAIL_LIMIT);return <div key={x.id} className={`legend-item${focused?' open':''}`}><button type="button" className="legend-row" aria-expanded={focused} onClick={()=>focusTag(x.id)}><i style={{background:tagColors[index]}}/><span>{x.label}</span><span className="legend-value"><b>{formatAnalyticsAmount(x.value,target)}</b><small className={focused?'ghost':undefined} aria-hidden={focused||undefined}>{Math.round(x.value/total*100)||0}%</small></span>{focused?<span className="legend-close" aria-hidden="true">×</span>:<ChevronIcon/>}</button>{focused&&<div className="legend-details">{tagDetails.length?<>{shown.map((item)=>detailRow(item,tagCaption(item.expense)))}{tagDetails.length>shown.length&&<button type="button" className="legend-more" onClick={()=>setAllTagDetails(true)}>Показать все · {tagDetails.length}</button>}</>:<p className="legend-empty">На этом устройстве нет записей с этим тегом за период.</p>}</div>}</div>})}{tagId&&<button type="button" className="legend-all" onClick={()=>focusTag(tagId)}>Все теги</button>}</div></>:<AnalyticsEmpty>{emptyPeriod}</AnalyticsEmpty>}</div>}
     {period==='month'&&<div className="chart-card"><div><h2>По дням недели</h2><p>Средние траты за календарный день</p></div>{data.convertedCount?<div className="bar-chart"><Suspense fallback={<ChartSkeleton/>}><AnalyticsChart kind="bar" labels={['Пн','Вт','Ср','Чт','Пт','Сб','Вс']} values={weekdays} color={chartColor} target={target} textColor={chartText} gridColor={chartGrid}/></Suspense></div>:<AnalyticsEmpty>Недостаточно данных для сравнения</AnalyticsEmpty>}</div>}
     {currencySheet && <CurrencySheet currencies={bootstrap.currencies} used={[...new Set(bootstrap.expenses.filter((item)=>!item.deletedAt).map((item)=>item.currency))]} selected={target} onClose={()=>setCurrencySheet(false)} onSelect={(code)=>{setTarget(code);setWorkspacePreference(userId, workspaceId, 'analytics-currency', code);setCurrencySheet(false)}}/>}
   </section>
@@ -180,14 +199,30 @@ export function comparisonLabel(total:number,previous:number,partial:boolean,per
   return `${total>previous?'+':'−'}${difference}% ${to}`
 }
 
-export function fallbackAnalytics(bootstrap:Bootstrap,target:string,from:string,to:string,categoryId:string|null):AnalyticsData {
+export const UNTAGGED='none'
+
+// Теги, которых уже нет, не считаются — как и на сервере, где связь с удалённым тегом исчезает.
+function liveTagIds(expense:Pick<Expense,'tagIds'>,tags:Tag[]) {
+  return [...new Set(expense.tagIds??[])].filter((id)=>tags.some((tag)=>tag.id===id))
+}
+
+export function hasTag(expense:Pick<Expense,'tagIds'>,tagId:string|null,tags:Tag[]) {
+  if(!tagId)return true
+  const ids=liveTagIds(expense,tags)
+  return tagId===UNTAGGED?ids.length===0:ids.includes(tagId)
+}
+
+export function fallbackAnalytics(bootstrap:Bootstrap,target:string,from:string,to:string,categoryId:string|null,tagId:string|null=null):AnalyticsData {
   const decimals=bootstrap.currencies.find((currency)=>currency.code===target)?.decimals??2
   const categories=new Map(bootstrap.categories.map((category)=>[category.id,category]))
-  const periodExpenses=bootstrap.expenses.filter((expense)=>!expense.deletedAt&&!expense.voidedAt&&(!categoryId||expense.categoryId===categoryId)).map((expense)=>({expense,date:localDateKey(expense.occurredAt)})).filter((item)=>item.date>=from&&item.date<=to)
+  const tags=bootstrap.tags??[]
+  const periodExpenses=bootstrap.expenses.filter((expense)=>!expense.deletedAt&&!expense.voidedAt&&(!categoryId||expense.categoryId===categoryId)&&hasTag(expense,tagId,tags)).map((expense)=>({expense,date:localDateKey(expense.occurredAt)})).filter((item)=>item.date>=from&&item.date<=to)
   const canConvert=(expense:Expense)=>hasRate(bootstrap.rates,expense.currency,target,localDateKey(expense.occurredAt))
   const missingCurrencies=[...new Set(periodExpenses.filter(({expense})=>!canConvert(expense)).map(({expense})=>expense.currency))]
-  const expenses=periodExpenses.filter(({expense})=>canConvert(expense)).map(({expense,date})=>({expense,date,amountMinor:Math.round(convertExpense(expense,target,bootstrap.currencies,bootstrap.rates)*10**decimals)}))
+  const expenses=periodExpenses.filter(({expense})=>canConvert(expense)).map(({expense,date})=>({expense,date,amountMinor:Math.round(convertExpense(expense,target,bootstrap.currencies,bootstrap.rates)*(tagId&&tagId!==UNTAGGED?1/liveTagIds(expense,tags).length:1)*10**decimals)}))
+  const tagTotals=new Map<string,{amountMinor:number;count:number}>()
+  for(const item of expenses){const ids=tagId?[tagId]:liveTagIds(item.expense,tags);const keys=ids.length?ids:[UNTAGGED];for(const key of keys){const point=tagTotals.get(key)??{amountMinor:0,count:0};point.amountMinor+=Math.round(item.amountMinor/keys.length);point.count++;tagTotals.set(key,point)}}
   const sum=(items:typeof expenses)=>items.reduce((total,item)=>total+item.amountMinor,0)
   const dates=[...new Set(expenses.map((item)=>item.date))]
-  return {currency:target,from,to,totalMinor:sum(expenses),expenseCount:periodExpenses.length,convertedCount:expenses.length,rateDate:bootstrap.rates.date,missingCurrencies,daily:dates.map((date)=>{const items=expenses.filter((item)=>item.date===date);return{date,amountMinor:sum(items),count:items.length}}),categories:[...categories.values()].map((category)=>{const items=expenses.filter((item)=>item.expense.categoryId===category.id);return{categoryId:category.id,name:category.name,color:category.color,amountMinor:sum(items),count:items.length}}),weekdays:Array.from({length:7},(_,weekday)=>{const items=expenses.filter((item)=>(weekdayFromDateKey(item.date)+1)%7===weekday);return{weekday,amountMinor:sum(items),count:items.length}}),calendar:dates.map((date)=>{const items=expenses.filter((item)=>item.date===date);return{date,amountMinor:sum(items),count:items.length}})}
+  return {currency:target,from,to,totalMinor:sum(expenses),expenseCount:periodExpenses.length,convertedCount:expenses.length,rateDate:bootstrap.rates.date,missingCurrencies,daily:dates.map((date)=>{const items=expenses.filter((item)=>item.date===date);return{date,amountMinor:sum(items),count:items.length}}),categories:[...categories.values()].map((category)=>{const items=expenses.filter((item)=>item.expense.categoryId===category.id);return{categoryId:category.id,name:category.name,color:category.color,amountMinor:sum(items),count:items.length}}),tags:[...tagTotals].map(([key,point])=>{const tag=tags.find((item)=>item.id===key);return{tagId:key===UNTAGGED?null:key,name:key===UNTAGGED?null:tag?.name??'',color:key===UNTAGGED?null:tag?.color??null,...point}}).sort((left,right)=>right.amountMinor-left.amountMinor),weekdays:Array.from({length:7},(_,weekday)=>{const items=expenses.filter((item)=>(weekdayFromDateKey(item.date)+1)%7===weekday);return{weekday,amountMinor:sum(items),count:items.length}}),calendar:dates.map((date)=>{const items=expenses.filter((item)=>item.date===date);return{date,amountMinor:sum(items),count:items.length}})}
 }

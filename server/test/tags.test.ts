@@ -132,3 +132,28 @@ test("expenses carry tags through create, update, filters, sync and tag deletion
   assert.deepEqual(afterDelete.json().tagIds, [], "deleting a tag only detaches it");
   assert.equal(afterDelete.json().note, "обед");
 });
+
+test("analytics adds records up by tag, splitting a record with two tags evenly, and narrows to one tag", async () => {
+  const tag = async (name: string) => (await api("POST", "/tags", { name })).json().id as string;
+  const vpn = await tag("впн-аналитика");
+  const dice = await tag("дайс-аналитика");
+  const day = "2026-08-20";
+  const expense = (amountMinor: number, tagIds: string[]) => api("POST", "/expenses", { id: randomUUID(), amountMinor, currency: "RSD", categoryId: "subscriptions", note: null, tagIds, occurredAt: `${day}T12:00:00.000Z` });
+  for (const response of [await expense(10_000, [vpn]), await expense(20_000, [vpn, dice]), await expense(5_000, [])]) assert.equal(response.statusCode, 201, response.body);
+  const analytics = (query = "") => api("GET", `/analytics?from=${day}&to=${day}&currency=RSD&tz=UTC${query}`);
+
+  const all = await analytics();
+  assert.equal(all.statusCode, 200, all.body);
+  assert.equal(all.json().totalMinor, 35_000);
+  assert.deepEqual(all.json().tags.map((item: { tagId: string | null; amountMinor: number; count: number }) => [item.tagId, item.amountMinor, item.count]),
+    [[vpn, 20_000, 2], [dice, 10_000, 1], [null, 5_000, 1]]);
+
+  const vpnOnly = await analytics(`&tagId=${vpn}`);
+  assert.equal(vpnOnly.json().totalMinor, 20_000);
+  assert.equal(vpnOnly.json().expenseCount, 2);
+  assert.deepEqual(vpnOnly.json().categories.map((item: { categoryId: string; amountMinor: number }) => [item.categoryId, item.amountMinor]), [["subscriptions", 20_000]]);
+  const untagged = await analytics("&tagId=none");
+  assert.equal(untagged.json().totalMinor, 5_000);
+  const unknown = await analytics(`&tagId=${randomUUID()}`);
+  assert.equal(unknown.statusCode, 400, unknown.body);
+});

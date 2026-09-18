@@ -126,6 +126,8 @@ export type AnalyticsData = {
   missingCurrencies: string[]
   daily: { date: string; amountMinor: number; count: number }[]
   categories: { categoryId: string; name: string; color: string | null; amountMinor: number; count: number }[]
+  /** Доли тегов; запись с несколькими тегами делится между ними поровну. `tagId: null` — записи без тегов. Старый сервер поле не присылает. */
+  tags?: { tagId: string | null; name: string | null; color: string | null; amountMinor: number; count: number }[]
   weekdays: { weekday: number; amountMinor: number; count: number }[]
   calendar: { date: string; amountMinor: number; count: number }[]
 }

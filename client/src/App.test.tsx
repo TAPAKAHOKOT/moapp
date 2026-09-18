@@ -517,10 +517,34 @@ describe('analytics legend', () => {
     const parts = [...document.querySelectorAll('.legend-group')].map((node) => node.textContent)
     expect(parts).toEqual([expect.stringMatching(/#впн · 2.*75%/), expect.stringMatching(/#йеттел.*25%/)])
     expect(document.querySelectorAll('.legend-detail')).toHaveLength(3)
-    fireEvent.click(screen.getByRole('button', { name: /#йеттел/ }))
+    const part = () => [...document.querySelectorAll<HTMLButtonElement>('.legend-group')].find((node) => node.textContent?.includes('#йеттел'))!
+    fireEvent.click(part())
     expect(document.querySelectorAll('.legend-detail')).toHaveLength(1)
-    fireEvent.click(screen.getByRole('button', { name: /#йеттел/ }))
+    fireEvent.click(part())
     expect(document.querySelectorAll('.legend-detail')).toHaveLength(3)
+  })
+})
+
+describe('analytics tags', () => {
+  it('lists tags with their share, and a tapped tag narrows the page to its records', () => {
+    const now = new Date().toISOString()
+    const tags = ['впн', 'дайс', 'кофе'].map((name, index) => ({ id: `tag-${name}`, name, color: null, sortOrder: index, createdAt: now, updatedAt: now, version: 1 }))
+    const expense = (id: string, amountMinor: number, categoryId: string, tagIds: string[], note: string | null = null) =>
+      ({ id, amountMinor, currency: 'RSD', categoryId, note, tagIds, occurredAt: now, createdAt: now, updatedAt: now, version: 1, deletedAt: null })
+    const expenses = [expense('vpn', 10_000, 'subscriptions', ['tag-впн']), expense('vpn-dice', 20_000, 'subscriptions', ['tag-впн', 'tag-дайс']), expense('coffee', 5_000, 'eating-out', ['tag-кофе']), expense('bread', 5_000, 'products', [], 'PEKARA')]
+    const bootstrap = expenseBootstrap({ tags, expenses })
+    const withCategories = { ...bootstrap, categories: ['subscriptions', 'eating-out', 'products'].map((id, index) => ({ id, name: ['Подписки', 'Кафе', 'Продукты'][index], color: '#758d69', placement: 'main' as const, sortOrder: index, createdAt: now, updatedAt: now, archivedAt: null, version: 1 })) }
+    render(<AnalyticsView userId="analytics-user" workspaceId="analytics-workspace" bootstrap={withCategories} theme="light" online={false}/>)
+
+    const tagRows = () => [...document.querySelectorAll('.tag-legend .legend-row')].map((node) => node.textContent)
+    expect(tagRows()).toEqual([expect.stringMatching(/#впн.*50%/), expect.stringMatching(/#дайс.*25%/), expect.stringMatching(/#кофе.*13%/), expect.stringMatching(/Без тега.*13%/)])
+    fireEvent.click(document.querySelector<HTMLButtonElement>('.tag-legend .legend-row')!)
+    expect(document.querySelector('.analytics-title .eyebrow')?.textContent).toBe('#впн')
+    expect(tagRows()).toEqual([expect.stringMatching(/#впн.*200/)])
+    const details = [...document.querySelectorAll('.tag-legend .legend-detail')].map((node) => node.textContent)
+    expect(details).toEqual([expect.stringMatching(/Подписки/), expect.stringMatching(/Подписки · #дайс/)])
+    fireEvent.click(screen.getByRole('button', { name: 'Все теги' }))
+    expect(tagRows()).toHaveLength(4)
   })
 })
 
