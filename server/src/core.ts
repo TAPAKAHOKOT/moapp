@@ -6,6 +6,7 @@ import type { LegacyClaimRow, WorkspaceRow } from "./types.js";
 import { authenticatedSession, createUser, guestSession, getUserProfile, listDeviceSessions, listWorkspaceSummaries, normalizeDisplayName } from "./users.js";
 import { isUuid, jsonError, normalizeCurrencyCode } from "./validation.js";
 import { createWorkspace, getWorkspaceSummary, listParticipants, normalizeWorkspaceName, revokeWorkspaceInvitations } from "./workspaces.js";
+import { forgetMemberInMods } from "./mods.js";
 
 const scrypt = promisify(scryptCallback);
 const UPGRADE_ERROR = jsonError("UPGRADE_REQUIRED", "This sign-in method is no longer available; update the app");
@@ -224,7 +225,9 @@ export async function registerCoreRoutes(app: FastifyInstance): Promise<void> {
       if (!workspace) return "missing" as const;
       if (workspace.owner_user_id === request.auth!.userId) return "owner" as const;
       const removed = app.db.prepare("DELETE FROM memberships WHERE workspace_id=? AND user_id=?").run(workspaceId, request.auth!.userId);
-      return removed.changes === 0 ? "missing" as const : "removed" as const;
+      if (removed.changes === 0) return "missing" as const;
+      forgetMemberInMods(app.db, workspaceId, request.auth!.userId);
+      return "removed" as const;
     })();
     if (outcome === "owner") return fail(reply, 409, "OWNER_CANNOT_LEAVE", "Transfer ownership before leaving");
     if (outcome === "missing") return fail(reply, 404, "WORKSPACE_NOT_FOUND", "Workspace not found");
@@ -246,6 +249,7 @@ export async function registerCoreRoutes(app: FastifyInstance): Promise<void> {
       const removed = app.db.prepare("DELETE FROM memberships WHERE workspace_id=? AND user_id=?").run(workspaceId, userId);
       if (removed.changes === 0) return "missing" as const;
       revokeWorkspaceInvitations(app.db, workspaceId, new Date().toISOString(), userId);
+      forgetMemberInMods(app.db, workspaceId, userId);
       return "removed" as const;
     })();
     if (outcome === "forbidden") return fail(reply, 403, "FORBIDDEN", "Only the workspace owner can remove members");

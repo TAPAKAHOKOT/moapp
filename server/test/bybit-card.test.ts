@@ -3,6 +3,7 @@ import { createHmac, randomUUID } from "node:crypto";
 import { after, before, test } from "node:test";
 import { registerBybitCardRoutes } from "../src/bybit-card.js";
 import { registerCardQueueRoutes } from "../src/card-queue.js";
+import { registerModRoutes } from "../src/mods.js";
 import { registerTenantDomainRoutes } from "../src/tenant-domain.js";
 import { buildTestApp, testConfig } from "./test-app.js";
 
@@ -12,6 +13,12 @@ const assetRequestIds: string[] = [];
 let validationTime = 0;
 let rateLimited = false;
 let phase = 1;
+/*
+ * Каждый новый ключ проверяется заново. Настоящий Bybit не повторяет номера операций, а новое подключение
+ * читает только то, что было после него, — поэтому после переподключения мок отдаёт операции с новыми номерами.
+ */
+let keyChecks = 0;
+const operationId = (base: string) => (keyChecks > 1 ? `${base}-${keyChecks}` : base);
 
 function payment(overrides: Record<string, unknown>): Record<string, unknown> {
   return {
@@ -36,6 +43,7 @@ const mockFetch: typeof fetch = async (input, init) => {
     assert.equal(requestBody, "");
     assert.equal(headers["Content-Type"], undefined);
     validationTime = Date.now();
+    keyChecks += 1;
     return new Response(JSON.stringify({ retCode: 0, retMsg: "OK", result: { readOnly: 1, permissions: { BitCard: ["BitCard"] } } }), {
       status: 200, headers: { "content-type": "application/json" }
     });
@@ -67,28 +75,28 @@ const mockFetch: typeof fetch = async (input, init) => {
     payment({
       basicAmount: "19.250000000000000000", transactionAmount: "18.870000000000000000", transactionCurrencyAmount: "19.2500000000",
       paidAmount: "1925.000000000000000000", txnCreate: String(begin - 60_000), merchName: "Old merchant", merchCountry: "SRB",
-      txnId: "old", orderNo: "old-order", mccCode: "5411"
+      txnId: operationId("old"), orderNo: operationId("old-order"), mccCode: "5411"
     }),
     payment({
       tradeStatus: phase >= 4 ? "3" : "1", basicAmount: "12.460000000000000000", transactionAmount: "12.220000000000000000", transactionCurrencyAmount: "12.4600000000",
       paidAmount: "1234.000000000000000000", txnCreate: at(1), merchName: "WOLT", merchCity: "Belgrade", merchCountry: "SRB",
-      txnId: "new", orderNo: "new-order", mccCode: "5812", merchCategoryDesc: "Eating Places"
+      txnId: operationId("new"), orderNo: operationId("new-order"), mccCode: "5812", merchCategoryDesc: "Eating Places"
     }),
     /* An open authorization: reviewable immediately, settled in phase 2 and re-settled at another amount in phase 3. */
     payment({
       tradeStatus: phase === 1 ? "0" : "1", basicAmount: "5.000000000000000000", transactionAmount: "4.900000000000000000", transactionCurrencyAmount: "5.0000000000",
       paidAmount: phase === 1 ? "500.000000000000000000" : phase >= 3 ? "600.000000000000000000" : "550.000000000000000000",
-      txnCreate: at(2), merchName: "Pending", merchCountry: "SRB", txnId: "pending", mccCode: "5411"
+      txnCreate: at(2), merchName: "Pending", merchCountry: "SRB", txnId: operationId("pending"), mccCode: "5411"
     }),
     /* An open authorization that Bybit reverses in phase 2: it must leave the review queue. */
     payment({
       tradeStatus: phase === 1 ? "0" : "3", basicAmount: "9.000000000000000000", transactionAmount: "8.820000000000000000", transactionCurrencyAmount: "9.0000000000",
-      paidAmount: "900.000000000000000000", txnCreate: at(3), merchName: "Reversed", merchCountry: "SRB", txnId: "reversed", mccCode: "5411"
+      paidAmount: "900.000000000000000000", txnCreate: at(3), merchName: "Reversed", merchCountry: "SRB", txnId: operationId("reversed"), mccCode: "5411"
     }),
     payment({
       tradeStatus: "2", status: "2", declinedReason: "51", basicAmount: "3.000000000000000000", transactionAmount: "2.940000000000000000",
       transactionCurrencyAmount: "3.0000000000", paidAmount: "300.000000000000000000", txnCreate: at(4), merchName: "Declined",
-      merchCountry: "SRB", txnId: "declined", mccCode: "5411"
+      merchCountry: "SRB", txnId: operationId("declined"), mccCode: "5411"
     })
   ];
   return new Response(JSON.stringify({ retCode: 0, retMsg: "success", result: { pageSize: 100, pageNo: 1, totalCount: data.length, data } }), {
@@ -96,7 +104,7 @@ const mockFetch: typeof fetch = async (input, init) => {
   });
 };
 
-const app = await buildTestApp({ config, plugins: [registerTenantDomainRoutes, registerCardQueueRoutes, (instance) => registerBybitCardRoutes(instance, { fetch: mockFetch })] });
+const app = await buildTestApp({ config, plugins: [registerTenantDomainRoutes, registerCardQueueRoutes, (instance) => registerBybitCardRoutes(instance, { fetch: mockFetch }), registerModRoutes] });
 const origin = { origin: config.appOrigin };
 let cookie = "";
 let userId = "";
@@ -119,6 +127,8 @@ before(async () => {
     method: "POST", url: "/api/workspaces", headers: { ...origin, ...contextHeaders() }, payload: { id: workspaceId, name: "Home" }
   });
   assert.equal(workspace.statusCode, 201, workspace.body);
+  const mod = await app.inject({ method: "PUT", url: `/api/workspaces/${workspaceId}/mods/bybit-card`, headers: { ...origin, ...contextHeaders() }, payload: {} });
+  assert.equal(mod.statusCode, 200, mod.body);
   /* Analytics loads rates for the requested day; seed them so the test never reaches the network. */
   const today = new Date().toISOString().slice(0, 10);
   const now = new Date().toISOString();
@@ -235,7 +245,7 @@ test("a later sync settles open authorizations and drops reversed ones from revi
   assert.equal(counted.json().totalMinor, 90000, "counting it again restores it everywhere");
 });
 
-test("review actions can be safely undone and disconnect keeps the final expense", async () => {
+test("review actions can be safely undone and disconnect keeps the final expense and the unreviewed operations", async () => {
   const row = app.db.prepare("SELECT id FROM card_transactions WHERE workspace_id=? AND merchant_name='WOLT'").get(workspaceId) as { id: string };
   const classify = async () => app.inject({
     method: "POST",
@@ -290,8 +300,21 @@ test("review actions can be safely undone and disconnect keeps the final expense
     method: "DELETE", url: `/api/workspaces/${workspaceId}/integrations/bybit-card`, headers: { ...origin, ...contextHeaders() }, payload: {}
   });
   assert.equal(disconnected.statusCode, 204, disconnected.body);
-  assert.equal((app.db.prepare("SELECT count(*) count FROM card_transactions WHERE workspace_id=?").get(workspaceId) as { count: number }).count, 0);
+  assert.deepEqual(app.db.prepare("SELECT merchant_name,connection_id,review_status FROM card_transactions WHERE workspace_id=? ORDER BY merchant_name").all(workspaceId), [
+    { merchant_name: "Pending", connection_id: null, review_status: "pending" },
+    { merchant_name: "Reversed", connection_id: null, review_status: "classified" },
+    { merchant_name: "WOLT", connection_id: null, review_status: "classified" }
+  ], "the operations outlive the key; only the key is forgotten");
   assert.equal((app.db.prepare("SELECT count(*) count FROM expenses WHERE workspace_id=? AND deleted_at IS NULL").get(workspaceId) as { count: number }).count, 2);
+
+  /* Неразобранное ждёт людей и без ключа: здесь человек решает, что это не расход. */
+  const leftover = app.db.prepare("SELECT id FROM card_transactions WHERE workspace_id=? AND review_status='pending'").pluck().get(workspaceId) as string;
+  const dismissed = await app.inject({
+    method: "POST", url: `/api/workspaces/${workspaceId}/integrations/card-queue/transactions/${leftover}/ignore`,
+    headers: { ...origin, ...contextHeaders() }, payload: {}
+  });
+  assert.equal(dismissed.statusCode, 200, dismissed.body);
+  assert.equal(dismissed.json().pendingCount, 0);
 });
 
 /*
@@ -306,10 +329,10 @@ test("a payment splits into ordinary queue rows and can be put back together", a
     payload: { apiKey: "read-only-card-key", apiSecret: "super-secret", region: "global" }
   });
   assert.equal(reconnected.statusCode, 201, reconnected.body);
-  assert.equal(reconnected.json().pendingCount, 2, "the settled WOLT payment and the settled authorization are back in review");
+  assert.equal(reconnected.json().pendingCount, 2, "the new key brings its own settled payment and settled authorization into review");
 
   const rowId = (name: string) => (app.db.prepare(`SELECT id FROM card_transactions
-    WHERE workspace_id=? AND merchant_name=? AND split_of_id IS NULL`).get(workspaceId, name) as { id: string }).id;
+    WHERE workspace_id=? AND merchant_name=? AND split_of_id IS NULL AND connection_id IS NOT NULL`).get(workspaceId, name) as { id: string }).id;
   const wolt = rowId("WOLT");
   const post = (path: string, payload: Record<string, unknown>) => app.inject({
     method: "POST", url: `/api/workspaces/${workspaceId}/integrations/bybit-card/transactions/${path}`,
@@ -370,7 +393,7 @@ test("a payment splits into ordinary queue rows and can be put back together", a
 /* «Собрать части» умеет убрать записанные части сразу, но только по названным версиям расходов. */
 test("collecting the parts removes the already recorded ones when their expenses are named", async () => {
   const wolt = (app.db.prepare(`SELECT id FROM card_transactions
-    WHERE workspace_id=? AND merchant_name='WOLT' AND split_of_id IS NULL`).get(workspaceId) as { id: string }).id;
+    WHERE workspace_id=? AND merchant_name='WOLT' AND split_of_id IS NULL AND connection_id IS NOT NULL`).get(workspaceId) as { id: string }).id;
   const post = (path: string, payload: Record<string, unknown>) => app.inject({
     method: "POST", url: `/api/workspaces/${workspaceId}/integrations/bybit-card/transactions/${path}`,
     headers: { ...origin, ...contextHeaders() }, payload
@@ -404,7 +427,7 @@ test("collecting the parts removes the already recorded ones when their expenses
 /* Незакрытая авторизация могла быть разделена до расчёта: если сумма изменилась, деление распускается само. */
 test("a settled amount that no longer matches the parts puts the payment back together", async () => {
   const pending = (app.db.prepare(`SELECT id FROM card_transactions
-    WHERE workspace_id=? AND merchant_name='Pending' AND split_of_id IS NULL`).get(workspaceId) as { id: string }).id;
+    WHERE workspace_id=? AND merchant_name='Pending' AND split_of_id IS NULL AND connection_id IS NOT NULL`).get(workspaceId) as { id: string }).id;
   const split = await app.inject({
     method: "POST", url: `/api/workspaces/${workspaceId}/integrations/bybit-card/transactions/${pending}/split`,
     headers: { ...origin, ...contextHeaders() }, payload: { amounts: [30000, 25000] }
@@ -426,7 +449,7 @@ test("a settled amount that no longer matches the parts puts the payment back to
 
 test("a reversal marks the expenses of every part as declined", async () => {
   const wolt = (app.db.prepare(`SELECT id FROM card_transactions
-    WHERE workspace_id=? AND merchant_name='WOLT' AND split_of_id IS NULL`).get(workspaceId) as { id: string }).id;
+    WHERE workspace_id=? AND merchant_name='WOLT' AND split_of_id IS NULL AND connection_id IS NOT NULL`).get(workspaceId) as { id: string }).id;
   const post = (path: string, payload: Record<string, unknown>) => app.inject({
     method: "POST", url: `/api/workspaces/${workspaceId}/integrations/bybit-card/transactions/${path}`,
     headers: { ...origin, ...contextHeaders() }, payload
@@ -453,7 +476,7 @@ test("a reversal marks the expenses of every part as declined", async () => {
     assert.equal(voided.statusCode, 200, voided.body);
     assert.equal(voided.json().deletedAt, null);
     assert.ok(voided.json().voidedAt, "a reversal reaches every part, not only the first");
-    assert.deepEqual(voided.json().voidReason, { provider: "bybit-card", kind: "reversed", txnId: "new", merchantName: "WOLT", amountMinor: 123400, currency: "RSD" },
+    assert.deepEqual(voided.json().voidReason, { provider: "bybit-card", kind: "reversed", txnId: "new-2", merchantName: "WOLT", amountMinor: 123400, currency: "RSD" },
       "the mark describes the payment, not the part");
   }
 });

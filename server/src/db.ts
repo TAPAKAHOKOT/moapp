@@ -71,7 +71,7 @@ const seeds = [
   ["other", "Прочее", "additional", 4, "#A8A8A8"]
 ] as const;
 
-const LATEST_SCHEMA_VERSION = 14;
+const LATEST_SCHEMA_VERSION = 15;
 
 type TableCount = {
   categories: number;
@@ -606,6 +606,74 @@ export function openDatabase(path: string): Database.Database {
           CREATE INDEX card_transactions_split_idx ON card_transactions(split_of_id,split_index);
           CREATE INDEX card_transactions_connection_idx ON card_transactions(connection_id,external_key);
           CREATE INDEX card_transactions_amount_idx ON card_transactions(workspace_id,source,currency,amount_minor,occurred_at);
+        `);
+        /*
+         * Моды: пространство само выбирает, какие интеграции у него есть. Подключённая карта Bybit и загруженные
+         * выписки Т‑Банка становятся добавленными модами, чтобы после обновления ничего не пропало.
+         * Очередь разбора пересобирается: ключ Bybit, который отключили, больше не уносит её строки — неразобранное
+         * ждёт людей, — а источник операции больше не перечислен в схеме, его знает список модов.
+         * Ключ, вставленный человеком, который уже вышел из пространства, отключается: так теперь происходит при выходе.
+         */
+        else if (version === 15) db.exec(`
+          CREATE TABLE workspace_mods (
+            workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+            mod_id TEXT NOT NULL,
+            added_by_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+            added_at TEXT NOT NULL,
+            PRIMARY KEY(workspace_id, mod_id)
+          );
+          INSERT INTO workspace_mods(workspace_id,mod_id,added_by_user_id,added_at)
+            SELECT workspace_id,'bybit-card',connected_by_user_id,created_at FROM bybit_card_connections;
+          INSERT OR IGNORE INTO workspace_mods(workspace_id,mod_id,added_by_user_id,added_at)
+            SELECT workspace_id,'tbank',NULL,min(created_at) FROM card_transactions WHERE source='tbank' GROUP BY workspace_id;
+          CREATE TABLE card_transactions_new (
+            id TEXT PRIMARY KEY,
+            workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+            source TEXT NOT NULL,
+            connection_id TEXT REFERENCES bybit_card_connections(id) ON DELETE SET NULL,
+            external_key TEXT NOT NULL,
+            txn_id TEXT,
+            order_no TEXT,
+            side TEXT NOT NULL,
+            trade_status TEXT NOT NULL,
+            provider_status TEXT NOT NULL,
+            amount_minor INTEGER NOT NULL CHECK(amount_minor > 0),
+            currency TEXT NOT NULL CHECK(length(currency)=3),
+            merchant_name TEXT,
+            merchant_country TEXT,
+            merchant_city TEXT,
+            mcc_code TEXT,
+            merchant_category TEXT,
+            occurred_at TEXT NOT NULL,
+            review_status TEXT NOT NULL CHECK(review_status IN ('pending','classified','ignored','split')),
+            expense_id TEXT,
+            split_of_id TEXT REFERENCES card_transactions_new(id) ON DELETE CASCADE,
+            split_index INTEGER NOT NULL DEFAULT 0 CHECK(split_index >= 0),
+            raw_json TEXT NOT NULL CHECK(json_valid(raw_json)),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(workspace_id,source,external_key),
+            CHECK((split_of_id IS NULL AND split_index = 0) OR (split_of_id IS NOT NULL AND split_index > 0))
+          );
+          INSERT INTO card_transactions_new
+            (id,workspace_id,source,connection_id,external_key,txn_id,order_no,side,trade_status,provider_status,amount_minor,currency,
+             merchant_name,merchant_country,merchant_city,mcc_code,merchant_category,occurred_at,review_status,expense_id,
+             split_of_id,split_index,raw_json,created_at,updated_at)
+            SELECT id,workspace_id,source,connection_id,external_key,txn_id,order_no,side,trade_status,provider_status,amount_minor,currency,
+             merchant_name,merchant_country,merchant_city,mcc_code,merchant_category,occurred_at,review_status,expense_id,
+             split_of_id,split_index,raw_json,created_at,updated_at FROM card_transactions
+            ORDER BY split_of_id IS NOT NULL, rowid;
+          DROP TABLE card_transactions;
+          ALTER TABLE card_transactions_new RENAME TO card_transactions;
+          CREATE INDEX card_transactions_review_idx ON card_transactions(workspace_id,review_status,occurred_at);
+          CREATE INDEX card_transactions_expense_idx ON card_transactions(workspace_id,expense_id);
+          CREATE INDEX card_transactions_split_idx ON card_transactions(split_of_id,split_index);
+          CREATE INDEX card_transactions_connection_idx ON card_transactions(connection_id,external_key);
+          CREATE INDEX card_transactions_amount_idx ON card_transactions(workspace_id,source,currency,amount_minor,occurred_at);
+          DELETE FROM bybit_card_connections WHERE NOT EXISTS (
+            SELECT 1 FROM memberships m
+            WHERE m.workspace_id = bybit_card_connections.workspace_id AND m.user_id = bybit_card_connections.connected_by_user_id
+          );
         `);
         db.prepare("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)").run(version, appliedAt);
       }

@@ -298,10 +298,23 @@ type SyncResult = {
 
 The response is exactly `{workspaceId,results,serverTime}`. Replay identity is `(workspaceId, operationId)`: a retry in the same workspace returns the stored result with `replayed: true` and never reapplies the mutation. Conflict results include the current expense when available. Membership is rechecked as the first read inside the batch transaction.
 
+## Mods
+
+Integrations are mods that a workspace adds on purpose. The catalog is fixed in the
+server (`bybit-card`, `tbank`); `workspace_mods` remembers which ones a workspace has.
+The workspace is shared: any member may add or remove a mod and use it.
+
+- `GET /api/workspaces/:workspaceId/mods` returns `{mods:[{id,added,addedAt,state?}]}` in catalog order; `addedAt` is `null` for a mod that is not added. An added mod may describe itself in `state`: `bybit-card` returns its key state `{connected,region?,enabledAt?,lastSyncedAt?,status?,lastError?}` and never the credentials.
+- `PUT /api/workspaces/:workspaceId/mods/:modId` requires `{}` and adds the mod; adding it again keeps the first `addedAt`. `DELETE` with `{}` removes it, and removing it again is not an error. Both return the same `{mods}` list; an unknown id is `404 MOD_NOT_FOUND`.
+- Removing `bybit-card` forgets its key. Removing a mod never touches the review queue: its unreviewed operations stay until people classify or dismiss them, and a returning `tbank` mod still recognises statement rows uploaded before.
+- A mod's own routes answer `409 MOD_NOT_ADDED` while it is not added: connecting a Bybit key and uploading a T-Bank statement. The review queue always works.
+- When a member leaves or is removed, a Bybit key that this member inserted is forgotten; its operations stay in review.
+
 ## Card review queue
 
 Operations from every card source wait in one workspace-scoped review queue and
 are reviewed the same way; each item carries `source` (`"bybit-card"` or `"tbank"`).
+Operations outlive the mod or the key that brought them.
 
 - `GET /api/workspaces/:workspaceId/integrations/card-queue` returns `{pendingCount}` for the whole queue.
 - `GET /api/workspaces/:workspaceId/integrations/card-queue/transactions?limit=` returns oldest-first pending transactions, capped at 200.
@@ -317,14 +330,14 @@ became shared.
 
 ## Bybit Card integration
 
-The optional integration is workspace-scoped. Only the workspace owner can
-connect, replace, or remove credentials; every member may read and classify the
-shared review queue. Credentials are accepted only for a read-only Bybit API key
-with the `BitCard` permission and are encrypted before storage.
+The `bybit-card` mod is workspace-scoped. Any member can connect, replace, or
+remove credentials, and every member may read and classify the shared review
+queue. Credentials are accepted only for a read-only Bybit API key with the
+`BitCard` permission and are encrypted before storage.
 
-- `GET /api/workspaces/:workspaceId/integrations/bybit-card` returns connection state, `enabledAt`, last sync state, management capability, and `pendingCount` of the whole review queue.
-- `POST /api/workspaces/:workspaceId/integrations/bybit-card` accepts `{apiKey,apiSecret,region}`. A successful replacement resets `enabledAt` to the current server instant and discards the old provider queue.
-- `DELETE /api/workspaces/:workspaceId/integrations/bybit-card` requires `{}`. Classified expenses remain.
+- `GET /api/workspaces/:workspaceId/integrations/bybit-card` returns connection state, `enabledAt`, last sync state, `canManage` (always `true`; kept for older clients), and `pendingCount` of the whole review queue.
+- `POST /api/workspaces/:workspaceId/integrations/bybit-card` accepts `{apiKey,apiSecret,region}` while the mod is added (`409 MOD_NOT_ADDED` otherwise, before the key is checked). A successful replacement resets `enabledAt` to the current server instant; the previous key's operations stay in review without a connection.
+- `DELETE /api/workspaces/:workspaceId/integrations/bybit-card` requires `{}` and forgets the key. Classified expenses and unreviewed operations remain.
 - `POST /api/workspaces/:workspaceId/integrations/bybit-card/sync` requires `{}` and polls cleared card transactions.
 Bybit operations are reviewed through the shared card review queue above.
 
@@ -358,7 +371,8 @@ expense mutations. Deleting the expense works as usual.
 ## T-Bank statement import
 
 T-Bank has no API for personal cards, so the person exports operations as CSV on
-tbank.ru and uploads the file. Any workspace member may upload.
+tbank.ru and uploads the file. Any workspace member may upload while the `tbank`
+mod is added (`409 MOD_NOT_ADDED` otherwise).
 
 - `POST /api/workspaces/:workspaceId/integrations/tbank/statement` accepts `{csv,timeZone}` (up to 8 MB). The response is `{imported,known,skipped,pendingCount}`: new spending put into review, rows recognised from earlier uploads, and rows without a readable date, amount or currency. A file without the date, amount, currency and status columns returns `422 TBANK_STATEMENT_INVALID`.
 
@@ -476,7 +490,7 @@ Clients must use `/api/workspaces/:workspaceId/...`.
 - `409 VERSION_CONFLICT`: a versioned resource changed; expense/category errors include `details.current`.
 - `409 IDEMPOTENCY_CONFLICT`: a client ID was reused with different create data.
 - `409 IDENTITY_CONFLICT`: a capability belongs to another profile.
-- Other resource-specific `409` codes include `ALREADY_AUTHENTICATED`, `ALREADY_MEMBER`, `ALREADY_CONNECTED`, `OWNER_CANNOT_LEAVE`, `USE_LOGOUT`, `CLAIM_IN_PROGRESS`, `ROTATION_STALE`, and `DUPLICATE`.
+- Other resource-specific `409` codes include `ALREADY_AUTHENTICATED`, `ALREADY_MEMBER`, `ALREADY_CONNECTED`, `OWNER_CANNOT_LEAVE`, `USE_LOGOUT`, `CLAIM_IN_PROGRESS`, `ROTATION_STALE`, `DUPLICATE`, and `MOD_NOT_ADDED`.
 - `410 LINK_INVALID`: an access secret is invalid, expired, consumed, or revoked.
 - `410 UPGRADE_REQUIRED`: a retired PIN/unscoped API or unavailable legacy claim was used.
 - `429 RATE_LIMITED`: retry later; rate-limited responses include `Retry-After`.

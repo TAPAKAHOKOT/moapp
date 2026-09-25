@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { DEFAULT_TIME_ZONE, isTimeZone } from "./calendar.js";
 import { pendingCount, voidCardTransaction } from "./card-queue.js";
-import { hasWorkspaceMembership, noStore, requireMutationOrigin, workspaceContext } from "./tenant-domain-guard.js";
+import { hasWorkspaceMembership, isModAdded, noStore, requireMutationOrigin, sendModNotAdded, workspaceContext } from "./tenant-domain-guard.js";
 import { isCurrency, jsonError, minorDigits } from "./validation.js";
 
 /*
@@ -13,6 +13,8 @@ import { isCurrency, jsonError, minorDigits } from "./validation.js";
  * карта + время до секунды + сумма + валюта, и порядковый номер среди полностью одинаковых строк файла.
  * Описание, имя счёта, сумма в валюте счёта и статус в отпечаток не входят — банк и человек их меняют.
  */
+
+export const TBANK_MOD = "tbank";
 
 /* Год‑другой операций весит сотни килобайт; запас — на выгрузку за всё время. */
 const MAX_STATEMENT_BYTES = 8 * 1024 * 1024;
@@ -277,15 +279,19 @@ export async function registerTbankStatementRoutes(app: FastifyInstance): Promis
     bodyLimit: MAX_STATEMENT_BYTES, preHandler: [app.requireWorkspaceMember, mutation], onSend: noStore
   }, async (request, reply) => {
     const { workspaceId, userId } = workspaceContext(request);
+    if (!isModAdded(app, workspaceId, TBANK_MOD)) return sendModNotAdded(reply);
     const body = (request.body ?? {}) as { csv?: unknown; timeZone?: unknown };
     if (typeof body.csv !== "string" || !body.csv.trim()) return fail(reply, 400, "VALIDATION", "csv is required");
     const timeZone = isTimeZone(body.timeZone) ? body.timeZone : DEFAULT_TIME_ZONE;
     const parsed = parseTbankStatement(body.csv);
     if ("error" in parsed) return fail(reply, 422, "TBANK_STATEMENT_INVALID", parsed.error);
-    const result = app.db.transaction(() => (
-      hasWorkspaceMembership(app, workspaceId, userId) ? importTbankStatement(app, workspaceId, parsed.rows, timeZone) : null
-    ))();
-    if (!result) return fail(reply, 404, "NOT_FOUND", "Workspace not found");
+    const result = app.db.transaction(() => {
+      if (!hasWorkspaceMembership(app, workspaceId, userId)) return "missing" as const;
+      if (!isModAdded(app, workspaceId, TBANK_MOD)) return "not-added" as const;
+      return importTbankStatement(app, workspaceId, parsed.rows, timeZone);
+    })();
+    if (result === "missing") return fail(reply, 404, "NOT_FOUND", "Workspace not found");
+    if (result === "not-added") return sendModNotAdded(reply);
     return { ...result, skipped: parsed.skipped, pendingCount: pendingCount(app, workspaceId) };
   });
 }

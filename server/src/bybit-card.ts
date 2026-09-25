@@ -1,8 +1,11 @@
 import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
+import type { Database } from "better-sqlite3";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { collapseSplit, pendingCount, voidCardTransaction } from "./card-queue.js";
-import { noStore, requireMutationOrigin, workspaceContext } from "./tenant-domain-guard.js";
+import { hasWorkspaceMembership, isModAdded, noStore, requireMutationOrigin, sendModNotAdded, sendWorkspaceNotFound, workspaceContext } from "./tenant-domain-guard.js";
 import { isCurrency, jsonError, minorDigits } from "./validation.js";
+
+export const BYBIT_CARD_MOD = "bybit-card";
 
 const RECV_WINDOW = "5000";
 const SYNC_OVERLAP_MS = 7 * 24 * 60 * 60 * 1000;
@@ -261,19 +264,34 @@ function storedProviderMetadata(record: AssetRecord): string {
   });
 }
 
-/* `pendingCount` — вся очередь разбора, а не только Bybit: по нему старый клиент показывает карточку «ждут разбора». */
-function connectionStatus(app: FastifyInstance, workspaceId: string) {
+/* Состояние ключа: его показывает и шторка карты, и список модов. */
+export function bybitCardState(app: FastifyInstance, workspaceId: string) {
   const row = app.db.prepare("SELECT * FROM bybit_card_connections WHERE workspace_id=?").get(workspaceId) as ConnectionRow | undefined;
-  if (!row) return { connected: false as const, pendingCount: pendingCount(app, workspaceId) };
+  if (!row) return { connected: false as const };
   return {
     connected: true as const,
     region: row.region,
     enabledAt: row.enabled_at,
     lastSyncedAt: row.last_synced_at,
     status: row.status,
-    lastError: row.last_error,
-    pendingCount: pendingCount(app, workspaceId)
+    lastError: row.last_error
   };
+}
+
+/* `pendingCount` — вся очередь разбора, а не только Bybit: по нему старый клиент показывает карточку «ждут разбора». */
+function connectionStatus(app: FastifyInstance, workspaceId: string) {
+  return { ...bybitCardState(app, workspaceId), pendingCount: pendingCount(app, workspaceId) };
+}
+
+/*
+ * Ключ забывается, когда мод убирают из пространства или когда уходит тот, кто этот ключ вставил:
+ * иначе покупки с чужой карты продолжали бы приходить туда, где этого человека уже нет.
+ * Операции остаются в очереди без подключения — неразобранное разбирают или убирают люди.
+ */
+export function forgetBybitCardKeys(db: Database, workspaceId: string, connectedByUserId?: string): number {
+  return connectedByUserId === undefined
+    ? db.prepare("DELETE FROM bybit_card_connections WHERE workspace_id=?").run(workspaceId).changes
+    : db.prepare("DELETE FROM bybit_card_connections WHERE workspace_id=? AND connected_by_user_id=?").run(workspaceId, connectedByUserId).changes;
 }
 
 async function fetchRecords(fetchImpl: FetchLike, credentials: Credentials, from: number, to: number, baseUrl?: string): Promise<AssetRecord[]> {
@@ -328,11 +346,15 @@ export async function syncBybitCard(app: FastifyInstance, workspaceId: string, f
     const applied = app.db.transaction(() => {
       const current = app.db.prepare("SELECT id FROM bybit_card_connections WHERE workspace_id=?").get(workspaceId) as { id: string } | undefined;
       if (current?.id !== connection.id) return false;
+      /*
+       * Операцию узнают по ключу в пределах пространства, а не подключения: строки прежнего ключа остаются в очереди,
+       * и если та же операция придёт снова, её подхватывает нынешнее подключение, не создавая второй записи.
+       */
       const insert = app.db.prepare(`INSERT INTO card_transactions
         (id,workspace_id,source,connection_id,external_key,txn_id,order_no,side,trade_status,provider_status,amount_minor,currency,
           merchant_name,merchant_country,merchant_city,mcc_code,merchant_category,occurred_at,review_status,expense_id,raw_json,created_at,updated_at)
         VALUES (?,?,'bybit-card',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-        ON CONFLICT(workspace_id,source,external_key) DO UPDATE SET
+        ON CONFLICT(workspace_id,source,external_key) DO UPDATE SET connection_id=excluded.connection_id,
           txn_id=excluded.txn_id,order_no=excluded.order_no,side=excluded.side,trade_status=excluded.trade_status,
           provider_status=excluded.provider_status,amount_minor=excluded.amount_minor,currency=excluded.currency,
           merchant_name=excluded.merchant_name,merchant_country=excluded.merchant_country,merchant_city=excluded.merchant_city,
@@ -354,8 +376,9 @@ export async function syncBybitCard(app: FastifyInstance, workspaceId: string, f
         const amount = amountOf(record);
         if (!amount) continue;
         const side = String(record.side ?? "");
-        const existed = app.db.prepare("SELECT id,amount_minor,review_status FROM card_transactions WHERE connection_id=? AND external_key=?")
-          .get(connection.id, externalKey) as { id: string; amount_minor: number; review_status: string } | undefined;
+        const existed = app.db.prepare(`SELECT id,amount_minor,review_status FROM card_transactions
+          WHERE workspace_id=? AND source='bybit-card' AND external_key=?`)
+          .get(workspaceId, externalKey) as { id: string; amount_minor: number; review_status: string } | undefined;
         insert.run(
           randomUUID(), workspaceId, connection.id, externalKey, text(record.txnId), text(record.orderNo), side,
           String(record.tradeStatus ?? ""), String(record.status ?? ""), amount.amountMinor, amount.currency,
@@ -394,13 +417,15 @@ export async function registerBybitCardRoutes(app: FastifyInstance, options: { f
   const prefix = "/api/workspaces/:workspaceId/integrations/bybit-card";
   const mutation = (request: FastifyRequest, reply: FastifyReply) => requireMutationOrigin(app, request, reply);
 
+  /* Пространство общее: ключ вставляет и отключает любой участник. `canManage` остался для телефонов со старым клиентом. */
   app.get(prefix, { preHandler: app.requireWorkspaceMember, onSend: noStore }, async (request) => ({
     ...connectionStatus(app, workspaceContext(request).workspaceId),
-    canManage: Boolean(request.workspaceAccess?.owner)
+    canManage: true
   }));
 
   app.post(prefix, { preHandler: [app.requireWorkspaceMember, mutation], onSend: noStore }, async (request, reply) => {
-    if (!request.workspaceAccess?.owner || !request.auth) return fail(reply, 403, "FORBIDDEN", "Only the workspace owner can connect Bybit Card");
+    const { workspaceId, userId } = workspaceContext(request);
+    if (!isModAdded(app, workspaceId, BYBIT_CARD_MOD)) return sendModNotAdded(reply);
     const body = request.body as { apiKey?: unknown; apiSecret?: unknown; region?: unknown };
     const apiKey = typeof body.apiKey === "string" ? body.apiKey.trim() : "";
     const apiSecret = typeof body.apiSecret === "string" ? body.apiSecret.trim() : "";
@@ -416,32 +441,32 @@ export async function registerBybitCardRoutes(app: FastifyInstance, options: { f
       return fail(reply, bybit.code === "BYBIT_RATE_LIMITED" ? 429 : 422, bybit.code, bybit.message);
     }
     const id = randomUUID();
+    /* Новый ключ заменяет прежний; строки прежнего остаются в очереди без подключения. */
     const saved = app.db.transaction(() => {
-      const owner = app.db.prepare("SELECT 1 FROM workspaces WHERE id=? AND owner_user_id=?").get(request.workspaceAccess!.workspaceId, request.auth!.userId);
-      if (!owner) return false;
-      app.db.prepare("DELETE FROM bybit_card_connections WHERE workspace_id=?").run(request.workspaceAccess!.workspaceId);
+      if (!hasWorkspaceMembership(app, workspaceId, userId)) return "missing" as const;
+      if (!isModAdded(app, workspaceId, BYBIT_CARD_MOD)) return "not-added" as const;
+      forgetBybitCardKeys(app.db, workspaceId);
       app.db.prepare(`INSERT INTO bybit_card_connections
         (id,workspace_id,connected_by_user_id,credentials_encrypted,region,enabled_at,last_synced_at,status,last_error,created_at,updated_at)
         VALUES (?,?,?,?,?,?,NULL,'active',NULL,?,?)`)
-        .run(id, request.workspaceAccess!.workspaceId, request.auth!.userId, encryptBybitCredentials(app, credentials), region, enabledAt, enabledAt, enabledAt);
-      return true;
+        .run(id, workspaceId, userId, encryptBybitCredentials(app, credentials), region, enabledAt, enabledAt, enabledAt);
+      return "saved" as const;
     })();
-    if (!saved) return fail(reply, 403, "FORBIDDEN", "Only the workspace owner can connect Bybit Card");
-    try { await syncBybitCard(app, request.workspaceAccess.workspaceId, fetchImpl); }
+    if (saved === "missing") return sendWorkspaceNotFound(reply);
+    if (saved === "not-added") return sendModNotAdded(reply);
+    try { await syncBybitCard(app, workspaceId, fetchImpl); }
     catch (error) {
-      request.log.warn({ err: error, workspaceId: request.workspaceAccess.workspaceId }, "Initial Bybit Card sync failed");
+      request.log.warn({ err: error, workspaceId }, "Initial Bybit Card sync failed");
       /* The verified connection stays enabled and exposes its sync error in status. */
     }
-    return reply.code(201).send({ ...connectionStatus(app, request.workspaceAccess.workspaceId), canManage: true });
+    return reply.code(201).send({ ...connectionStatus(app, workspaceId), canManage: true });
   });
 
   app.delete(prefix, { preHandler: [app.requireWorkspaceMember, mutation], onSend: noStore }, async (request, reply) => {
-    if (!request.workspaceAccess?.owner || !request.auth) return fail(reply, 403, "FORBIDDEN", "Only the workspace owner can disconnect Bybit Card");
-    const removed = app.db.transaction(() => {
-      const owner = app.db.prepare("SELECT 1 FROM workspaces WHERE id=? AND owner_user_id=?").get(request.workspaceAccess!.workspaceId, request.auth!.userId);
-      if (!owner) return 0;
-      return app.db.prepare("DELETE FROM bybit_card_connections WHERE workspace_id=?").run(request.workspaceAccess!.workspaceId).changes;
-    })();
+    const { workspaceId, userId } = workspaceContext(request);
+    const removed = app.db.transaction(() => (
+      hasWorkspaceMembership(app, workspaceId, userId) ? forgetBybitCardKeys(app.db, workspaceId) : 0
+    ))();
     return removed ? reply.code(204).send() : fail(reply, 404, "BYBIT_NOT_CONNECTED", "Bybit Card is not connected");
   });
 

@@ -25,6 +25,16 @@ export function hasWorkspaceMembership(app: FastifyInstance, workspaceId: string
     .get(workspaceId, userId) !== undefined;
 }
 
+/* Маршруты мода работают, только пока мод добавлен в пространство; какие моды бывают — в mods.ts. */
+export function isModAdded(app: FastifyInstance, workspaceId: string, modId: string): boolean {
+  return app.db.prepare("SELECT 1 FROM workspace_mods WHERE workspace_id=? AND mod_id=?")
+    .get(workspaceId, modId) !== undefined;
+}
+
+export function sendModNotAdded(reply: FastifyReply): FastifyReply {
+  return reply.code(409).send(jsonError("MOD_NOT_ADDED", "Add this mod to the workspace first"));
+}
+
 export function sendWorkspaceNotFound(reply: FastifyReply): FastifyReply {
   return reply.code(404).send(jsonError("WORKSPACE_NOT_FOUND", "Workspace not found"));
 }

@@ -2,12 +2,13 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { after, before, test } from "node:test";
 import { registerCardQueueRoutes } from "../src/card-queue.js";
+import { registerModRoutes } from "../src/mods.js";
 import { parseTbankStatement, registerTbankStatementRoutes, wallTimeToIso } from "../src/tbank-statement.js";
 import { registerTenantDomainRoutes } from "../src/tenant-domain.js";
 import { buildTestApp, testConfig } from "./test-app.js";
 
 const config = testConfig();
-const app = await buildTestApp({ config, plugins: [registerTenantDomainRoutes, registerCardQueueRoutes, registerTbankStatementRoutes] });
+const app = await buildTestApp({ config, plugins: [registerTenantDomainRoutes, registerCardQueueRoutes, registerTbankStatementRoutes, registerModRoutes] });
 const origin = { origin: config.appOrigin };
 let cookie = "";
 let userId = "";
@@ -66,6 +67,8 @@ before(async () => {
     method: "POST", url: "/api/workspaces", headers: { ...origin, ...contextHeaders() }, payload: { id: workspaceId, name: "Home" }
   });
   assert.equal(workspace.statusCode, 201, workspace.body);
+  const mod = await app.inject({ method: "PUT", url: `/api/workspaces/${workspaceId}/mods/tbank`, headers: { ...origin, ...contextHeaders() }, payload: {} });
+  assert.equal(mod.statusCode, 200, mod.body);
 });
 
 after(async () => app.close());
