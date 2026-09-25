@@ -223,8 +223,10 @@ test("a later sync settles open authorizations and drops reversed ones from revi
   assert.equal(voided.json().version, reversedExpense.version + 1);
   assert.deepEqual(voided.json().voidReason, { provider: "bybit-card", kind: "reversed", txnId: "reversed", merchantName: "Reversed", amountMinor: 90000, currency: "RSD" });
 
+  // День — по календарю UTC, и аналитике он передаётся тем же календарём: иначе с полуночи до двух ночи по Белграду
+  // (поясу по умолчанию) сегодняшняя запись попадала в завтрашний день и тест падал.
   const day = new Date().toISOString().slice(0, 10);
-  const analytics = await app.inject({ method: "GET", url: `/api/workspaces/${workspaceId}/analytics?from=${day}&to=${day}&currency=RSD`, headers: contextHeaders() });
+  const analytics = await app.inject({ method: "GET", url: `/api/workspaces/${workspaceId}/analytics?from=${day}&to=${day}&currency=RSD&tz=UTC`, headers: contextHeaders() });
   assert.equal(analytics.statusCode, 200, analytics.body);
   assert.equal(analytics.json().totalMinor, 0, "a voided expense is excluded from analytics");
 
@@ -241,7 +243,7 @@ test("a later sync settles open authorizations and drops reversed ones from revi
   assert.equal(included.json().voidedAt, null);
   assert.equal(included.json().voidReason, null);
   assert.equal(included.json().version, voided.json().version + 1);
-  const counted = await app.inject({ method: "GET", url: `/api/workspaces/${workspaceId}/analytics?from=${day}&to=${day}&currency=RSD`, headers: contextHeaders() });
+  const counted = await app.inject({ method: "GET", url: `/api/workspaces/${workspaceId}/analytics?from=${day}&to=${day}&currency=RSD&tz=UTC`, headers: contextHeaders() });
   assert.equal(counted.json().totalMinor, 90000, "counting it again restores it everywhere");
 });
 
