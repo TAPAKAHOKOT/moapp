@@ -6,7 +6,7 @@ vi.mock('./workspace-offline', () => ({
 }))
 
 import { beginLogout, beginWorkspaceRequest, chooseCachedWorkspace, closeCapability, createAppState, createIdentityCoordinator, createLoggedOutState, finishWorkspaceRequest, forgetKnownProfile, hydrateAppState, openLegacyClaim, readReminderMemory, reminderSnoozed, settlePendingLogout, snoozeReminder, updateWorkspace, writeReminderMemory } from './app-state'
-import { clearUserOfflineData, readCachedBootstrap, waitForWorkspaceOfflineWrites } from './workspace-offline'
+import { cacheProfile, clearUserOfflineData, readCachedBootstrap, waitForWorkspaceOfflineWrites } from './workspace-offline'
 import type { AuthenticatedSession, GuestSession, WorkspaceRuntime, WorkspaceSummary } from './types'
 
 function memoryStorage(): Storage {
@@ -71,6 +71,25 @@ describe('workspace runtime race isolation', () => {
   it('drops every renderable workspace value immediately when logging out', () => {
     const state = createLoggedOutState()
     expect(state).toMatchObject({ phase: 'known-user-locked', session: null, activeWorkspaceId: null, runtimes: {}, capability: null })
+  })
+
+  it('hydrates the profile and cached workspaces with settings that have not reached the server yet', async () => {
+    localStorage.setItem('moapp:v2:user:user:pending-settings', JSON.stringify({ theme: 'dark' }))
+    localStorage.setItem('moapp:v2:user:user:workspace:a:pending-settings', JSON.stringify({ lastCurrency: 'EUR' }))
+    vi.mocked(readCachedBootstrap).mockResolvedValue({ workspaceId: 'a', settings: { lastCurrency: 'RSD', analyticsCurrency: 'USD' } } as NonNullable<WorkspaceRuntime['bootstrap']>)
+
+    const state = await hydrateAppState({ ...session('user'), workspaces: [workspace('a')], settings: { theme: 'light' } })
+
+    expect(state.session).toMatchObject({ settings: { theme: 'dark' } })
+    expect(state.runtimes.a?.bootstrap?.settings).toEqual({ lastCurrency: 'EUR', analyticsCurrency: 'USD' })
+    expect(cacheProfile).toHaveBeenCalledWith('user', expect.objectContaining({ settings: { theme: 'dark' } }))
+  })
+
+  it('logging out forgets the copy of the account theme on this phone', async () => {
+    localStorage.setItem('moapp:theme', 'dark')
+    const state = await hydrateAppState({ ...session('user'), settings: { theme: 'dark' } })
+    await beginLogout(state)
+    expect(localStorage.getItem('moapp:theme')).toBeNull()
   })
 
   it('drains older offline writes before the final logout clear', async () => {

@@ -1,8 +1,10 @@
 import { cacheBootstrap, queueMutation, queueMutations, readCachedBootstrap, readOutbox, removeMutation } from './workspace-offline'
 import { appTimeZone } from './utils'
+import { dropMemberSettings, queueAccountSettings, queueMemberSettings, queuedAccountSettings, queuedMemberSettings, settleAccountSettings, settleMemberSettings, withMemberSettings, workspacesWithQueuedSettings } from './settings'
+import type { SettingsPatch } from './settings'
 import type {
-  AnalyticsData, AuthenticatedSession, BybitCardStatus, BybitRegion, CardTransaction, Category, DeviceLinkMetadata, DeviceLinkPreview, DeviceSession, Expense, InvitationMetadata,
-  InvitationPreview, Participant, RecoveryPrepareResponse, RecoveryPreview, SessionState, SyncResult, UserProfile, WorkspaceBootstrap,
+  AccountSettings, AnalyticsData, AuthenticatedSession, BybitCardStatus, BybitRegion, CardTransaction, Category, DeviceLinkMetadata, DeviceLinkPreview, DeviceSession, Expense, InvitationMetadata,
+  InvitationPreview, MemberSettings, Participant, RecoveryPrepareResponse, RecoveryPreview, SessionState, SyncResult, UserProfile, WorkspaceBootstrap,
   Tag, ExpenseSplitPart, TbankStatementResult, WorkspaceMod, WorkspaceOutboxItem, WorkspaceSummary,
 } from './types'
 
@@ -184,6 +186,8 @@ export async function createIdentity(displayName: string, signal?: AbortSignal):
 }
 export function updateProfile(displayName: string, signal?: AbortSignal) { assertMutationsAllowed(); return request<{ user: UserProfile }>('/api/me', { method: 'PATCH', body: JSON.stringify({ displayName }), signal }) }
 export function listSessions(signal?: AbortSignal) { return request<{ sessions: DeviceSession[] }>('/api/me/sessions', { signal }) }
+export function updateAccountSettings(settings: SettingsPatch<AccountSettings>, signal?: AbortSignal) { assertMutationsAllowed(); return request<{ settings: AccountSettings }>('/api/me/settings', { method: 'PATCH', body: JSON.stringify({ settings }), signal }) }
+export function updateMemberSettings(workspaceId: string, settings: SettingsPatch<MemberSettings>, signal?: AbortSignal) { assertMutationsAllowed(); return request<{ settings: MemberSettings }>(workspacePath(workspaceId, '/me/settings'), { method: 'PATCH', body: JSON.stringify({ settings }), signal }) }
 export async function revokeSession(sessionId: string, signal?: AbortSignal): Promise<void> { assertMutationsAllowed(); return request<void>(`/api/me/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE', signal }) }
 
 // Workspaces and membership.
@@ -232,9 +236,11 @@ export async function getBootstrap(workspaceId: string, signal?: AbortSignal): P
   const snapshot = context
   try {
     // Курсы по дням и «сегодня» сервер считает по календарю телефона.
-    const data = await request<WorkspaceBootstrap>(workspacePath(workspaceId, `/bootstrap?tz=${encodeURIComponent(appTimeZone())}`), { signal })
+    const answer = await request<WorkspaceBootstrap>(workspacePath(workspaceId, `/bootstrap?tz=${encodeURIComponent(appTimeZone())}`), { signal })
     assertCurrentContext(snapshot)
-    if (data.workspaceId !== workspaceId) throw new WorkspaceApiError(409, 'WORKSPACE_RESPONSE_MISMATCH', 'Ответ сервера относится к другому пространству')
+    if (answer.workspaceId !== workspaceId) throw new WorkspaceApiError(409, 'WORKSPACE_RESPONSE_MISMATCH', 'Ответ сервера относится к другому пространству')
+    // Неотправленные изменения настроек перекрывают ответ сервера, пока не уйдут.
+    const data = snapshot ? withMemberSettings(snapshot.user.id, answer) : answer
     if (snapshot) {
       await cacheBootstrap(snapshot.user.id, workspaceId, data)
       assertCurrentContext(snapshot)
@@ -247,7 +253,7 @@ export async function getBootstrap(workspaceId: string, signal?: AbortSignal): P
     if (isAbortError(error) || isAuthoritativeWorkspaceError(error)) throw error
     const cached = snapshot ? await readCachedBootstrap(snapshot.user.id, workspaceId) : undefined
     assertCurrentContext(snapshot)
-    if (cached?.workspaceId === workspaceId) return { data: cached, offline: true }
+    if (snapshot && cached?.workspaceId === workspaceId) return { data: withMemberSettings(snapshot.user.id, cached), offline: true }
     throw error
   }
 }
@@ -491,9 +497,10 @@ export async function discardOutboxIssues(userId: string, workspaceId: string, o
   }
   // Do not use getBootstrap's offline fallback here. Once an issue is removed,
   // only an authoritative snapshot can safely replace its optimistic value.
-  const data = await request<WorkspaceBootstrap>(workspacePath(workspaceId, '/bootstrap'))
+  const answer = await request<WorkspaceBootstrap>(workspacePath(workspaceId, '/bootstrap'))
   assertCurrentContext(snapshot)
-  if (data.workspaceId !== workspaceId) throw new WorkspaceApiError(409, 'WORKSPACE_RESPONSE_MISMATCH', 'Ответ сервера относится к другому пространству')
+  if (answer.workspaceId !== workspaceId) throw new WorkspaceApiError(409, 'WORKSPACE_RESPONSE_MISMATCH', 'Ответ сервера относится к другому пространству')
+  const data = withMemberSettings(userId, answer)
   await cacheBootstrap(userId, workspaceId, data)
   assertCurrentContext(snapshot)
   await Promise.all(items.filter(selected).map((item) => removeMutation(userId, workspaceId, item.operationId)))
@@ -537,4 +544,69 @@ export async function syncAllWorkspaces(userId: string, workspaces: readonly Wor
     assertCurrentContext(snapshot)
     onProgress?.(workspace.id)
   }
+}
+
+/*
+ * Личные настройки: изменение сразу ложится в очередь на этом телефоне (settings.ts), а сюда приходит отправка.
+ * Несколько быстрых изменений уходят одним запросом. Нет сети, сменилась сессия, сервер недоступен — очередь ждёт
+ * следующей отправки; значение, которое сервер не примет никогда (400), из очереди убирается, чтобы не повторять его вечно.
+ */
+export const SETTINGS_SEND_DELAY_MS = 400
+let settingsTimer: ReturnType<typeof setTimeout> | undefined
+const settingsSends = new Map<string, Promise<void>>()
+
+export function saveAccountSettings(userId: string, patch: SettingsPatch<AccountSettings>): void {
+  queueAccountSettings(userId, patch)
+  scheduleSettingsSend(userId)
+}
+
+export function saveMemberSettings(userId: string, workspaceId: string, patch: SettingsPatch<MemberSettings>): void {
+  queueMemberSettings(userId, workspaceId, patch)
+  scheduleSettingsSend(userId)
+}
+
+function scheduleSettingsSend(userId: string): void {
+  clearTimeout(settingsTimer)
+  settingsTimer = setTimeout(() => { void flushSettings(userId) }, SETTINGS_SEND_DELAY_MS)
+}
+
+/** Отправляет всё, что лежит в очереди настроек человека. Отправки идут по одной и никогда не бросают ошибку. */
+export function flushSettings(userId: string): Promise<void> {
+  const next = (settingsSends.get(userId) ?? Promise.resolve()).then(() => sendQueuedSettings(userId)).catch(() => { /* очередь дождётся следующей отправки */ })
+  settingsSends.set(userId, next)
+  void next.then(() => { if (settingsSends.get(userId) === next) settingsSends.delete(userId) })
+  return next
+}
+
+async function sendQueuedSettings(userId: string): Promise<void> {
+  if (mutationsBlocked || context?.user.id !== userId) return
+  if (typeof navigator !== 'undefined' && !navigator.onLine) return
+  const snapshot = context
+  const accountSent = await sendSettingsScope(snapshot, () => queuedAccountSettings(userId), updateAccountSettings, (sent) => settleAccountSettings(userId, sent))
+  if (!accountSent) return
+  for (const workspaceId of workspacesWithQueuedSettings(userId)) {
+    const sent = await sendSettingsScope(snapshot, () => queuedMemberSettings(userId, workspaceId), (settings) => updateMemberSettings(workspaceId, settings), (patch) => settleMemberSettings(userId, workspaceId, patch), () => dropMemberSettings(userId, workspaceId))
+    if (!sent) return
+  }
+}
+
+/* Возвращает false, когда отправлять дальше бессмысленно: нет сети, сменилась сессия, сервер отвечает ошибкой. */
+async function sendSettingsScope<T>(snapshot: ExpectedContext, read: () => SettingsPatch<T>, send: (settings: SettingsPatch<T>) => Promise<unknown>, settle: (sent: SettingsPatch<T>) => void, forget?: () => void): Promise<boolean> {
+  // Каждый отвергнутый ключ убирается по одному, поэтому попыток не больше, чем ключей в очереди.
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const queued = read()
+    if (!Object.keys(queued).length) return true
+    try {
+      await send(queued)
+      assertCurrentContext(snapshot)
+      settle(queued)
+      return true
+    } catch (error) {
+      if (forget && isWorkspaceNotFound(error)) { forget(); return true }
+      if (!(error instanceof WorkspaceApiError) || error.status !== 400) return false
+      const key = (error.details as { key?: unknown } | undefined)?.key
+      settle(typeof key === 'string' && key in queued ? { [key]: queued[key as keyof T] } as SettingsPatch<T> : queued)
+    }
+  }
+  return false
 }

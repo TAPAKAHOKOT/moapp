@@ -1,5 +1,6 @@
 import { cacheProfile, clearUserOfflineData, clearWorkspaceOfflineData, outboxStats, readCachedBootstrap, readCachedProfile, waitForWorkspaceOfflineWrites } from './workspace-offline'
 import { blockWorkspaceMutations, isSessionContextChanged, logoutExpected, setSessionContext } from './workspace-api'
+import { THEME_MIRROR, withAccountSettings, withMemberSettings } from './settings'
 import type { CapabilityIntent, OutboxStats, SessionState, WorkspaceRuntime, WorkspaceSummary } from './types'
 
 export type AppPhase = 'checking' | 'guest' | 'known-user-locked' | 'legacy-claim' | 'restricted-recovery' | 'no-workspaces' | 'workspace' | 'capability'
@@ -19,8 +20,9 @@ export type AppState = {
 const KNOWN_USER = 'moapp:v2:known-user'
 const LOGOUT_PENDING = 'moapp:v2:logout-pending'
 const activeKey = (userId: string) => `moapp:v2:active-workspace:${userId}`
-type WorkspacePreference = 'last-currency' | 'analytics-currency' | 'analytics-week-category' | 'analytics-month-category' | 'history-filters' | 'first-expense-toast'
-const workspaceCurrencyKey = (userId: string, workspaceId: string, name: WorkspacePreference) => `moapp:v2:user:${userId}:workspace:${workspaceId}:${name}`
+// Здесь — только память о разовых подсказках. Настройки человека живут в аккаунте (settings.ts).
+type WorkspacePreference = 'first-expense-toast'
+const workspacePreferenceKey = (userId: string, workspaceId: string, name: WorkspacePreference) => `moapp:v2:user:${userId}:workspace:${workspaceId}:${name}`
 type UserPreference = 'recovery-reminder'
 const userPreferenceKey = (userId: string, name: UserPreference) => `moapp:v2:user:${userId}:${name}`
 
@@ -81,7 +83,8 @@ function clearUserPreferences(userId: string, workspaceId?: string): void {
     if (key?.startsWith(prefix)) keys.push(key)
   }
   for (const key of keys) local.removeItem(key)
-  if (workspaceId === undefined) local.removeItem(activeKey(userId))
+  // Тема принадлежит аккаунту: после выхода телефон снова следует за системой.
+  if (workspaceId === undefined) { local.removeItem(activeKey(userId)); local.removeItem(THEME_MIRROR) }
 }
 
 export function createAppState(capability: CapabilityIntent | null = null): AppState {
@@ -114,8 +117,10 @@ export function closeCapability(state: AppState): AppState {
 }
 
 /** Hydrate only after the pending logout marker has been safely settled. */
-export async function hydrateAppState(session: SessionState, capability: CapabilityIntent | null = null): Promise<AppState> {
+export async function hydrateAppState(received: SessionState, capability: CapabilityIntent | null = null): Promise<AppState> {
   const known = knownUserId()
+  // Настройки аккаунта — как их видит этот телефон: неотправленные изменения поверх ответа сервера.
+  const session = received.authenticated && (known === null || known === received.user.id) ? withAccountSettings(received) : received
   if (!session.authenticated) {
     setSessionContext(null)
     return { ...createAppState(capability), session, knownUserId: known, phase: phaseFor(session, capability, known) }
@@ -135,7 +140,8 @@ export async function hydrateAppState(session: SessionState, capability: Capabil
   await cacheProfile(session.user.id, session)
   const runtimes: Record<string, WorkspaceRuntime> = {}
   for (const workspace of session.workspaces) {
-    const cached = await readCachedBootstrap(session.user.id, workspace.id)
+    const stored = await readCachedBootstrap(session.user.id, workspace.id)
+    const cached = stored ? withMemberSettings(session.user.id, stored) : undefined
     const stats = await outboxStats(session.user.id, workspace.id)
     runtimes[workspace.id] = { ...newRuntime(workspace.id), bootstrap: cached ?? null, source: cached ? 'cache' : null, status: cached ? 'ready' : 'idle', offline: false, outbox: stats }
   }
@@ -243,9 +249,8 @@ export async function forgetKnownProfile(online: boolean, session: SessionState 
   return settlePendingLogout(true, signal)
 }
 
-export function getWorkspacePreference(userId: string, workspaceId: string, name: WorkspacePreference): string | null { return storage()?.getItem(workspaceCurrencyKey(userId, workspaceId, name)) ?? null }
-export function setWorkspacePreference(userId: string, workspaceId: string, name: WorkspacePreference, value: string): void { storage()?.setItem(workspaceCurrencyKey(userId, workspaceId, name), value) }
-export function clearWorkspacePreference(userId: string, workspaceId: string, name: WorkspacePreference): void { storage()?.removeItem(workspaceCurrencyKey(userId, workspaceId, name)) }
+export function getWorkspacePreference(userId: string, workspaceId: string, name: WorkspacePreference): string | null { return storage()?.getItem(workspacePreferenceKey(userId, workspaceId, name)) ?? null }
+export function setWorkspacePreference(userId: string, workspaceId: string, name: WorkspacePreference, value: string): void { storage()?.setItem(workspacePreferenceKey(userId, workspaceId, name), value) }
 
 // Карточка «Сохраните ссылку доступа» над историей: помним, сколько раз её показали и когда нажали «Позже».
 // После пары показов она сворачивается в одну строку, «Позже» убирает её на неделю.

@@ -24,11 +24,14 @@ export function defaultHistoryPreferences(today: string): HistoryPreferences {
   return { query: '', categoryIds: [], tagIds: [], currencies: [], period: 'all', from: `${today.slice(0, 8)}01`, to: today }
 }
 
-export function parseHistoryPreferences(raw: string | null, today: string): HistoryPreferences {
+// Сохранённые фильтры приходят объектом из настроек аккаунта или строкой JSON из старой памяти телефона.
+export function parseHistoryPreferences(raw: unknown, today: string): HistoryPreferences {
   const defaults = defaultHistoryPreferences(today)
   if (!raw) return defaults
   try {
-    const saved = JSON.parse(raw) as Partial<Record<keyof HistoryPreferences | 'categoryId' | 'tagId' | 'currency', unknown>>
+    const parsed = typeof raw === 'string' ? JSON.parse(raw) as unknown : raw
+    if (!parsed || typeof parsed !== 'object') return defaults
+    const saved = parsed as Partial<Record<keyof HistoryPreferences | 'categoryId' | 'tagId' | 'currency', unknown>>
     const date = (value: unknown, fallback: string) => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : fallback
     const period = (HISTORY_PERIODS as readonly unknown[]).includes(saved.period) ? saved.period as HistoryPeriod : defaults.period
     // Старые настройки хранили одно значение строкой; оно становится списком из одного элемента.

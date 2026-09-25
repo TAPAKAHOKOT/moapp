@@ -1,3 +1,5 @@
+import type { HistoryFilters } from './history'
+
 export type Currency = {
   code: string
   name: string
@@ -176,6 +178,20 @@ export type WorkspaceSummary = {
   joinedAt: string
 }
 
+export type ThemePreference = 'system' | 'light' | 'dark'
+
+/** Личные настройки, общие для всех пространств человека. Хранятся в аккаунте, видит их только он сам. */
+export type AccountSettings = {
+  theme?: ThemePreference
+}
+
+/** Свои настройки человека в одном пространстве. Фильтры истории — без строки поиска. */
+export type MemberSettings = {
+  lastCurrency?: string
+  analyticsCurrency?: string
+  historyFilters?: HistoryFilters
+}
+
 export type AuthenticatedSession = {
   authenticated: true
   user: UserProfile
@@ -185,6 +201,8 @@ export type AuthenticatedSession = {
   restrictedToRecovery: boolean
   workspaces: WorkspaceSummary[]
   legacyWorkspaceId: string | null
+  /** Absent in profiles cached before settings moved to the account: then what the account holds is unknown. */
+  settings?: AccountSettings
 }
 
 export type GuestSession = {
@@ -250,6 +268,8 @@ export type WorkspaceBootstrap = {
   currencies: Currency[]
   rates: RateSnapshot
   defaultAnalyticsCurrency: string
+  /** This person's own settings in the workspace. Absent in caches written before settings moved to the account. */
+  settings?: MemberSettings
   serverTime: string
 }
 

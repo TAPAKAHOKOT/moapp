@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { WorkspaceApiError as ApiError, includeExpense, submitExpenseOperation, submitExpenseOperations } from '../workspace-api'
-import { getWorkspacePreference, setWorkspacePreference } from '../app-state'
+import { WorkspaceApiError as ApiError, includeExpense, saveMemberSettings, submitExpenseOperation, submitExpenseOperations } from '../workspace-api'
+import { patchSettings } from '../settings'
 import type { Category, Currency, Expense, Tag } from '../types'
 import { appTimeZone, cachedDateTimeFormat, localDateKey, monthDateRange, shiftDateKey, weekdayFromDateKey, workspaceCurrency } from '../utils'
 import { HISTORY_PERIOD_LABELS, defaultHistoryPreferences, expenseTagNames, filterHistoryExpenses, historyTotals, parseHistoryPreferences } from '../history'
@@ -227,10 +227,8 @@ export const HistoryView = memo(function HistoryView({ userId, workspaceId, boot
   timeZone?: string
   older?: HistoryOlder | null
 }) {
-  const [filters, setFilters] = useState<HistoryPreferences>(() => parseHistoryPreferences(
-    getWorkspacePreference(userId, workspaceId, 'history-filters'),
-    localDateKey(new Date()),
-  ))
+  // Фильтры помнит аккаунт, строка поиска живёт, только пока приложение открыто.
+  const [filters, setFilters] = useState<HistoryPreferences>(() => parseHistoryPreferences(bootstrap.settings?.historyFilters, localDateKey(new Date())))
   const [selected, setSelected] = useState<Set<string>>(() => new Set())
   const [deleting, setDeleting] = useState(false)
   const [openRow, setOpenRow] = useState<string | null>(null)
@@ -276,7 +274,7 @@ export const HistoryView = memo(function HistoryView({ userId, workspaceId, boot
     })
     const grouped = expenses.reduce<Record<string, Expense[]>>((result, item) => { (result[localDateKey(item.occurredAt, timeZone)] ||= []).push(item); return result }, {})
     // Итог по показанным записям. В одной валюте — точная сумма; в нескольких — пересчёт в валюту аналитики и разбивка.
-    const totalsTarget = (filters.currencies.length === 1 ? filters.currencies[0] : null) || getWorkspacePreference(userId, workspaceId, 'analytics-currency') || workspaceCurrency(bootstrap)
+    const totalsTarget = (filters.currencies.length === 1 ? filters.currencies[0] : null) || bootstrap.settings?.analyticsCurrency || workspaceCurrency(bootstrap)
     const sumLabel = (items: Expense[]) => {
       const totals = historyTotals(items, bootstrap.currencies, bootstrap.rates, totalsTarget)
       if (!items.length) return { label: null as string | null, parts: '', totals }
@@ -289,11 +287,18 @@ export const HistoryView = memo(function HistoryView({ userId, workspaceId, boot
     const groups = Object.entries(grouped).map(([date, items]) => ({ date, items, total: sumLabel(items).label }))
     const { label: totalLabel, parts: totalParts, totals } = sumLabel(expenses)
     return { categoryMap, tags, activeExpenses, tagOptions, categoryOptions, currencyOptions, normalizedQuery, expenses, groups, totals, totalLabel, totalParts }
-  }, [bootstrap, filters, userId, workspaceId, timeZone])
+  }, [bootstrap, filters, timeZone])
   const { categoryMap, tags, activeExpenses, tagOptions, categoryOptions, currencyOptions, normalizedQuery, expenses, groups, totals, totalLabel, totalParts } = derived
+  // Изменённые фильтры уходят в аккаунт; то, с чем экран открылся, заново не отправляется.
+  const savedFilters = useRef(JSON.stringify({ ...filters, query: undefined }))
   useEffect(() => {
-    setWorkspacePreference(userId, workspaceId, 'history-filters', JSON.stringify(filters))
-  }, [filters, userId, workspaceId])
+    const { query: _query, ...historyFilters } = filters
+    const serialized = JSON.stringify({ ...filters, query: undefined })
+    if (serialized === savedFilters.current) return
+    savedFilters.current = serialized
+    setBootstrap((data) => ({ ...data, settings: patchSettings(data.settings, { historyFilters }) }))
+    saveMemberSettings(userId, workspaceId, { historyFilters })
+  }, [filters, setBootstrap, userId, workspaceId])
   const updateFilters = (patch: Partial<HistoryPreferences>) => {
     setFilters((current) => ({ ...current, ...patch }))
     setSelected(new Set())

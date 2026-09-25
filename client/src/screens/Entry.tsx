@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { WorkspaceApiError as ApiError, submitExpenseOperation } from '../workspace-api'
+import { WorkspaceApiError as ApiError, saveMemberSettings, submitExpenseOperation } from '../workspace-api'
 import { getWorkspacePreference, setWorkspacePreference } from '../app-state'
+import { patchSettings } from '../settings'
 import type { Category, Currency, Expense, Tag, WorkspaceSummary } from '../types'
 import { amountToMinor, applyKeypad, cachedNumberFormat, formatAmountInput, isoToLocalInput, localInputToIso, swipeDirection, workspaceCurrency } from '../utils'
 import { ChevronIcon, CurrencySheet, GridIcon, Toast, TrashIcon, prefersReducedMotion, tap, useConfirm, useDialog, useToast } from '../ui'
@@ -238,18 +239,20 @@ export function EntryView({ userId, workspaceId, workspace, bootstrap, setBootst
     }
   }, [currentId])
 
-  // Валюта нового расхода: последняя выбранная вручную на этом телефоне, иначе валюта пространства из настроек.
+  // Валюта нового расхода: последняя выбранная вручную (её помнит аккаунт), иначе валюта пространства из настроек.
   const usual = workspaceCurrency(bootstrap)
-  const defaultCurrency = () => getWorkspacePreference(userId, workspaceId, 'last-currency') || usual
+  const lastCurrency = bootstrap.settings?.lastCurrency
+  const defaultCurrency = () => lastCurrency || usual
   const blankForm = () => ({ ...EMPTY_FORM, currency: defaultCurrency() })
-  // Смена валюты пространства в настройках: пустая новая форма переходит в неё сразу, без перезахода. Набранная сумма,
-  // сохранённая запись и валюта, выбранная вручную, остаются как есть.
+  // Пустая новая форма следует за этой валютой без перезахода: сменили валюту пространства в настройках или выбрали
+  // валюту на другом устройстве. Набранная сумма и сохранённая запись остаются как есть.
   useEffect(() => {
-    if (current || formHasContent(formRef.current) || formRef.current.currency === usual || getWorkspacePreference(userId, workspaceId, 'last-currency')) return
-    const next = { ...formRef.current, currency: usual }
+    const preferred = lastCurrency || usual
+    if (current || formHasContent(formRef.current) || formRef.current.currency === preferred) return
+    const next = { ...formRef.current, currency: preferred }
     if (synced.current.id === '') synced.current = { id: '', form: next }
     setForm(next)
-  }, [usual]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [usual, lastCurrency]) // eslint-disable-line react-hooks/exhaustive-deps
   useLayoutEffect(() => {
     const base = current ? inputFromExpense(current, bootstrap.currencies) : formHasContent(draft.current) ? draft.current : blankForm()
     // Свежую версию записи подхватываем, только пока пользователь не начал править её сам.
@@ -675,7 +678,8 @@ export function EntryView({ userId, workspaceId, workspace, bootstrap, setBootst
       onClose={() => setCurrencySheet(false)}
       onSelect={(currency) => {
         setForm({...form,currency})
-        setWorkspacePreference(userId, workspaceId, 'last-currency', currency)
+        setBootstrap((data) => ({ ...data, settings: patchSettings(data.settings, { lastCurrency: currency }) }))
+        saveMemberSettings(userId, workspaceId, { lastCurrency: currency })
         setCurrencySheet(false)
       }}
     />}

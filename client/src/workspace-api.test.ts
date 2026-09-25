@@ -5,7 +5,8 @@ vi.mock('./workspace-offline', () => ({
 }))
 
 import { cacheBootstrap, queueMutation, queueMutations, readCachedBootstrap, readOutbox, removeMutation } from './workspace-offline'
-import { acceptDeviceLink, allowWorkspaceMutations, blockWorkspaceMutations, buildExpenseOperation, createCategory, createExpense, createInvitation, deleteCategory, discardOutboxIssues, getBootstrap, getSession, getSessionContext, prepareRecovery, previewInvitation, request, retryOutboxIssue, setSessionContext, submitExpenseOperation, submitExpenseOperations, syncAllWorkspaces, syncOutbox, updateCategory, updateExpense } from './workspace-api'
+import { acceptDeviceLink, allowWorkspaceMutations, blockWorkspaceMutations, buildExpenseOperation, createCategory, createExpense, createInvitation, deleteCategory, discardOutboxIssues, flushSettings, getBootstrap, getSession, getSessionContext, prepareRecovery, previewInvitation, request, retryOutboxIssue, saveAccountSettings, saveMemberSettings, setSessionContext, SETTINGS_SEND_DELAY_MS, submitExpenseOperation, submitExpenseOperations, syncAllWorkspaces, syncOutbox, updateCategory, updateExpense } from './workspace-api'
+import { queueMemberSettings, queuedAccountSettings, queuedMemberSettings } from './settings'
 import type { AuthenticatedSession, Expense, WorkspaceBootstrap } from './types'
 
 const session: AuthenticatedSession = {
@@ -424,5 +425,93 @@ describe('workspace api identity context', () => {
 
     vi.mocked(readOutbox).mockImplementationOnce(async () => { setSessionContext(otherSession); return [] })
     await expect(syncAllWorkspaces('user-a', [{ id: 'workspace-a', name: 'A', role: 'owner', version: 1, joinedAt: '2026-01-01T00:00:00.000Z' }], 'workspace-a')).rejects.toMatchObject({ status: 409, code: 'SESSION_CONTEXT_CHANGED' })
+  })
+})
+
+describe('personal settings queue', () => {
+  function memoryStorage(): Storage {
+    const data = new Map<string, string>()
+    return {
+      get length() { return data.size }, clear: () => data.clear(), getItem: (key) => data.get(key) ?? null,
+      key: (index) => [...data.keys()][index] ?? null, removeItem: (key) => { data.delete(key) }, setItem: (key, value) => { data.set(key, String(value)) },
+    }
+  }
+  const sent = (fetchMock: ReturnType<typeof vi.fn>) => (fetchMock.mock.calls as unknown as Array<[string, RequestInit]>).map(([url, init]) => [url, init.method, JSON.parse(String(init.body))])
+
+  beforeEach(() => {
+    vi.unstubAllGlobals(); vi.clearAllMocks(); vi.useRealTimers()
+    vi.stubGlobal('localStorage', memoryStorage()); vi.stubGlobal('navigator', { onLine: true })
+    setSessionContext(session); allowWorkspaceMutations()
+  })
+
+  it('sends quick changes together after a short pause and forgets them once the server has them', async () => {
+    vi.useFakeTimers()
+    const fetchMock = vi.fn(async (url: string) => response({ settings: url === '/api/me/settings' ? { theme: 'dark' } : { lastCurrency: 'EUR', analyticsCurrency: 'USD' } }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    saveMemberSettings('user-a', 'workspace-a', { lastCurrency: 'EUR' })
+    saveMemberSettings('user-a', 'workspace-a', { analyticsCurrency: 'USD' })
+    saveAccountSettings('user-a', { theme: 'dark' })
+    expect(fetchMock).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(SETTINGS_SEND_DELAY_MS)
+    await flushSettings('user-a')
+
+    expect(sent(fetchMock)).toEqual([
+      ['/api/me/settings', 'PATCH', { settings: { theme: 'dark' } }],
+      ['/api/workspaces/workspace-a/me/settings', 'PATCH', { settings: { lastCurrency: 'EUR', analyticsCurrency: 'USD' } }],
+    ])
+    expect(queuedAccountSettings('user-a')).toEqual({})
+    expect(queuedMemberSettings('user-a', 'workspace-a')).toEqual({})
+  })
+
+  it('keeps changes queued while the server cannot be reached and sends them later', async () => {
+    queueMemberSettings('user-a', 'workspace-a', { lastCurrency: 'EUR' })
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('Failed to fetch') }))
+    await flushSettings('user-a')
+    expect(queuedMemberSettings('user-a', 'workspace-a')).toEqual({ lastCurrency: 'EUR' })
+
+    const fetchMock = vi.fn(async () => response({ settings: { lastCurrency: 'EUR' } }))
+    vi.stubGlobal('fetch', fetchMock)
+    await flushSettings('user-a')
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(queuedMemberSettings('user-a', 'workspace-a')).toEqual({})
+  })
+
+  it('drops only the value the server refuses for good and still sends the rest', async () => {
+    queueMemberSettings('user-a', 'workspace-a', { lastCurrency: 'XYZ', analyticsCurrency: 'USD' })
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: { code: 'VALIDATION', message: 'bad', details: { key: 'lastCurrency' } } }), { status: 400, headers: { 'Content-Type': 'application/json' } }))
+      .mockResolvedValueOnce(response({ settings: { analyticsCurrency: 'USD' } }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await flushSettings('user-a')
+
+    expect(sent(fetchMock).map(([, , body]) => body)).toEqual([{ settings: { lastCurrency: 'XYZ', analyticsCurrency: 'USD' } }, { settings: { analyticsCurrency: 'USD' } }])
+    expect(queuedMemberSettings('user-a', 'workspace-a')).toEqual({})
+  })
+
+  it('forgets the queue of a workspace the person no longer belongs to, and never sends it for another profile', async () => {
+    queueMemberSettings('user-a', 'workspace-gone', { lastCurrency: 'EUR' })
+    setSessionContext(otherSession)
+    const fetchMock = vi.fn(async () => errorResponse(404, 'WORKSPACE_NOT_FOUND'))
+    vi.stubGlobal('fetch', fetchMock)
+    await flushSettings('user-a')
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(queuedMemberSettings('user-a', 'workspace-gone')).toEqual({ lastCurrency: 'EUR' })
+
+    setSessionContext(session)
+    await flushSettings('user-a')
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(queuedMemberSettings('user-a', 'workspace-gone')).toEqual({})
+  })
+
+  it('shows queued changes on top of a fresh workspace answer and caches them that way', async () => {
+    queueMemberSettings('user-a', 'workspace-a', { lastCurrency: 'EUR' })
+    vi.stubGlobal('fetch', vi.fn(async () => response({ workspaceId: 'workspace-a', settings: { lastCurrency: 'RSD', analyticsCurrency: 'USD' } })))
+
+    const { data } = await getBootstrap('workspace-a')
+
+    expect(data.settings).toEqual({ lastCurrency: 'EUR', analyticsCurrency: 'USD' })
+    expect(cacheBootstrap).toHaveBeenCalledWith('user-a', 'workspace-a', data)
   })
 })

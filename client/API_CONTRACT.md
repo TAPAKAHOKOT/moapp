@@ -60,6 +60,7 @@ type AuthenticatedSession = {
   restrictedToRecovery: boolean
   workspaces: WorkspaceSummary[]
   legacyWorkspaceId: string | null
+  settings: AccountSettings // absent in profiles cached before settings moved to the account
 }
 
 type DeviceSession = {
@@ -111,6 +112,7 @@ type WorkspaceBootstrap = {
   currencies: Currency[]
   rates: { base: 'RSD'; date: string | null; ratesToRsd: Record<string, number> }
   defaultAnalyticsCurrency: string
+  settings: MemberSettings // absent in caches written before settings moved to the account
   serverTime: string
 }
 ```
@@ -120,6 +122,27 @@ Bootstrap contains active expenses, both active and archived categories, and eve
 The client rejects a bootstrap whose `workspaceId` differs from the requested workspace. IndexedDB bootstrap records use the compound key `(userId, workspaceId)`. Outbox records use `(userId, workspaceId, operationId)`, and their stored `userId`/`workspaceId` must match the requested storage scope. Offline fallback reads only the current authenticated user's cache for the requested workspace.
 
 Legacy v2 cache/outbox data remains quarantined until a completed legacy claim supplies the exact `legacyWorkspaceId`; migration then moves it into the scoped v3 stores. This storage guarantee applies to bootstrap and outbox records; it does not make capability secrets or a session cookie available offline.
+
+## Personal settings
+
+Settings are personal and live in the account: only their owner reads or changes them, and they follow the profile to
+every device and through logout. Account settings (`AccountSettings`, currently `{theme?: 'system' | 'light' | 'dark'}`)
+arrive with `GET /api/session`; settings in one workspace (`MemberSettings`: `lastCurrency`, `analyticsCurrency`,
+`historyFilters` without the search text) arrive with that workspace's bootstrap and never include another member's.
+
+- `PATCH /api/me/settings` with `{settings: {key: value | null}}` → `{settings: AccountSettings}`.
+- `PATCH /api/workspaces/:workspaceId/me/settings` with the same body → `{settings: MemberSettings}`.
+
+Only the keys sent change; `null` returns a key to its default. An unknown key or an impossible value is `400
+VALIDATION` with `error.details.key`. Workspace settings are deleted together with the membership.
+
+The client applies a change at once and queues it in `localStorage` under the profile (`…:pending-settings`); changes
+made within 400 ms go out in one request, and a failed send waits for the next bootstrap load. Until the queue is sent
+it overrides the server's answer wherever a session or bootstrap enters the app (`withAccountSettings`,
+`withMemberSettings`). A value the server refuses with `400` is dropped; `404 WORKSPACE_NOT_FOUND` drops that
+workspace's queue. On the first known answer after the update, values this phone kept before (`moapp:theme`,
+`last-currency`, `analytics-currency`, `history-filters`) are queued once, only for keys the account does not have yet.
+`moapp:theme` stays as a copy of the account theme for the first frame and is removed on logout.
 
 ## Expense routes and synchronization
 

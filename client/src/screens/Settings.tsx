@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { QRCodeSVG } from 'qrcode.react'
-import { WorkspaceApiError as ApiError, changeWorkspaceCurrency, createCategory, createDeviceLink, createInvitation, createTag, deleteTag, getSession, leaveWorkspace, listInvitations, listMembers, listSessions, prepareInitialOrManualRecovery, removeMember, renameWorkspace, reorderCategories, reorderTags, revokeInvitation, revokeSession, transferOwnership, updateCategory, updateProfile, updateTag } from '../workspace-api'
+import { WorkspaceApiError as ApiError, changeWorkspaceCurrency, createCategory, createDeviceLink, createInvitation, createTag, deleteTag, getSession, leaveWorkspace, listInvitations, listMembers, listSessions, prepareInitialOrManualRecovery, removeMember, renameWorkspace, reorderCategories, reorderTags, revokeInvitation, revokeSession, saveMemberSettings, transferOwnership, updateCategory, updateProfile, updateTag } from '../workspace-api'
 import { clearWorkspaceOfflineData } from '../workspace-offline'
-import { clearWorkspacePreference } from '../app-state'
+import { patchSettings } from '../settings'
 import { completeRotationSafely } from '../recovery-flow'
-import type { AuthenticatedSession, Category, Expense, RecoveryPrepareResponse, SessionState, Tag, WorkspaceMod, WorkspaceSummary } from '../types'
+import type { AuthenticatedSession, Category, Expense, RecoveryPrepareResponse, SessionState, Tag, ThemePreference, WorkspaceMod, WorkspaceSummary } from '../types'
 import { PINNED_CURRENCIES, localDateKey, workspaceCurrency } from '../utils'
 import { buildHistoryCsv } from '../history'
 import { ChevronIcon, CurrencySheet, ListSheet, SelectSheet, TextSheet, Toast, copyText, tap, useConfirm, useDialog, useToast } from '../ui'
@@ -67,7 +67,8 @@ export function SettingsRow({ label, value, tone, disabled = false, onClick }: {
 export type AccessSheet = 'members' | 'devices' | 'workspace-name' | 'display-name' | 'currency' | null
 
 // Две группы строк — «Пространство» и «Профиль»; списки участников и устройств живут в шитах, на первом уровне только счётчик.
-export function AccessSettings({ user, workspace, bootstrap, setBootstrap, pendingCount, online, onSession, onNotice, onBusyChange, children }: {
+// `children` дописываются в «Пространство», `profileRows` — в «Профиль».
+export function AccessSettings({ user, workspace, bootstrap, setBootstrap, pendingCount, online, onSession, onNotice, onBusyChange, children, profileRows }: {
   user: AuthenticatedSession
   workspace: WorkspaceSummary
   bootstrap: Bootstrap
@@ -78,6 +79,7 @@ export function AccessSettings({ user, workspace, bootstrap, setBootstrap, pendi
   onNotice: (message: string, urgent?: boolean) => void
   onBusyChange: (busy: boolean) => void
   children?: React.ReactNode
+  profileRows?: React.ReactNode
 }) {
   const [members, setMembers] = useState<import('../types').Participant[]>([])
   const [devices, setDevices] = useState<import('../types').DeviceSession[]>([])
@@ -189,14 +191,14 @@ export function AccessSettings({ user, workspace, bootstrap, setBootstrap, pendi
     await onSession(await getSession())
   }
   // Валюта пространства общая для всех: в ней начинается новый расход и считаются итоги. Меняет её владелец; валюта,
-  // выбранная вручную на этом телефоне, сбрасывается, чтобы следующая запись сразу пошла в новой.
+  // которую он выбирал вручную, сбрасывается, чтобы его следующая запись сразу пошла в новой.
   const currency = workspaceCurrency(bootstrap)
   // Короткий список шторки: текущая, встречавшиеся в записях и четыре ходовые — чтобы обычный выбор обходился без поиска.
   const usedCurrencies = [...new Set([currency, ...bootstrap.expenses.filter((item) => !item.deletedAt).map((item) => item.currency), ...PINNED_CURRENCIES])]
   const saveCurrency = (code: string) => runAction('currency', async () => {
     const { workspace: saved } = await changeWorkspaceCurrency(workspace.id, code, workspace.version)
-    setBootstrap((data) => ({ ...data, workspace: { ...data.workspace, ...saved }, defaultAnalyticsCurrency: saved.currency ?? code }))
-    clearWorkspacePreference(user.user.id, workspace.id, 'last-currency')
+    setBootstrap((data) => ({ ...data, workspace: { ...data.workspace, ...saved }, defaultAnalyticsCurrency: saved.currency ?? code, settings: patchSettings(data.settings, { lastCurrency: null }) }))
+    saveMemberSettings(user.user.id, workspace.id, { lastCurrency: null })
     await onSession(await getSession())
   }, 'Не удалось изменить валюту', `Новые расходы — в ${code}`)
 
@@ -216,6 +218,7 @@ export function AccessSettings({ user, workspace, bootstrap, setBootstrap, pendi
       <SettingsRow label="Ваше имя" value={user.user.displayName} onClick={() => setSheet('display-name')} disabled={!online}/>
       <SettingsRow label="Ссылка доступа" value={busyAction === 'recovery' ? 'Готовим…' : user.user.recoveryConfigured ? 'сохранена' : 'не сохранена'} tone={user.user.recoveryConfigured ? undefined : 'warn'} onClick={() => void rotateRecovery()} disabled={!online || busy}/>
       <SettingsRow label="Другие устройства" value={loading ? '…' : otherDevices.length ? String(otherDevices.length) : 'нет'} onClick={() => setSheet('devices')}/>
+      {profileRows}
     </div></div>
     {sheet === 'workspace-name' && <TextSheet title="Название пространства" value={workspace.name} placeholder="Например, Дом или Поездка" onClose={() => setSheet(null)} onSave={saveWorkspaceName}/>}
     {sheet === 'currency' && <CurrencySheet currencies={bootstrap.currencies} used={usedCurrencies} selected={currency} onClose={() => setSheet(null)} onSelect={(code) => { setSheet(null); if (code !== currency) void saveCurrency(code) }}/>}
@@ -326,7 +329,7 @@ export function DragList<T extends { id: string }>({ items, disabled = false, on
   </div>)}</div>
 }
 
-export type ThemePreference = 'system' | 'light' | 'dark'
+export type { ThemePreference }
 
 export const THEME_OPTIONS: SelectOption[] = [{ value: 'system', label: 'Как в системе' }, { value: 'light', label: 'Светлая' }, { value: 'dark', label: 'Тёмная' }]
 
@@ -348,8 +351,9 @@ export function exportHistoryCsv(bootstrap: Bootstrap) {
 
 export type SettingsSheet = 'categories' | 'tags' | 'theme' | null
 
-// Настройки — плоский список в три группы: «что это за пространство», «кто я», «что на этом телефоне».
-// Без сегментов и вложенных заголовков: строка = одно понятие, всё, что требует экрана, открывается шитом.
+// Настройки — плоский список в три группы: «что это за пространство», «кто я и как у меня выглядит приложение»
+// (это живёт в аккаунте и едет на любое устройство), «что на этом телефоне». Без сегментов и вложенных заголовков:
+// строка = одно понятие, всё, что требует экрана, открывается шитом.
 export function SettingsView({ user, workspace, workspaceId, bootstrap, setBootstrap, pendingCount, refreshPending, onLogout, theme, onThemeChange, onSession, online, mods=null, onOpenMods=()=>{}, loadOlderExpenses }: { user: AuthenticatedSession; workspace:WorkspaceSummary; workspaceId:string; bootstrap:Bootstrap; setBootstrap:React.Dispatch<React.SetStateAction<Bootstrap>>; pendingCount:number; refreshPending:()=>void;onLogout:()=>void;theme:ThemePreference;onThemeChange:(theme:ThemePreference)=>void;onSession:(session:SessionState)=>Promise<void>;online:boolean;mods?:WorkspaceMod[]|null;onOpenMods?:()=>void;loadOlderExpenses?:()=>Promise<Expense[]> }) {
   const [sheet,setSheet]=useState<SettingsSheet>(null)
   const [editing,setEditing]=useState<Category|null>(null)
@@ -447,13 +451,13 @@ export function SettingsView({ user, workspace, workspaceId, bootstrap, setBoots
   const modsValue=mods===null?(online?'…':'нужна сеть'):modsNeedAttention?'нужно обновить':addedMods.length?String(addedMods.length):'нет'
   const categoryRow=(category:Category)=><><i style={{background:category.color??'#a9afa5'}}/><button type="button" className="category-name" disabled={!online||reordering} onClick={()=>setEditing(category)}>{category.name}</button></>
   return <section className="page settings-page">
-    <AccessSettings user={user} workspace={workspace} bootstrap={bootstrap} setBootstrap={setBootstrap} pendingCount={pendingCount} online={online} onSession={onSession} onNotice={accessNotice} onBusyChange={setAccessBusy}>
+    <AccessSettings user={user} workspace={workspace} bootstrap={bootstrap} setBootstrap={setBootstrap} pendingCount={pendingCount} online={online} onSession={onSession} onNotice={accessNotice} onBusyChange={setAccessBusy}
+      profileRows={<SettingsRow label="Тема" value={THEME_OPTIONS.find((option)=>option.value===theme)?.label} onClick={()=>setSheet('theme')}/>}>
       <SettingsRow label="Категории" value={String(activeCategories.length)} onClick={()=>setSheet('categories')}/>
       <SettingsRow label="Теги" value={tags.length?String(tags.length):'нет'} onClick={()=>setSheet('tags')}/>
       <SettingsRow label="Моды" value={modsValue} tone={modsNeedAttention?'warn':undefined} onClick={onOpenMods}/>
     </AccessSettings>
     <div className="settings-list" role="group" aria-labelledby="settings-device"><h2 id="settings-device">Этот телефон</h2><div className="settings-rows">
-      <SettingsRow label="Тема" value={THEME_OPTIONS.find((option)=>option.value===theme)?.label} onClick={()=>setSheet('theme')}/>
       <SettingsRow label="Экспорт в CSV" onClick={()=>{void (async()=>{
         // В файл идёт вся история: записи старше окна первичной загрузки сначала подтягиваются с сервера.
         try{const expenses=bootstrap.olderExpenses&&loadOlderExpenses?await loadOlderExpenses():bootstrap.expenses;setNotice(`Экспортировано расходов: ${exportHistoryCsv({...bootstrap,expenses})}`)}

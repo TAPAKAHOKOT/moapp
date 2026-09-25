@@ -8,7 +8,8 @@ import { splitDraft, SplitSheet } from './screens/Split'
 import { ModsView, readStatementFile, statementFeedback } from './screens/Mods'
 import * as workspaceApi from './workspace-api'
 import * as workspaceOffline from './workspace-offline'
-import type { AuthenticatedSession, Category, WorkspaceBootstrap, WorkspaceMod } from './types'
+import { queuedMemberSettings } from './settings'
+import type { AccountSettings, AuthenticatedSession, Category, WorkspaceBootstrap, WorkspaceMod } from './types'
 
 // Фильтры истории выбирают несколько значений: шит остаётся открытым до «Готово».
 function chooseOption(label: string, ...options: string[]) {
@@ -417,8 +418,8 @@ describe('history discovery', () => {
     expect(screen.getByText('Ничего не найдено')).not.toBeNull()
   })
 
-  it('filters by currency and restores history filters after reopening', () => {
-    const bootstrap = expenseBootstrap({
+  it('filters by currency and restores history filters after reopening, but not the search text', () => {
+    let bootstrap = expenseBootstrap({
       currencies: [
         { code: 'RSD', name: 'Сербский динар', symbol: 'дин.', decimals: 2 },
         { code: 'EUR', name: 'Евро', symbol: '€', decimals: 2 },
@@ -428,8 +429,10 @@ describe('history discovery', () => {
         { id: 'eur', amountMinor: 2_000, currency: 'EUR', categoryId: 'products', note: 'кофе', occurredAt: '2026-08-30T09:37:00.000Z', createdAt: '2026-08-30T09:37:00.000Z', updatedAt: '2026-08-30T09:37:00.000Z', version: 1, deletedAt: null },
       ],
     })
-    const props = { userId: 'user-a', workspaceId: 'workspace-a', bootstrap, setBootstrap: vi.fn(), edit: vi.fn(), createNew: vi.fn(), refreshPending: vi.fn() }
-    render(<HistoryView {...props}/>)
+    // Фильтры живут в настройках пространства: экран кладёт их в данные, откуда их возьмёт следующее открытие.
+    const setBootstrap = vi.fn((action: React.SetStateAction<WorkspaceBootstrap>) => { bootstrap = typeof action === 'function' ? action(bootstrap) : action })
+    const props = () => ({ userId: 'user-a', workspaceId: 'workspace-a', bootstrap, setBootstrap, edit: vi.fn(), createNew: vi.fn(), refreshPending: vi.fn() })
+    render(<HistoryView {...props()}/>)
 
     chooseOption('Валюта истории', 'EUR')
     choosePeriod('Выбрать даты')
@@ -440,12 +443,15 @@ describe('history discovery', () => {
     expect(screen.getAllByRole('button', { name: /Продукты/ })).toHaveLength(1)
 
     cleanup()
-    render(<HistoryView {...props}/>)
+    render(<HistoryView {...props()}/>)
 
     // Чипы показывают само значение, а не «Все …»: так видно, что включено.
     expect(screen.getByLabelText('Валюта истории').textContent).toBe('EUR')
     expect(screen.getByLabelText('Период истории').textContent).toBe('30 авг. 2026')
-    expect((screen.getByRole('searchbox') as HTMLInputElement).value).toBe('кофе')
+    // Поиск разовый: в аккаунт он не уходит и при следующем открытии не возвращается.
+    expect(screen.queryByRole('searchbox')).toBeNull()
+    expect(bootstrap.settings?.historyFilters).toEqual({ categoryIds: [], tagIds: [], currencies: ['EUR'], period: 'range', from: '2026-08-30', to: '2026-08-30' })
+    expect(queuedMemberSettings('user-a', 'workspace-a').historyFilters).toEqual(bootstrap.settings?.historyFilters)
     expect(screen.getAllByRole('button', { name: /Продукты/ })).toHaveLength(1)
   })
 })
@@ -1215,7 +1221,7 @@ describe('settings identity transitions', () => {
     expect((within(screen.getByRole('dialog', { name: 'Новая категория' })).getByLabelText('Название') as HTMLInputElement).value).toBe('продукты')
   })
 
-  it('lets the owner change the workspace currency and forgets the currency picked by hand on this phone', async () => {
+  it('lets the owner change the workspace currency and forgets the currency they picked by hand', async () => {
     vi.spyOn(workspaceApi, 'listMembers').mockResolvedValue({ members: [] })
     vi.spyOn(workspaceApi, 'listSessions').mockResolvedValue({ sessions: [] })
     vi.spyOn(workspaceApi, 'listInvitations').mockResolvedValue({ invitations: [] })
@@ -1226,8 +1232,7 @@ describe('settings identity transitions', () => {
     vi.spyOn(workspaceApi, 'getSession').mockResolvedValue({ ...user, workspaces: [saved] })
     const setBootstrap = vi.fn()
     const onSession = vi.fn().mockResolvedValue(undefined)
-    localStorage.setItem('moapp:v2:user:user-a:workspace:workspace-a:last-currency', 'USD')
-    const bootstrap = expenseBootstrap({ currencies: [{ code: 'RSD', name: 'Сербский динар', symbol: 'дин.', decimals: 2 }, { code: 'EUR', name: 'Евро', symbol: '€', decimals: 2 }] })
+    const bootstrap = expenseBootstrap({ currencies: [{ code: 'RSD', name: 'Сербский динар', symbol: 'дин.', decimals: 2 }, { code: 'EUR', name: 'Евро', symbol: '€', decimals: 2 }], settings: { lastCurrency: 'USD', analyticsCurrency: 'USD' } })
     render(<SettingsView user={user} workspace={workspace} workspaceId={workspace.id} bootstrap={bootstrap} setBootstrap={setBootstrap} pendingCount={0} refreshPending={vi.fn()} onLogout={vi.fn()} theme="light" onThemeChange={vi.fn()} onSession={onSession} online/>)
 
     expect(screen.getByRole('button', { name: /^Валюта/ }).textContent).toContain('RSD')
@@ -1236,8 +1241,10 @@ describe('settings identity transitions', () => {
 
     await waitFor(() => expect(change).toHaveBeenCalledWith('workspace-a', 'EUR', 1))
     await waitFor(() => expect(onSession).toHaveBeenCalledWith(expect.objectContaining({ workspaces: [saved] })))
-    expect(localStorage.getItem('moapp:v2:user:user-a:workspace:workspace-a:last-currency')).toBeNull()
     const patched = (setBootstrap.mock.calls[0][0] as (data: WorkspaceBootstrap) => WorkspaceBootstrap)(bootstrap)
+    // Валюта, выбранная вручную, забывается и в аккаунте; выбор валюты аналитики остаётся.
+    expect(patched.settings).toEqual({ analyticsCurrency: 'USD' })
+    expect(queuedMemberSettings('user-a', 'workspace-a')).toEqual({ lastCurrency: null })
     expect(patched.workspace.currency).toBe('EUR')
     expect(patched.workspace.version).toBe(2)
     expect(patched.defaultAnalyticsCurrency).toBe('EUR')
@@ -1739,15 +1746,16 @@ describe('workspace onboarding controls', () => {
 
 const appWorkspace = { id: 'workspace-a', name: 'Дом', role: 'owner' as const, version: 1, joinedAt: '2026-08-01T00:00:00.000Z' }
 const guest = { authenticated: false as const, user: null, workspaces: [] as [], legacyClaimAvailable: false, serverTime: '2026-08-10T14:00:00.000Z' }
-const authSession = (recoveryConfigured: boolean): AuthenticatedSession => ({ authenticated: true, user: { id: 'user-a', displayName: 'Аня', recoveryConfigured, recoveryGeneration: recoveryConfigured ? 1 : 0 }, currentSessionId: 'session-a', currentSessionExpiresAt: '2030-01-01T00:00:00.000Z', serverTime: '2026-08-10T14:00:00.000Z', restrictedToRecovery: false, workspaces: [appWorkspace], legacyWorkspaceId: null })
+const authSession = (recoveryConfigured: boolean, settings: AccountSettings = {}): AuthenticatedSession => ({ authenticated: true, user: { id: 'user-a', displayName: 'Аня', recoveryConfigured, recoveryGeneration: recoveryConfigured ? 1 : 0 }, currentSessionId: 'session-a', currentSessionExpiresAt: '2030-01-01T00:00:00.000Z', serverTime: '2026-08-10T14:00:00.000Z', restrictedToRecovery: false, workspaces: [appWorkspace], legacyWorkspaceId: null, settings })
 
 // Целое приложение в jsdom: сеть и офлайн-хранилище подменены. Сервер доступен: неудачный запрос из прошлого теста
 // мог оставить в модуле пометку «сервер недоступен», поэтому сначала её снимает удачная проверка связи.
-async function renderSignedInApp({ recoveryConfigured = true, mods = [] as WorkspaceMod[] } = {}) {
-  vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { status: 204 })))
+async function renderSignedInApp({ recoveryConfigured = true, mods = [] as WorkspaceMod[], settings = {} as AccountSettings } = {}) {
+  const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => new Response(null, { status: 204 }))
+  vi.stubGlobal('fetch', fetchMock)
   await workspaceApi.probeServer()
   let loggedOut = false
-  vi.spyOn(workspaceApi, 'getSession').mockImplementation(async () => loggedOut ? guest : authSession(recoveryConfigured))
+  vi.spyOn(workspaceApi, 'getSession').mockImplementation(async () => loggedOut ? guest : authSession(recoveryConfigured, settings))
   vi.spyOn(workspaceApi, 'getBootstrap').mockResolvedValue({ data: expenseBootstrap(), offline: false })
   vi.spyOn(workspaceApi, 'syncAllWorkspaces').mockResolvedValue(undefined)
   vi.spyOn(workspaceApi, 'listMods').mockResolvedValue(mods)
@@ -1765,8 +1773,32 @@ async function renderSignedInApp({ recoveryConfigured = true, mods = [] as Works
   vi.spyOn(workspaceOffline, 'waitForWorkspaceOfflineWrites').mockResolvedValue(undefined)
   vi.spyOn(workspaceOffline, 'clearUserOfflineData').mockResolvedValue(undefined)
   render(<App/>)
-  return { logout }
+  return { logout, fetchMock }
 }
+
+describe('theme in the account', () => {
+  afterEach(() => { workspaceApi.allowWorkspaceMutations(); workspaceApi.setSessionContext(null); delete document.documentElement.dataset.theme })
+
+  it('takes the theme from the account, changes it there, and follows the system again after logout', async () => {
+    const { fetchMock } = await renderSignedInApp({ settings: { theme: 'dark' } })
+    await waitFor(() => expect(document.documentElement.dataset.theme).toBe('dark'))
+    expect(localStorage.getItem('moapp:theme')).toBe('dark')
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Настройки' }))
+    const profile = screen.getByRole('group', { name: 'Профиль' })
+    fireEvent.click(within(profile).getByRole('button', { name: /^Тема/ }))
+    fireEvent.click(within(screen.getByRole('dialog', { name: 'Тема' })).getByRole('option', { name: /Светлая/ }))
+
+    expect(document.documentElement.dataset.theme).toBe('light')
+    await waitFor(() => expect(fetchMock.mock.calls.some(([url, init]) => url === '/api/me/settings' && init?.method === 'PATCH' && init.body === JSON.stringify({ settings: { theme: 'light' } }))).toBe(true))
+    expect(within(screen.getByRole('group', { name: 'Этот телефон' })).queryByRole('button', { name: /^Тема/ })).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Выйти' }))
+    fireEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Выйти' }))
+    expect(await screen.findByRole('button', { name: 'Создать пространство' })).not.toBeNull()
+    expect(localStorage.getItem('moapp:theme')).toBeNull()
+  })
+})
 
 describe('mods in the app', () => {
   afterEach(() => { workspaceApi.allowWorkspaceMutations(); workspaceApi.setSessionContext(null) })
