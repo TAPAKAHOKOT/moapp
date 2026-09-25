@@ -170,7 +170,7 @@ export function ConfirmSheet({ options, onResult }: { options: ConfirmOptions; o
   </div>
 }
 
-type Confirm = {
+export type Confirm = {
   (options: ConfirmOptions & { secondaryLabel: string }): Promise<ConfirmResult>
   (options: ConfirmOptions): Promise<boolean>
 }

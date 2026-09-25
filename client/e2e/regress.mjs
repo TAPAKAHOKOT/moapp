@@ -54,9 +54,15 @@ async function phone(scheme, viewport, tag) {
   await page.screenshot({ path: `${dir}${tag}-${scheme}-settings-categories.png` })
   await page.locator('.list-sheet .icon-button').click()
   await sleep(300)
-  await page.locator('.settings-row', { hasText: 'Карта Bybit' }).click()
+  // Моды — отдельная страница поверх вкладок: снимок списка и шторки первого мода (или каталога, если модов нет).
+  await page.locator('.settings-row', { hasText: 'Моды' }).click()
   await sleep(700)
-  await page.screenshot({ path: `${dir}${tag}-${scheme}-settings-bybit.png` })
+  await page.screenshot({ path: `${dir}${tag}-${scheme}-mods.png` })
+  const firstMod = page.locator('.mod-row').first()
+  if (await firstMod.count()) await firstMod.click()
+  else await page.locator('.mods-add').click()
+  await sleep(700)
+  await page.screenshot({ path: `${dir}${tag}-${scheme}-mods-sheet.png` })
   await browser.close()
 }
 

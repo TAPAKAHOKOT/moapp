@@ -239,6 +239,19 @@ A stale tag version returns `409 VERSION_CONFLICT` with `error.details.current`.
 
 Tag mutations are online requests. Creating a tag whose name already exists returns `409 DUPLICATE` with the existing tag in `error.details.current`; the client reuses that tag instead of failing.
 
+## Mods
+
+Integrations are mods. `listMods` returns the whole catalog as `WorkspaceMod[]`
+(`{id,added,addedAt,state?}`); an added `bybit-card` carries its key state. Mods this
+client does not know are dropped from the list. `addMod` and `removeMod` are
+online-only and return the new catalog; any member may call them. Settings shows one
+«Моды» row (how many are added, or «нужно обновить» when the Bybit key fails), and it
+opens the mods page over the tabs. The page lists the added mods, opens each mod's
+sheet, and offers the rest from «Каталог модов»; a newly added mod opens its sheet
+right away. «Убрать мод» asks first: the Bybit key is forgotten, while unreviewed
+operations stay in review and recorded expenses stay in history. The mod's own calls
+answer `409 MOD_NOT_ADDED` once another member has removed it.
+
 ## Card review queue
 
 Review items from Bybit and from T-Bank statements share one queue
@@ -259,15 +272,16 @@ classified on the same card as any other operation, and can be put back together
 
 ## Bybit Card integration
 
-The client exposes workspace-scoped status, connection, disconnection and manual
-sync calls. The connection UI displays `enabledAt`: transactions before that instant are
-never imported.
+The client exposes connection and manual sync calls; any member may insert the key.
+The key state arrives with `listMods`, and every connect or sync response updates it
+together with the review count. The connection UI displays `enabledAt`: transactions
+before that instant are never imported.
 
 ## T-Bank statement
 
 `uploadTbankStatement` sends the CSV text read on the device (UTF-8, or Windows-1251
 for old Tinkoff files) together with the device time zone, and gets back
-`{imported,known,skipped,pendingCount}`. The settings sheet reports what changed and
+`{imported,known,skipped,pendingCount}`. The mod's sheet reports what changed and
 offers «Разобрать» when new spending arrived.
 
 ## Analytics and rates

@@ -65,15 +65,31 @@ export type ExpenseVoidReason = {
 
 export type BybitRegion = 'global' | 'eu' | 'nl' | 'tr' | 'kz' | 'ge' | 'ae' | 'id'
 
-export type BybitCardStatus = {
+/** Состояние ключа Bybit: его показывают и шторка карты, и список модов. */
+export type BybitCardState = {
   connected: boolean
-  canManage: boolean
   region?: BybitRegion
   enabledAt?: string
   lastSyncedAt?: string | null
   status?: 'active' | 'error'
   lastError?: string | null
+}
+
+export type BybitCardStatus = BybitCardState & {
+  /** Всегда true: ключ подключает любой участник. Поле осталось от времени, когда это мог только владелец. */
+  canManage: boolean
   pendingCount: number
+}
+
+/** Моды, которые знает этот клиент; незнакомые моды с сервера не показываются. */
+export type ModId = 'bybit-card' | 'tbank'
+
+/** Мод из каталога пространства. Добавленный Bybit рассказывает о своём ключе. */
+export type WorkspaceMod = {
+  id: ModId
+  added: boolean
+  addedAt: string | null
+  state?: BybitCardState
 }
 
 /** Операция с карты в очереди разбора: пришла от Bybit сама или из загруженной выписки Т‑Банка. */

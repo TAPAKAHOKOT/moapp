@@ -1,13 +1,13 @@
 import { startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { appTimeZone, localInputToIso, workspaceCurrency } from './utils'
-import { WorkspaceApiError as ApiError, allowWorkspaceMutations, blockWorkspaceMutations, discardOutboxIssues, getBootstrap, getBybitCardStatus, getCardQueueStatus, getSession, listExpenses, logoutExpected, prepareInitialOrManualRecovery, probeServer, retryOutboxIssue, setSessionContext, syncAllWorkspaces } from './workspace-api'
+import { WorkspaceApiError as ApiError, allowWorkspaceMutations, blockWorkspaceMutations, discardOutboxIssues, getBootstrap, getCardQueueStatus, getSession, listExpenses, listMods, logoutExpected, prepareInitialOrManualRecovery, probeServer, retryOutboxIssue, setSessionContext, syncAllWorkspaces } from './workspace-api'
 import { cacheBootstrap, migrateLegacyOfflineData, outboxStats, readCachedProfile, waitForWorkspaceOfflineWrites } from './workspace-offline'
 import { REMINDER_COMPACT_AFTER, applyMembershipLoss, beginLogout, chooseCachedWorkspace, closeCapability, createAppState, createIdentityCoordinator, createLoggedOutState, forgetKnownProfile, hydrateAppState, openLegacyClaim, readReminderMemory, reminderSnoozed, setActiveWorkspace, settlePendingLogout, snoozeReminder, updateWorkspace, writeReminderMemory } from './app-state'
 import type { AppState, ReminderMemory } from './app-state'
 import { createIdentityWithProbe, createWorkspaceWithProbe } from './access-flow'
 import { completeRotationSafely } from './recovery-flow'
 import { monitorServiceWorkerUpdates } from './service-worker-update'
-import type { BybitCardStatus, CapabilityIntent, Expense, RecoveryPrepareResponse, SessionState } from './types'
+import type { BybitCardStatus, CapabilityIntent, Expense, RecoveryPrepareResponse, SessionState, WorkspaceMod } from './types'
 import { ChevronIcon, Toast, prefersReducedMotion, tap, useConfirm, useInputModality, useOnlineStatus, useToast } from './ui'
 import type { Theme } from './ui'
 import { pluralRu } from './format'
@@ -18,6 +18,7 @@ import { AnalyticsView } from './screens/Analytics'
 import { SettingsView } from './screens/Settings'
 import type { ThemePreference } from './screens/Settings'
 import { CardReviewView, ReviewOverlay } from './screens/Review'
+import { ModsOverlay, ModsView } from './screens/Mods'
 import { CapabilityScreen, CreateWorkspaceSheet, LegacyClaimFlow, RecoverySave, RestrictedRecovery, SyncIssuesSheet, WorkspaceSwitcher } from './screens/Access'
 
 export type Tab = 'entry' | 'history' | 'analytics' | 'settings'
@@ -167,7 +168,9 @@ export default function App({ capability = null }: { capability?: CapabilityInte
   const [switchOpen,setSwitchOpen]=useState(false)
   const [issuesOpen,setIssuesOpen]=useState(false)
   const [reviewOpen,setReviewOpen]=useState(false)
-  const [bybitRuntime,setBybitRuntime]=useState<{workspaceId:string;status:BybitCardStatus}|null>(null)
+  const [modsOpen,setModsOpen]=useState(false)
+  // Моды пространства вместе с состоянием ключа Bybit: их показывают строка «Моды» в настройках и страница модов.
+  const [modsRuntime,setModsRuntime]=useState<{workspaceId:string;mods:WorkspaceMod[]}|null>(null)
   // Очередь разбора общая для карт: Bybit подкладывает операции сам, выписка Т‑Банка — после загрузки файла.
   const [queueRuntime,setQueueRuntime]=useState<{workspaceId:string;pendingCount:number}|null>(null)
   const [initialRecovery,setInitialRecovery]=useState<RecoveryPrepareResponse|null>(null)
@@ -360,29 +363,32 @@ export default function App({ capability = null }: { capability?: CapabilityInte
   const settingsIdentityEpoch=identityEpoch.current
   const workspaceId=state.activeWorkspaceId
   const workspacesKey=auth?.workspaces.map((workspace)=>`${workspace.id}:${workspace.version}`).join('|')??''
-  const bybitStatus=bybitRuntime?.workspaceId===workspaceId?bybitRuntime.status:null
+  const mods=modsRuntime?.workspaceId===workspaceId?modsRuntime.mods:null
   const updateQueueCount=useCallback((pendingCount:number)=>{
     const id=stateRef.current.activeWorkspaceId;if(!id)return
     setQueueRuntime({workspaceId:id,pendingCount})
   },[])
-  // Сервер отдаёт в статусе Bybit счётчик всей очереди, поэтому обновление карты двигает и карточку «ждут разбора».
-  // После отключения карты статус собран на телефоне, а в очереди могут остаться строки выписки — счётчик спрашиваем у сервера.
+  const updateMods=useCallback((next:WorkspaceMod[])=>{
+    const id=stateRef.current.activeWorkspaceId;if(!id)return
+    setModsRuntime({workspaceId:id,mods:next})
+  },[])
+  // Ответ Bybit несёт и состояние ключа, и счётчик всей очереди, поэтому он двигает и строку мода, и карточку «ждут разбора».
   const updateBybitStatus=useCallback((next:BybitCardStatus)=>{
     const id=stateRef.current.activeWorkspaceId;if(!id)return
-    setBybitRuntime({workspaceId:id,status:next})
-    if(next.connected){updateQueueCount(next.pendingCount);return}
-    void getCardQueueStatus(id).then(({pendingCount})=>{if(stateRef.current.activeWorkspaceId===id)setQueueRuntime({workspaceId:id,pendingCount})}).catch(()=>{/* the next workspace load refreshes it */})
+    const { canManage: _canManage, pendingCount, ...state } = next
+    setModsRuntime((current)=>current?.workspaceId===id?{workspaceId:id,mods:current.mods.map((mod)=>mod.id==='bybit-card'?{...mod,state}:mod)}:current)
+    updateQueueCount(pendingCount)
   },[updateQueueCount])
 
   useEffect(()=>{
-    if(!auth||!workspaceId||!online){setBybitRuntime(null);setQueueRuntime(null);return}
+    if(!auth||!workspaceId||!online){setModsRuntime(null);setQueueRuntime(null);return}
     const controller=new AbortController();const id=workspaceId
-    setBybitRuntime((current)=>current?.workspaceId===id?current:null)
+    setModsRuntime((current)=>current?.workspaceId===id?current:null)
     setQueueRuntime((current)=>current?.workspaceId===id?current:null)
-    void getBybitCardStatus(id,controller.signal).then((status)=>{
+    void listMods(id,controller.signal).then((next)=>{
       if(controller.signal.aborted)return
-      setBybitRuntime({workspaceId:id,status})
-    }).catch(()=>{/* Bybit status is supplemental and must not block the workspace. */})
+      setModsRuntime({workspaceId:id,mods:next})
+    }).catch(()=>{/* Mods are supplemental and must not block the workspace. */})
     void getCardQueueStatus(id,controller.signal).then(({pendingCount})=>{
       if(controller.signal.aborted)return
       setQueueRuntime({workspaceId:id,pendingCount})
@@ -391,6 +397,7 @@ export default function App({ capability = null }: { capability?: CapabilityInte
   },[auth?.currentSessionId,auth?.user.id,online,workspaceId])
   // Разбор открыт поверх истории своего пространства; смена пространства его закрывает.
   useEffect(()=>setReviewOpen(false),[workspaceId])
+  useEffect(()=>setModsOpen(false),[workspaceId])
   // История мемоизирована: карточка очереди отдаётся ей стабильным объектом, чтобы не перерисовывать список на каждый рендер приложения.
   const openReview=useCallback(()=>setReviewOpen(true),[])
   const reviewCount=queueRuntime?.workspaceId===workspaceId?queueRuntime.pendingCount:0
@@ -623,7 +630,7 @@ export default function App({ capability = null }: { capability?: CapabilityInte
   const createNewExpense=useCallback(()=>void openExpenseRef.current(null),[])
   const switchWorkspace=async(id:string)=>{
     if(id!==stateRef.current.activeWorkspaceId&&!await confirmDraftDiscard())return
-    if(id!==stateRef.current.activeWorkspaceId){updateState((value)=>setActiveWorkspace(value,id));setCurrentId(null);setDraftDirty(false);setReviewOpen(false);setTab('entry')}
+    if(id!==stateRef.current.activeWorkspaceId){updateState((value)=>setActiveWorkspace(value,id));setCurrentId(null);setDraftDirty(false);setReviewOpen(false);setModsOpen(false);setTab('entry')}
     setSwitchOpen(false)
   }
   const retryIssue=async(operationId:string):Promise<string|null>=>{
@@ -696,9 +703,10 @@ if(Math.abs(node.scrollLeft-pagerTarget.current)>1)node.scrollLeft=pagerTarget.c
       <div className="page-slot" inert={tab!=='entry'} aria-hidden={tab!=='entry'}>{mountedTabs.includes('entry')&&<EntryView userId={auth.user.id} workspaceId={workspaceId} workspace={workspace} bootstrap={bootstrap} setBootstrap={setWorkspaceData} currentId={currentId} setCurrentId={setCurrentId} refreshPending={refreshPending} onDraftDirtyChange={setDraftDirty} active={tab==='entry'} newExpenseRequest={newExpenseRequest}/>}</div>
       <div className="page-slot" inert={tab!=='history'} aria-hidden={tab!=='history'}>{mountedTabs.includes('history')&&<HistoryView userId={auth.user.id} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} edit={editExpense} createNew={createNewExpense} refreshPending={refreshPending} inbox={historyInbox} reminder={historyReminder} timeZone={timeZone} older={historyOlder}/>}</div>
       <div className="page-slot" inert={tab!=='analytics'} aria-hidden={tab!=='analytics'}>{mountedTabs.includes('analytics')&&<AnalyticsView userId={auth.user.id} workspaceId={workspaceId} bootstrap={bootstrap} theme={theme} online={serverAvailable} timeZone={timeZone}/>}</div>
-      <div className="page-slot" inert={tab!=='settings'} aria-hidden={tab!=='settings'}>{mountedTabs.includes('settings')&&<SettingsView user={auth} workspace={workspace} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} pendingCount={stats.total} refreshPending={refreshPending} onLogout={()=>void logoutCurrent()} theme={themePreference} onThemeChange={setThemePreference} onSession={(next)=>hydrate(next,false,settingsIdentityEpoch)} online={serverAvailable} bybitStatus={bybitStatus} onBybitStatus={(status)=>updateBybitStatus(status)} onBybitSynced={reloadWorkspaceData} onStatementImported={(pendingCount)=>{updateQueueCount(pendingCount);reloadWorkspaceData()}} onOpenReview={openReview} loadOlderExpenses={loadOlderExpenses}/>}</div>
+      <div className="page-slot" inert={tab!=='settings'} aria-hidden={tab!=='settings'}>{mountedTabs.includes('settings')&&<SettingsView user={auth} workspace={workspace} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} pendingCount={stats.total} refreshPending={refreshPending} onLogout={()=>void logoutCurrent()} theme={themePreference} onThemeChange={setThemePreference} onSession={(next)=>hydrate(next,false,settingsIdentityEpoch)} online={serverAvailable} mods={mods} onOpenMods={()=>setModsOpen(true)} loadOlderExpenses={loadOlderExpenses}/>}</div>
     </main>
     <nav className="bottom-nav" aria-label="Основная навигация">{navigationTabs.map((item)=><button type="button" key={item.id} aria-current={tab===item.id?'page':undefined} aria-label={item.id==='history'&&reviewCount?`История: ${reviewCount} операций с карты ждут разбора`:item.label} className={tab===item.id?'active':''} onClick={()=>{if(tab!==item.id)tap(4);else if(item.id==='entry'&&currentId)setNewExpenseRequest((value)=>value+1);setTab(item.id)}}><span><NavIcon tab={item.id}/>{item.id==='history'&&reviewCount>0&&<b className="nav-badge">{reviewCount>99?'99+':reviewCount}</b>}</span><small>{item.label}</small></button>)}</nav>
+    {modsOpen&&<ModsOverlay onClose={()=>setModsOpen(false)}><ModsView workspaceId={workspaceId} mods={mods} online={serverAvailable} onMods={updateMods} onBybitStatus={updateBybitStatus} onBybitSynced={reloadWorkspaceData} onStatementImported={(pendingCount)=>{updateQueueCount(pendingCount);reloadWorkspaceData()}} onOpenReview={openReview}/></ModsOverlay>}
     {reviewOpen&&<ReviewOverlay onClose={()=>setReviewOpen(false)}><CardReviewView workspaceId={workspaceId} categories={bootstrap.categories} currencies={bootstrap.currencies} tags={bootstrap.tags??[]} onTag={(tag)=>setWorkspaceData((data)=>({...data,tags:[tag,...(data.tags??[]).filter((item)=>item.id!==tag.id)]}))} online={serverAvailable} onStatus={({pendingCount})=>updateQueueCount(pendingCount)} pendingCount={reviewCount} active onExpenses={(expenses)=>setWorkspaceData((data)=>({...data,expenses:[...expenses,...data.expenses.filter((item)=>!expenses.some((created)=>created.id===item.id))]}))} onExpensesUndo={(expenseIds)=>setWorkspaceData((data)=>({...data,expenses:data.expenses.filter((item)=>!expenseIds.includes(item.id))}))}/></ReviewOverlay>}
     {switchOpen&&<WorkspaceSwitcher items={auth.workspaces} active={workspaceId} runtimes={state.runtimes} online={serverAvailable} onSelect={(id)=>void switchWorkspace(id)} onCreate={()=>void openCreate()}/>} {createOpen&&<CreateWorkspaceSheet existing initialCurrency={workspaceCurrency(bootstrap)} onClose={()=>setCreateOpen(false)} onCreate={create}/>} {issuesOpen&&<SyncIssuesSheet userId={auth.user.id} workspaceId={workspaceId} bootstrap={bootstrap} online={serverAvailable} onClose={()=>setIssuesOpen(false)} onRetry={retryIssue} onDiscard={discardIssues}/>} {initialRecovery&&<RecoverySave key={initialRecovery.completionToken} prepared={initialRecovery} mode="initial" close={()=>setInitialRecovery(null)} complete={async()=>{
       const outcome=await completeRotationSafely({prepared:initialRecovery,targetUserId:auth.user.id})

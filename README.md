@@ -47,7 +47,7 @@ BYBIT_API_BASE_URL=http://127.0.0.1:4010 \
 npm run dev --workspace=server
 ```
 
-In **Settings → Integrations → Bybit Card**, choose `Global / Serbia` and use:
+In **Настройки → Моды**, add «Карта Bybit» from the catalog, choose `Global / Serbia` and use:
 
 - API key: `moapp-demo-key`
 - API secret: `moapp-demo-secret`
@@ -93,7 +93,7 @@ Deployment files live in `infra`, with the production workflow in
 - SQLite as the primary database.
 - Cloudflare R2 as off-server backup storage.
 - Read-only MCP access with built-in OAuth 2.1 and live workspace membership checks.
-- Optional read-only Bybit Card import with an explicit enable-time boundary, and T-Bank statement upload (CSV); both feed one card review queue.
+- Integrations are mods that any member adds to a workspace: read-only Bybit Card import with an explicit enable-time boundary, and T-Bank statement upload (CSV). Both feed one card review queue, and unreviewed operations stay there when a mod is removed.
 - Host Nginx terminates HTTPS and proxies to `127.0.0.1:8892`.
 
 The recovery link is the profile's long-lived master secret. Save it somewhere

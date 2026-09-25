@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { QRCodeSVG } from 'qrcode.react'
-import { WorkspaceApiError as ApiError, changeWorkspaceCurrency, connectBybitCard, createCategory, createDeviceLink, createInvitation, createTag, deleteTag, disconnectBybitCard, getSession, leaveWorkspace, listInvitations, listMembers, listSessions, prepareInitialOrManualRecovery, removeMember, renameWorkspace, reorderCategories, reorderTags, revokeInvitation, revokeSession, syncBybitCard, transferOwnership, updateCategory, updateProfile, updateTag, uploadTbankStatement } from '../workspace-api'
+import { WorkspaceApiError as ApiError, changeWorkspaceCurrency, createCategory, createDeviceLink, createInvitation, createTag, deleteTag, getSession, leaveWorkspace, listInvitations, listMembers, listSessions, prepareInitialOrManualRecovery, removeMember, renameWorkspace, reorderCategories, reorderTags, revokeInvitation, revokeSession, transferOwnership, updateCategory, updateProfile, updateTag } from '../workspace-api'
 import { clearWorkspaceOfflineData } from '../workspace-offline'
 import { clearWorkspacePreference } from '../app-state'
 import { completeRotationSafely } from '../recovery-flow'
-import type { AuthenticatedSession, BybitCardStatus, BybitRegion, Category, Expense, RecoveryPrepareResponse, SessionState, Tag, TbankStatementResult, WorkspaceSummary } from '../types'
+import type { AuthenticatedSession, Category, Expense, RecoveryPrepareResponse, SessionState, Tag, WorkspaceMod, WorkspaceSummary } from '../types'
 import { PINNED_CURRENCIES, localDateKey, workspaceCurrency } from '../utils'
 import { buildHistoryCsv } from '../history'
-import { CardMark, ChevronIcon, CurrencySheet, ListSheet, Select, SelectSheet, TextSheet, Toast, copyText, tap, useConfirm, useDialog, useToast } from '../ui'
+import { ChevronIcon, CurrencySheet, ListSheet, SelectSheet, TextSheet, Toast, copyText, tap, useConfirm, useDialog, useToast } from '../ui'
 import type { SelectOption } from '../ui'
 import { formatLinkLifetime, formatRelativeTime } from '../format'
 import type { Bootstrap } from '../format'
@@ -261,118 +261,6 @@ export function AccessSettings({ user, workspace, bootstrap, setBootstrap, pendi
   </>
 }
 
-export const bybitRegions: Array<{id:BybitRegion;label:string}> = [
-  {id:'global',label:'Global / Serbia'}, {id:'eu',label:'European Union'}, {id:'kz',label:'Kazakhstan'},
-  {id:'ge',label:'Georgia'}, {id:'ae',label:'UAE'}, {id:'tr',label:'Turkey'}, {id:'nl',label:'Netherlands'}, {id:'id',label:'Indonesia'},
-]
-
-// Карта Bybit в шите: одна строка состояния, одна кнопка «Обновить», «Отключить» — текстом внизу.
-export function BybitSheet({ workspace, workspaceId, status, online, onStatus, onSynced=()=>{}, onClose }: { workspace:WorkspaceSummary;workspaceId:string;status:BybitCardStatus|null;online:boolean;onStatus:(status:BybitCardStatus)=>void;onSynced?:()=>void;onClose:()=>void }) {
-  const [editing,setEditing]=useState(false)
-  const [apiKey,setApiKey]=useState('')
-  const [apiSecret,setApiSecret]=useState('')
-  const [region,setRegion]=useState<BybitRegion>('global')
-  const [busy,setBusy]=useState(false)
-  const [error,setError]=useState('')
-  const [feedback,setFeedback]=useState('')
-  const {confirm,confirmation}=useConfirm()
-  const manage=workspace.role==='owner'&&status?.canManage!==false
-  const connect=async(event:React.FormEvent)=>{
-    event.preventDefault();if(!apiKey.trim()||!apiSecret.trim())return setError('Введите API key и secret.')
-    setBusy(true);setError('')
-    try{
-      const next=await connectBybitCard(workspaceId,apiKey.trim(),apiSecret.trim(),region)
-      onStatus(next);setApiKey('');setApiSecret('');setEditing(false)
-    }catch(reason){setError(reason instanceof ApiError?reason.message:'Не удалось подключить карту')}
-    finally{setBusy(false)}
-  }
-  // Сервер не ходит в Bybit чаще раза в минуту; кнопка обязана сказать об этом, иначе нажатие выглядит сломанным.
-  const sync=async()=>{
-    setBusy(true);setError('');setFeedback('')
-    try{
-      const result=await syncBybitCard(workspaceId);onStatus(result);onSynced()
-      setFeedback(result.throttled?'Уже актуально: обновлялось меньше минуты назад':result.imported?`Новых операций: ${result.imported}`:'Новых операций нет')
-    }catch(reason){setError(reason instanceof ApiError?reason.message:'Не удалось обновить операции')}
-    finally{setBusy(false)}
-  }
-  const disconnect=async()=>{
-    if(!await confirm({title:'Отключить карту?',message:'Неразобранные операции пропадут. Уже сохранённые расходы останутся в истории.',confirmLabel:'Отключить',danger:true}))return
-    setBusy(true);setError('')
-    try{await disconnectBybitCard(workspaceId);onStatus({connected:false,canManage:true,pendingCount:0});setEditing(false)}
-    catch(reason){setError(reason instanceof ApiError?reason.message:'Не удалось отключить карту')}
-    finally{setBusy(false)}
-  }
-  const state=status===null?'Проверяем подключение…':status.connected?status.status==='error'?'Подключена · нужно обновить':status.lastSyncedAt?`Подключена · обновлено ${formatRelativeTime(status.lastSyncedAt)}`:'Подключена':'Не подключена'
-  return <ListSheet title="Карта Bybit" dismissible={!busy} onClose={onClose}>
-    <div className="integration-title"><CardMark source="bybit-card"/><span><b>Bybit Card</b><small>{state}</small></span>{status?.connected&&<i className={status.status==='error'?'error':'active'}/>}</div>
-    {status?.connected?<>
-      <p className="sheet-copy">Платежи попадают в историю начиная с {new Date(status.enabledAt!).toLocaleDateString('ru-RU',{day:'numeric',month:'long'})}. Более ранние не загружаются.</p>
-      {status.lastError&&<p className="form-error" role="alert">{status.lastError}</p>}
-      <button type="button" className="primary sheet-action" disabled={!online||busy} onClick={()=>void sync()}>{busy?'Обновляем…':'Обновить'}</button>
-      {feedback&&<p className="inline-feedback" role="status">{feedback}</p>}
-      {manage&&<button type="button" className="danger-link sheet-action" disabled={!online||busy} onClick={()=>void disconnect()}>Отключить</button>}
-    </>:manage?<>
-      <p className="sheet-copy">Платежи по карте будут появляться в истории сами — останется выбрать категорию. Загружаются только платежи после подключения. Нужен отдельный ключ только для чтения с разрешением BitCard.</p>
-      {!editing?<button type="button" className="primary sheet-action" disabled={!online||status===null} onClick={()=>setEditing(true)}>Подключить</button>:<form className="integration-form" onSubmit={(event)=>void connect(event)}>
-        <label>Регион аккаунта<Select label="Регион аккаунта" value={region} disabled={busy} onChange={(value)=>setRegion(value as BybitRegion)} options={bybitRegions.map((item)=>({value:item.id,label:item.label}))}/></label>
-        {region==='eu'&&<small className="integration-meta">Для EU Bybit требует ключ, созданный через Connect to Third-Party Applications.</small>}
-        <label>API key<input autoComplete="off" value={apiKey} disabled={busy} maxLength={256} onChange={(event)=>setApiKey(event.target.value)}/></label>
-        <label>API secret<input type="password" autoComplete="new-password" value={apiSecret} disabled={busy} maxLength={512} onChange={(event)=>setApiSecret(event.target.value)}/></label>
-        <button className="primary" disabled={busy||!online}>{busy?'Проверяем ключ…':'Подключить'}</button><button type="button" className="sheet-cancel" disabled={busy} onClick={()=>{setEditing(false);setError('')}}>Отмена</button>
-      </form>}
-    </>:<p className="sheet-copy">Подключить карту может владелец пространства.</p>}
-    {error&&<p className="form-error" role="alert">{error}</p>}
-    {confirmation}
-  </ListSheet>
-}
-
-/* Выписка больше года‑двух операций — это сотни килобайт; сервер принимает до 8 МБ. */
-const MAX_STATEMENT_BYTES = 8 * 1024 * 1024
-
-/* Нынешняя выгрузка Т‑Банка в UTF‑8; старые файлы Тинькофф были в Windows‑1251 — их тоже читаем. */
-export async function readStatementFile(file: File): Promise<string> {
-  const bytes = await file.arrayBuffer()
-  try { return new TextDecoder('utf-8', { fatal: true }).decode(bytes) }
-  catch { return new TextDecoder('windows-1251').decode(bytes) }
-}
-
-export function statementFeedback(result: TbankStatementResult): string {
-  const unread = result.skipped ? ` Не удалось прочитать строк: ${result.skipped}.` : ''
-  if (result.imported) return `Новых трат: ${result.imported}${result.known ? ` · уже были: ${result.known}` : ''}.${unread}`
-  return `${result.known ? 'Новых трат нет — всё уже загружено.' : 'В файле нет трат.'}${unread}`
-}
-
-/*
- * Т‑Банк не отдаёт операции личных карт по API, поэтому выписку загружают файлом. Траты встают в ту же
- * очередь разбора, что и у Bybit; то, что уже загружалось, узнаётся и не повторяется — периоды можно брать внахлёст.
- */
-export function TbankSheet({ workspaceId, online, onImported, onOpenReview, onClose }: { workspaceId:string;online:boolean;onImported:(result:TbankStatementResult)=>void;onOpenReview:()=>void;onClose:()=>void }) {
-  const [busy,setBusy]=useState(false)
-  const [error,setError]=useState('')
-  const [result,setResult]=useState<TbankStatementResult|null>(null)
-  const inputRef=useRef<HTMLInputElement>(null)
-  const upload=async(file:File)=>{
-    setError('');setResult(null)
-    if(file.size>MAX_STATEMENT_BYTES)return setError('Файл больше 8 МБ. Выгрузите период покороче.')
-    setBusy(true)
-    try{const next=await uploadTbankStatement(workspaceId,await readStatementFile(file));setResult(next);onImported(next);tap(8)}
-    catch(reason){setError(reason instanceof ApiError?reason.message:'Не удалось загрузить выписку')}
-    finally{setBusy(false)}
-  }
-  return <ListSheet title="Выписка Т‑Банка" dismissible={!busy} onClose={onClose}>
-    <div className="integration-title"><CardMark source="tbank"/><span><b>Т‑Банк</b><small>Операции загружаются файлом</small></span></div>
-    <p className="sheet-copy">На tbank.ru с компьютера: «Операции» → «Выгрузка операций» → CSV. Загрузите файл сюда — траты встанут в разбор. Периоды можно брать внахлёст: уже загруженное не повторится.</p>
-    <input ref={inputRef} type="file" accept=".csv,text/csv" hidden onChange={(event)=>{const file=event.target.files?.[0];event.target.value='';if(file)void upload(file)}}/>
-    {result?.imported
-      ?<button type="button" className="primary sheet-action" onClick={()=>{onClose();onOpenReview()}}>Разобрать</button>
-      :<button type="button" className="primary sheet-action" disabled={!online||busy} onClick={()=>inputRef.current?.click()}>{busy?'Загружаем…':'Выбрать файл'}</button>}
-    {result&&<p className="inline-feedback" role="status">{statementFeedback(result)}</p>}
-    {result?.imported?<button type="button" className="sheet-cancel sheet-action" disabled={!online||busy} onClick={()=>inputRef.current?.click()}>{busy?'Загружаем…':'Загрузить ещё файл'}</button>:null}
-    {!online&&<p className="sheet-copy">Выписка загружается только при подключении к сети.</p>}
-    {error&&<p className="form-error" role="alert">{error}</p>}
-  </ListSheet>
-}
-
 // Порядок в списке меняется перетаскиванием за ручку ≡ (или стрелками с клавиатуры) — вместо двух стрелок на каждую строку.
 // На iOS ручке нужен touch-action: none, иначе Safari отдаёт жест прокрутке и обрывает указатель.
 export function DragList<T extends { id: string }>({ items, disabled = false, onReorder, render }: { items: T[]; disabled?: boolean; onReorder: (ids: string[]) => void; render: (item: T) => React.ReactNode }) {
@@ -458,11 +346,11 @@ export function exportHistoryCsv(bootstrap: Bootstrap) {
   return expenses.length
 }
 
-export type SettingsSheet = 'categories' | 'tags' | 'bybit' | 'tbank' | 'theme' | null
+export type SettingsSheet = 'categories' | 'tags' | 'theme' | null
 
 // Настройки — плоский список в три группы: «что это за пространство», «кто я», «что на этом телефоне».
 // Без сегментов и вложенных заголовков: строка = одно понятие, всё, что требует экрана, открывается шитом.
-export function SettingsView({ user, workspace, workspaceId, bootstrap, setBootstrap, pendingCount, refreshPending, onLogout, theme, onThemeChange, onSession, online, bybitStatus=null, onBybitStatus=()=>{}, onBybitSynced=()=>{}, onStatementImported=()=>{}, onOpenReview=()=>{}, loadOlderExpenses }: { user: AuthenticatedSession; workspace:WorkspaceSummary; workspaceId:string; bootstrap:Bootstrap; setBootstrap:React.Dispatch<React.SetStateAction<Bootstrap>>; pendingCount:number; refreshPending:()=>void;onLogout:()=>void;theme:ThemePreference;onThemeChange:(theme:ThemePreference)=>void;onSession:(session:SessionState)=>Promise<void>;online:boolean;bybitStatus?:BybitCardStatus|null;onBybitStatus?:(status:BybitCardStatus)=>void;onBybitSynced?:()=>void;onStatementImported?:(pendingCount:number)=>void;onOpenReview?:()=>void;loadOlderExpenses?:()=>Promise<Expense[]> }) {
+export function SettingsView({ user, workspace, workspaceId, bootstrap, setBootstrap, pendingCount, refreshPending, onLogout, theme, onThemeChange, onSession, online, mods=null, onOpenMods=()=>{}, loadOlderExpenses }: { user: AuthenticatedSession; workspace:WorkspaceSummary; workspaceId:string; bootstrap:Bootstrap; setBootstrap:React.Dispatch<React.SetStateAction<Bootstrap>>; pendingCount:number; refreshPending:()=>void;onLogout:()=>void;theme:ThemePreference;onThemeChange:(theme:ThemePreference)=>void;onSession:(session:SessionState)=>Promise<void>;online:boolean;mods?:WorkspaceMod[]|null;onOpenMods?:()=>void;loadOlderExpenses?:()=>Promise<Expense[]> }) {
   const [sheet,setSheet]=useState<SettingsSheet>(null)
   const [editing,setEditing]=useState<Category|null>(null)
   const [adding,setAdding]=useState(false)
@@ -553,16 +441,16 @@ export function SettingsView({ user, workspace, workspaceId, bootstrap, setBoots
     catch(error){setBootstrap((b)=>({...b,tags:(b.tags??[]).map((x)=>previous.has(x.id)?{...x,sortOrder:previous.get(x.id)!}:x)}));setNotice(error instanceof ApiError?error.message:'Не удалось изменить порядок тегов',undefined,true)}
     setReordering(false)
   }
-  const bybitValue=bybitStatus===null?(online?'…':'нужна сеть'):bybitStatus.connected?(bybitStatus.status==='error'?'нужно обновить':'подключена'):'не подключена'
-  // Подключать карту может только владелец; участнику строка нужна, лишь когда карта уже подключена.
-  const bybitRow=workspace.role==='owner'||Boolean(bybitStatus?.connected)
+  // Моды — одной строкой: сколько добавлено, а если ключ Bybit перестал работать — об этом, чтобы не искать внутри.
+  const addedMods=mods?.filter((mod)=>mod.added)??[]
+  const modsNeedAttention=addedMods.some((mod)=>mod.state?.status==='error')
+  const modsValue=mods===null?(online?'…':'нужна сеть'):modsNeedAttention?'нужно обновить':addedMods.length?String(addedMods.length):'нет'
   const categoryRow=(category:Category)=><><i style={{background:category.color??'#a9afa5'}}/><button type="button" className="category-name" disabled={!online||reordering} onClick={()=>setEditing(category)}>{category.name}</button></>
   return <section className="page settings-page">
     <AccessSettings user={user} workspace={workspace} bootstrap={bootstrap} setBootstrap={setBootstrap} pendingCount={pendingCount} online={online} onSession={onSession} onNotice={accessNotice} onBusyChange={setAccessBusy}>
       <SettingsRow label="Категории" value={String(activeCategories.length)} onClick={()=>setSheet('categories')}/>
       <SettingsRow label="Теги" value={tags.length?String(tags.length):'нет'} onClick={()=>setSheet('tags')}/>
-      {bybitRow&&<SettingsRow label="Карта Bybit" value={bybitValue} onClick={()=>setSheet('bybit')}/>}
-      <SettingsRow label="Выписка Т‑Банка" value="загрузить" onClick={()=>setSheet('tbank')}/>
+      <SettingsRow label="Моды" value={modsValue} tone={modsNeedAttention?'warn':undefined} onClick={onOpenMods}/>
     </AccessSettings>
     <div className="settings-list" role="group" aria-labelledby="settings-device"><h2 id="settings-device">Этот телефон</h2><div className="settings-rows">
       <SettingsRow label="Тема" value={THEME_OPTIONS.find((option)=>option.value===theme)?.label} onClick={()=>setSheet('theme')}/>
@@ -593,8 +481,6 @@ export function SettingsView({ user, workspace, workspaceId, bootstrap, setBoots
       <p className="sheet-copy">{tags.length?'Тег — короткая пометка поверх категории, например «отпуск». Один расход может нести несколько тегов.':'Тегов пока нет. Тег — короткая пометка поверх категории, например «отпуск» или «вдвоём».'}</p>
       <button type="button" className="primary sheet-action" disabled={!online} onClick={()=>setAddingTag(true)}>Новый тег</button>
     </ListSheet>}
-    {sheet==='bybit'&&bybitRow&&<BybitSheet workspace={workspace} workspaceId={workspaceId} status={bybitStatus} online={online} onStatus={onBybitStatus} onSynced={onBybitSynced} onClose={()=>setSheet(null)}/>}
-    {sheet==='tbank'&&<TbankSheet workspaceId={workspaceId} online={online} onImported={(result)=>onStatementImported(result.pendingCount)} onOpenReview={onOpenReview} onClose={()=>setSheet(null)}/>}
     {sheet==='theme'&&<SelectSheet title="Тема" value={theme} options={THEME_OPTIONS} searchable={false} onClose={()=>setSheet(null)} onSelect={(value)=>{setSheet(null);onThemeChange(value as ThemePreference)}}/>}
     {(editing||adding)&&<CategoryEditor category={editing} mainCount={mainCategories.length} onClose={()=>{setEditing(null);setAdding(false)}} onSave={save}/>}
     {(editingTag||addingTag)&&<TagEditor tag={editingTag} onClose={()=>{setEditingTag(null);setAddingTag(false)}} onSave={saveTag} onDelete={editingTag?()=>removeTag(editingTag):undefined}/>}

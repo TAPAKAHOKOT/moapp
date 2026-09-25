@@ -5,10 +5,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import * as accessFlow from './access-flow'
 import App, { AnalyticsView, CardReviewView, CapabilityScreen, CreateWorkspaceSheet, EntryView, fallbackAnalytics, formatEntryDate, formatHistoryDate, HistoryView, pagerTabsAt, RecoverySave, SettingsView, useToast, WorkspaceSwitcher } from './App'
 import { splitDraft, SplitSheet } from './screens/Split'
-import { readStatementFile, statementFeedback } from './screens/Settings'
+import { ModsView, readStatementFile, statementFeedback } from './screens/Mods'
 import * as workspaceApi from './workspace-api'
 import * as workspaceOffline from './workspace-offline'
-import type { AuthenticatedSession, Category, WorkspaceBootstrap } from './types'
+import type { AuthenticatedSession, Category, WorkspaceBootstrap, WorkspaceMod } from './types'
 
 // Фильтры истории выбирают несколько значений: шит остаётся открытым до «Готово».
 function chooseOption(label: string, ...options: string[]) {
@@ -1004,6 +1004,122 @@ function SettingsHarness({ bootstrap: initial }: { bootstrap: WorkspaceBootstrap
 
 const hiddenHome: Category = { id: 'home', name: 'Для дома', color: '#79a9d1', placement: 'additional', sortOrder: 0, createdAt: '2026-08-01T00:00:00.000Z', updatedAt: '2026-09-01T00:00:00.000Z', archivedAt: '2026-09-01T00:00:00.000Z', version: 2 }
 
+const connectedBybit: WorkspaceMod = { id: 'bybit-card', added: true, addedAt: '2026-08-10T12:00:00.000Z', state: { connected: true, enabledAt: '2026-08-10T12:00:00.000Z', lastSyncedAt: '2026-09-05T08:00:00.000Z', status: 'active' } }
+const addedTbank: WorkspaceMod = { id: 'tbank', added: true, addedAt: '2026-09-25T10:00:00.000Z' }
+const catalog: WorkspaceMod[] = [{ id: 'bybit-card', added: false, addedAt: null }, { id: 'tbank', added: false, addedAt: null }]
+
+// Страница модов держит список у себя, как App: добавление и удаление возвращают новый каталог.
+function ModsHarness({ mods: initial, ...props }: { mods: WorkspaceMod[] } & Partial<React.ComponentProps<typeof ModsView>>) {
+  const [mods, setMods] = useState(initial)
+  return <ModsView workspaceId="workspace-a" mods={mods} online onMods={setMods} onBybitStatus={vi.fn()} {...props}/>
+}
+
+describe('mods page', () => {
+  it('tells the person why «Обновить» fetched nothing from Bybit', async () => {
+    const status = { ...connectedBybit.state!, canManage: true, pendingCount: 1 }
+    const sync = vi.spyOn(workspaceApi, 'syncBybitCard').mockResolvedValue({ ...status, imported: 0, throttled: true })
+    render(<ModsHarness mods={[connectedBybit]}/>)
+
+    fireEvent.click(screen.getByRole('button', { name: /Карта Bybit/ }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Обновить' }))
+    // Сервер не ходит в Bybit чаще раза в минуту; молчание выглядело бы как сломанная кнопка.
+    await screen.findByText('Уже актуально: обновлялось меньше минуты назад')
+    expect(sync).toHaveBeenCalledWith('workspace-a')
+  })
+
+  it('uploads a T-Bank statement file and leads straight to the review', async () => {
+    const upload = vi.spyOn(workspaceApi, 'uploadTbankStatement').mockResolvedValue({ imported: 3, known: 2, skipped: 0, pendingCount: 5 })
+    const onStatementImported = vi.fn()
+    const onOpenReview = vi.fn()
+    const { container } = render(<ModsHarness mods={[addedTbank]} onStatementImported={onStatementImported} onOpenReview={onOpenReview}/>)
+
+    fireEvent.click(screen.getByRole('button', { name: /Выписка Т‑Банка/ }))
+    const csv = '"Дата операции";"Сумма операции";"Валюта операции";"Статус";"Описание"\r\n"01.09.2026 09:05:00";"-2500,00";"RUB";"Ок";"selectel"\r\n'
+    const input = container.ownerDocument.querySelector('input[type="file"]') as HTMLInputElement
+    fireEvent.change(input, { target: { files: [new File([csv], 'Operations.csv', { type: 'text/csv' })] } })
+    await screen.findByText('Новых трат: 3 · уже были: 2.')
+    expect(upload).toHaveBeenCalledWith('workspace-a', csv)
+    expect(onStatementImported).toHaveBeenCalledWith(5)
+    fireEvent.click(screen.getByRole('button', { name: 'Разобрать' }))
+    expect(onOpenReview).toHaveBeenCalled()
+    expect(screen.queryByRole('dialog', { name: 'Выписка Т‑Банка' })).toBeNull()
+  })
+
+  it('says plainly what a statement upload changed', async () => {
+    expect(statementFeedback({ imported: 0, known: 12, skipped: 0, pendingCount: 0 })).toBe('Новых трат нет — всё уже загружено.')
+    expect(statementFeedback({ imported: 0, known: 0, skipped: 0, pendingCount: 0 })).toBe('В файле нет трат.')
+    expect(statementFeedback({ imported: 1, known: 0, skipped: 2, pendingCount: 1 })).toBe('Новых трат: 1. Не удалось прочитать строк: 2.')
+    // Старые выгрузки Тинькофф были в Windows‑1251: «Статус» в этой кодировке — D1 F2 E0 F2 F3 F1.
+    const legacy = new File([new Uint8Array([0xd1, 0xf2, 0xe0, 0xf2, 0xf3, 0xf1])], 'old.csv')
+    expect(await readStatementFile(legacy)).toBe('Статус')
+    expect(await readStatementFile(new File(['Статус'], 'new.csv'))).toBe('Статус')
+  })
+
+  // Пространство общее: любой участник добавляет мод из каталога и сразу вставляет ключ — без «спросите владельца».
+  it('adds a mod from the catalog and opens it right away to connect the card', async () => {
+    const add = vi.spyOn(workspaceApi, 'addMod').mockResolvedValue([{ id: 'bybit-card', added: true, addedAt: '2026-09-25T10:00:00.000Z', state: { connected: false } }, catalog[1]!])
+    const connect = vi.spyOn(workspaceApi, 'connectBybitCard').mockResolvedValue({ ...connectedBybit.state!, canManage: true, pendingCount: 2 })
+    const onBybitStatus = vi.fn()
+    render(<ModsHarness mods={catalog} onBybitStatus={onBybitStatus}/>)
+
+    expect(screen.getByText('Модов пока нет.')).not.toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Добавить мод' }))
+    const offers = screen.getByRole('dialog', { name: 'Каталог модов' })
+    expect(offers.textContent).toContain('Выписка Т‑Банка')
+    fireEvent.click(within(offers.querySelector('.mod-offer') as HTMLElement).getByRole('button', { name: 'Добавить' }))
+    await waitFor(() => expect(add).toHaveBeenCalledWith('workspace-a', 'bybit-card'))
+
+    const sheet = await screen.findByRole('dialog', { name: 'Карта Bybit' })
+    expect(screen.queryByRole('dialog', { name: 'Каталог модов' })).toBeNull()
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Подключить' }))
+    fireEvent.change(within(sheet).getByLabelText('API key'), { target: { value: 'key' } })
+    fireEvent.change(within(sheet).getByLabelText('API secret'), { target: { value: 'secret' } })
+    fireEvent.click(within(sheet).getAllByRole('button', { name: 'Подключить' }).at(-1)!)
+    await waitFor(() => expect(connect).toHaveBeenCalledWith('workspace-a', 'key', 'secret', 'global'))
+    expect(onBybitStatus).toHaveBeenCalledWith(expect.objectContaining({ connected: true, pendingCount: 2 }))
+    // Добавленный мод уходит из каталога; остался Т‑Банк — кнопка «Добавить мод» ещё нужна.
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Закрыть' }))
+    expect(screen.getByRole('button', { name: /Карта Bybit/ })).not.toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Добавить мод' }))
+    expect(within(screen.getByRole('dialog', { name: 'Каталог модов' })).queryByText('Карта Bybit')).toBeNull()
+  })
+
+  it('asks before removing a mod and keeps its unreviewed operations', async () => {
+    const remove = vi.spyOn(workspaceApi, 'removeMod').mockResolvedValue([{ id: 'bybit-card', added: false, addedAt: null }, addedTbank])
+    render(<ModsHarness mods={[connectedBybit, addedTbank]}/>)
+
+    fireEvent.click(screen.getByRole('button', { name: /Карта Bybit/ }))
+    fireEvent.click(within(await screen.findByRole('dialog', { name: 'Карта Bybit' })).getByRole('button', { name: 'Убрать мод' }))
+    const question = await screen.findByRole('alertdialog')
+    expect(within(question).getByRole('heading').textContent).toBe('Убрать карту Bybit?')
+    expect(question.textContent).toContain('Неразобранные операции останутся в разборе')
+    fireEvent.click(within(question).getByRole('button', { name: 'Убрать' }))
+    await waitFor(() => expect(remove).toHaveBeenCalledWith('workspace-a', 'bybit-card'))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Карта Bybit' })).toBeNull())
+    expect(screen.queryByRole('button', { name: /Карта Bybit/ })).toBeNull()
+    expect(screen.getByRole('button', { name: /Выписка Т‑Банка/ })).not.toBeNull()
+  })
+
+  it('says a broken Bybit key needs attention right on the settings row', () => {
+    vi.spyOn(workspaceApi, 'listMembers').mockResolvedValue({ members: [] })
+    vi.spyOn(workspaceApi, 'listSessions').mockResolvedValue({ sessions: [] })
+    const member = { ...expenseBootstrap().workspace, role: 'member' as const }
+    const user: AuthenticatedSession = { authenticated: true, user: { id: 'user-a', displayName: 'Аня', recoveryConfigured: true, recoveryGeneration: 1 }, currentSessionId: 'session-a', currentSessionExpiresAt: '2030-01-01T00:00:00.000Z', serverTime: '2026-08-10T14:00:00.000Z', restrictedToRecovery: false, workspaces: [member], legacyWorkspaceId: null }
+    const settings = (mods: WorkspaceMod[] | null, online = true) => <SettingsView user={user} workspace={member} workspaceId={member.id} bootstrap={expenseBootstrap({ workspace: member })} setBootstrap={vi.fn()} pendingCount={0} refreshPending={vi.fn()} onLogout={vi.fn()} theme="system" onThemeChange={vi.fn()} onSession={vi.fn()} online={online} mods={mods}/>
+    const empty = render(settings(catalog))
+    expect(screen.getByRole('button', { name: /^Моды/ }).textContent).toContain('нет')
+    empty.unmount()
+    const offline = render(settings(null, false))
+    expect(screen.getByRole('button', { name: /^Моды/ }).textContent).toContain('нужна сеть')
+    offline.unmount()
+
+    render(settings([{ ...connectedBybit, state: { ...connectedBybit.state!, status: 'error' } }, addedTbank]))
+    const row = screen.getByRole('button', { name: /^Моды/ })
+    expect(row.textContent).toContain('нужно обновить')
+    expect(row.className).toContain('warn')
+  })
+})
+
 describe('settings identity transitions', () => {
   it('lists settings as plain rows and opens categories in a sheet', async () => {
     vi.spyOn(workspaceApi, 'listMembers').mockResolvedValue({ members: [] })
@@ -1011,13 +1127,18 @@ describe('settings identity transitions', () => {
     vi.spyOn(workspaceApi, 'listInvitations').mockResolvedValue({ invitations: [] })
     const workspace = expenseBootstrap().workspace
     const user: AuthenticatedSession = { authenticated: true, user: { id: 'user-a', displayName: 'Аня', recoveryConfigured: true, recoveryGeneration: 1 }, currentSessionId: 'session-a', currentSessionExpiresAt: '2030-01-01T00:00:00.000Z', serverTime: '2026-08-10T14:00:00.000Z', restrictedToRecovery: false, workspaces: [workspace], legacyWorkspaceId: null }
-    render(<SettingsView user={user} workspace={workspace} workspaceId={workspace.id} bootstrap={expenseBootstrap()} setBootstrap={vi.fn()} pendingCount={0} refreshPending={vi.fn()} onLogout={vi.fn()} theme="system" onThemeChange={vi.fn()} onSession={vi.fn()} online bybitStatus={{connected:true,canManage:true,pendingCount:3,enabledAt:'2026-08-10T12:00:00.000Z',status:'active'}}/>)
+    const onOpenMods = vi.fn()
+    render(<SettingsView user={user} workspace={workspace} workspaceId={workspace.id} bootstrap={expenseBootstrap()} setBootstrap={vi.fn()} pendingCount={0} refreshPending={vi.fn()} onLogout={vi.fn()} theme="system" onThemeChange={vi.fn()} onSession={vi.fn()} online mods={[connectedBybit, addedTbank]} onOpenMods={onOpenMods}/>)
 
     // Ни сегментов, ни заголовков-эйбрау: сразу строки с понятиями и значениями.
     expect(screen.queryByText('Люди и доступ')).toBeNull()
     expect(screen.queryByRole('heading', { name: 'Настройки' })).toBeNull()
     expect(screen.getByRole('button', { name: /Название пространства/ }).textContent).toContain('Дом')
-    expect(screen.getByRole('button', { name: /Карта Bybit/ }).textContent).toContain('подключена')
+    // Карты и банки собраны в одну строку «Моды»: отдельных строк Bybit и Т‑Банка больше нет.
+    expect(screen.queryByRole('button', { name: /Карта Bybit|Выписка Т‑Банка/ })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: /^Моды/ }))
+    expect(screen.getByRole('button', { name: /^Моды/ }).textContent).toContain('2')
+    expect(onOpenMods).toHaveBeenCalled()
     expect(screen.getByRole('button', { name: /^Тема/ }).textContent).toContain('Как в системе')
     expect(screen.queryByRole('button', { name: 'Новая категория' })).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: /^Категории/ }))
@@ -1092,70 +1213,6 @@ describe('settings identity transitions', () => {
     // Набранное имя остаётся в открытом редакторе: человеку есть что исправить.
     expect(await screen.findByText('Категория «Продукты» уже есть')).not.toBeNull()
     expect((within(screen.getByRole('dialog', { name: 'Новая категория' })).getByLabelText('Название') as HTMLInputElement).value).toBe('продукты')
-  })
-
-  it('tells the person why «Обновить» fetched nothing from Bybit', async () => {
-    vi.spyOn(workspaceApi, 'listMembers').mockResolvedValue({ members: [] })
-    vi.spyOn(workspaceApi, 'listSessions').mockResolvedValue({ sessions: [] })
-    vi.spyOn(workspaceApi, 'listInvitations').mockResolvedValue({ invitations: [] })
-    const status = { connected: true, canManage: true, pendingCount: 1, enabledAt: '2026-08-10T12:00:00.000Z', lastSyncedAt: '2026-09-05T08:00:00.000Z', status: 'active' as const }
-    const sync = vi.spyOn(workspaceApi, 'syncBybitCard').mockResolvedValue({ ...status, imported: 0, throttled: true })
-    const workspace = expenseBootstrap().workspace
-    const user: AuthenticatedSession = { authenticated: true, user: { id: 'user-a', displayName: 'Аня', recoveryConfigured: true, recoveryGeneration: 1 }, currentSessionId: 'session-a', currentSessionExpiresAt: '2030-01-01T00:00:00.000Z', serverTime: '2026-08-10T14:00:00.000Z', restrictedToRecovery: false, workspaces: [workspace], legacyWorkspaceId: null }
-    render(<SettingsView user={user} workspace={workspace} workspaceId={workspace.id} bootstrap={expenseBootstrap()} setBootstrap={vi.fn()} pendingCount={0} refreshPending={vi.fn()} onLogout={vi.fn()} theme="system" onThemeChange={vi.fn()} onSession={vi.fn()} online bybitStatus={status}/>)
-
-    fireEvent.click(screen.getByRole('button', { name: /Карта Bybit/ }))
-    fireEvent.click(await screen.findByRole('button', { name: 'Обновить' }))
-    // Сервер не ходит в Bybit чаще раза в минуту; молчание выглядело бы как сломанная кнопка.
-    await screen.findByText('Уже актуально: обновлялось меньше минуты назад')
-    expect(sync).toHaveBeenCalledWith(workspace.id)
-  })
-
-  it('uploads a T-Bank statement file and leads straight to the review', async () => {
-    vi.spyOn(workspaceApi, 'listMembers').mockResolvedValue({ members: [] })
-    vi.spyOn(workspaceApi, 'listSessions').mockResolvedValue({ sessions: [] })
-    vi.spyOn(workspaceApi, 'listInvitations').mockResolvedValue({ invitations: [] })
-    const upload = vi.spyOn(workspaceApi, 'uploadTbankStatement').mockResolvedValue({ imported: 3, known: 2, skipped: 0, pendingCount: 5 })
-    const onStatementImported = vi.fn()
-    const onOpenReview = vi.fn()
-    const workspace = expenseBootstrap().workspace
-    const user: AuthenticatedSession = { authenticated: true, user: { id: 'user-a', displayName: 'Аня', recoveryConfigured: true, recoveryGeneration: 1 }, currentSessionId: 'session-a', currentSessionExpiresAt: '2030-01-01T00:00:00.000Z', serverTime: '2026-08-10T14:00:00.000Z', restrictedToRecovery: false, workspaces: [workspace], legacyWorkspaceId: null }
-    const { container } = render(<SettingsView user={user} workspace={workspace} workspaceId={workspace.id} bootstrap={expenseBootstrap()} setBootstrap={vi.fn()} pendingCount={0} refreshPending={vi.fn()} onLogout={vi.fn()} theme="system" onThemeChange={vi.fn()} onSession={vi.fn()} online onStatementImported={onStatementImported} onOpenReview={onOpenReview}/>)
-
-    fireEvent.click(screen.getByRole('button', { name: /Выписка Т‑Банка/ }))
-    const csv = '"Дата операции";"Сумма операции";"Валюта операции";"Статус";"Описание"\r\n"01.09.2026 09:05:00";"-2500,00";"RUB";"Ок";"selectel"\r\n'
-    const input = container.ownerDocument.querySelector('input[type="file"]') as HTMLInputElement
-    fireEvent.change(input, { target: { files: [new File([csv], 'Operations.csv', { type: 'text/csv' })] } })
-    await screen.findByText('Новых трат: 3 · уже были: 2.')
-    expect(upload).toHaveBeenCalledWith(workspace.id, csv)
-    expect(onStatementImported).toHaveBeenCalledWith(5)
-    fireEvent.click(screen.getByRole('button', { name: 'Разобрать' }))
-    expect(onOpenReview).toHaveBeenCalled()
-    expect(screen.queryByRole('dialog', { name: 'Выписка Т‑Банка' })).toBeNull()
-  })
-
-  it('says plainly what a statement upload changed', async () => {
-    expect(statementFeedback({ imported: 0, known: 12, skipped: 0, pendingCount: 0 })).toBe('Новых трат нет — всё уже загружено.')
-    expect(statementFeedback({ imported: 0, known: 0, skipped: 0, pendingCount: 0 })).toBe('В файле нет трат.')
-    expect(statementFeedback({ imported: 1, known: 0, skipped: 2, pendingCount: 1 })).toBe('Новых трат: 1. Не удалось прочитать строк: 2.')
-    // Старые выгрузки Тинькофф были в Windows‑1251: «Статус» в этой кодировке — D1 F2 E0 F2 F3 F1.
-    const legacy = new File([new Uint8Array([0xd1, 0xf2, 0xe0, 0xf2, 0xf3, 0xf1])], 'old.csv')
-    expect(await readStatementFile(legacy)).toBe('Статус')
-    expect(await readStatementFile(new File(['Статус'], 'new.csv'))).toBe('Статус')
-  })
-
-  it('shows the Bybit card row to a member only once the card is connected', () => {
-    vi.spyOn(workspaceApi, 'listMembers').mockResolvedValue({ members: [] })
-    vi.spyOn(workspaceApi, 'listSessions').mockResolvedValue({ sessions: [] })
-    const member = { ...expenseBootstrap().workspace, role: 'member' as const }
-    const user: AuthenticatedSession = { authenticated: true, user: { id: 'user-a', displayName: 'Аня', recoveryConfigured: true, recoveryGeneration: 1 }, currentSessionId: 'session-a', currentSessionExpiresAt: '2030-01-01T00:00:00.000Z', serverTime: '2026-08-10T14:00:00.000Z', restrictedToRecovery: false, workspaces: [member], legacyWorkspaceId: null }
-    const settings = (connected: boolean) => <SettingsView user={user} workspace={member} workspaceId={member.id} bootstrap={expenseBootstrap({ workspace: member })} setBootstrap={vi.fn()} pendingCount={0} refreshPending={vi.fn()} onLogout={vi.fn()} theme="system" onThemeChange={vi.fn()} onSession={vi.fn()} online bybitStatus={{ connected, canManage: false, pendingCount: 0 }}/>
-    const disconnected = render(settings(false))
-    expect(screen.queryByRole('button', { name: /Карта Bybit/ })).toBeNull()
-    disconnected.unmount()
-
-    render(settings(true))
-    expect(screen.getByRole('button', { name: /Карта Bybit/ }).textContent).toContain('подключена')
   })
 
   it('lets the owner change the workspace currency and forgets the currency picked by hand on this phone', async () => {
@@ -1680,33 +1737,62 @@ describe('workspace onboarding controls', () => {
   })
 })
 
-describe('logout confirmation', () => {
-  const workspace = { id: 'workspace-a', name: 'Дом', role: 'owner' as const, version: 1, joinedAt: '2026-08-01T00:00:00.000Z' }
-  const guest = { authenticated: false as const, user: null, workspaces: [] as [], legacyClaimAvailable: false, serverTime: '2026-08-10T14:00:00.000Z' }
-  const authSession = (recoveryConfigured: boolean): AuthenticatedSession => ({ authenticated: true, user: { id: 'user-a', displayName: 'Аня', recoveryConfigured, recoveryGeneration: recoveryConfigured ? 1 : 0 }, currentSessionId: 'session-a', currentSessionExpiresAt: '2030-01-01T00:00:00.000Z', serverTime: '2026-08-10T14:00:00.000Z', restrictedToRecovery: false, workspaces: [workspace], legacyWorkspaceId: null })
+const appWorkspace = { id: 'workspace-a', name: 'Дом', role: 'owner' as const, version: 1, joinedAt: '2026-08-01T00:00:00.000Z' }
+const guest = { authenticated: false as const, user: null, workspaces: [] as [], legacyClaimAvailable: false, serverTime: '2026-08-10T14:00:00.000Z' }
+const authSession = (recoveryConfigured: boolean): AuthenticatedSession => ({ authenticated: true, user: { id: 'user-a', displayName: 'Аня', recoveryConfigured, recoveryGeneration: recoveryConfigured ? 1 : 0 }, currentSessionId: 'session-a', currentSessionExpiresAt: '2030-01-01T00:00:00.000Z', serverTime: '2026-08-10T14:00:00.000Z', restrictedToRecovery: false, workspaces: [appWorkspace], legacyWorkspaceId: null })
+
+// Целое приложение в jsdom: сеть и офлайн-хранилище подменены. Сервер доступен: неудачный запрос из прошлого теста
+// мог оставить в модуле пометку «сервер недоступен», поэтому сначала её снимает удачная проверка связи.
+async function renderSignedInApp({ recoveryConfigured = true, mods = [] as WorkspaceMod[] } = {}) {
+  vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { status: 204 })))
+  await workspaceApi.probeServer()
+  let loggedOut = false
+  vi.spyOn(workspaceApi, 'getSession').mockImplementation(async () => loggedOut ? guest : authSession(recoveryConfigured))
+  vi.spyOn(workspaceApi, 'getBootstrap').mockResolvedValue({ data: expenseBootstrap(), offline: false })
+  vi.spyOn(workspaceApi, 'syncAllWorkspaces').mockResolvedValue(undefined)
+  vi.spyOn(workspaceApi, 'listMods').mockResolvedValue(mods)
+  vi.spyOn(workspaceApi, 'getCardQueueStatus').mockResolvedValue({ pendingCount: 0 })
+  vi.spyOn(workspaceApi, 'listMembers').mockResolvedValue({ members: [] })
+  vi.spyOn(workspaceApi, 'listSessions').mockResolvedValue({ sessions: [] })
+  vi.spyOn(workspaceApi, 'listInvitations').mockResolvedValue({ invitations: [] })
+  vi.spyOn(workspaceApi, 'prepareInitialOrManualRecovery').mockResolvedValue(prepared)
+  const logout = vi.spyOn(workspaceApi, 'logoutExpected').mockImplementation(async () => { loggedOut = true })
+  vi.spyOn(workspaceOffline, 'cacheProfile').mockResolvedValue(undefined)
+  vi.spyOn(workspaceOffline, 'cacheBootstrap').mockResolvedValue(undefined)
+  vi.spyOn(workspaceOffline, 'readCachedBootstrap').mockResolvedValue(undefined)
+  vi.spyOn(workspaceOffline, 'readCachedProfile').mockResolvedValue(undefined)
+  vi.spyOn(workspaceOffline, 'outboxStats').mockResolvedValue({ total: 0, conflicts: 0, failed: 0 })
+  vi.spyOn(workspaceOffline, 'waitForWorkspaceOfflineWrites').mockResolvedValue(undefined)
+  vi.spyOn(workspaceOffline, 'clearUserOfflineData').mockResolvedValue(undefined)
+  render(<App/>)
+  return { logout }
+}
+
+describe('mods in the app', () => {
   afterEach(() => { workspaceApi.allowWorkspaceMutations(); workspaceApi.setSessionContext(null) })
 
-  // Целое приложение в jsdom: сеть и офлайн-хранилище подменены, до строки «Выйти» доходим через вкладку настроек.
+  it('opens the mods page from settings over the tabs and closes back to settings', async () => {
+    await renderSignedInApp({ mods: [{ id: 'bybit-card', added: false, addedAt: null }, addedTbank] })
+    fireEvent.click(await screen.findByRole('button', { name: 'Настройки' }))
+    const row = await screen.findByRole('button', { name: /^Моды/ })
+    await waitFor(() => expect(row.textContent).toContain('1'))
+    fireEvent.click(row)
+
+    const page = await screen.findByRole('dialog', { name: 'Моды' })
+    expect(within(page).getByRole('button', { name: /Выписка Т‑Банка/ })).not.toBeNull()
+    expect(within(page).getByRole('button', { name: 'Добавить мод' })).not.toBeNull()
+    fireEvent.click(within(page).getByRole('button', { name: 'Закрыть' }))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Моды' })).toBeNull())
+    expect(screen.getByRole('button', { name: /^Моды/ })).not.toBeNull()
+  })
+})
+
+describe('logout confirmation', () => {
+  afterEach(() => { workspaceApi.allowWorkspaceMutations(); workspaceApi.setSessionContext(null) })
+
+  // До строки «Выйти» доходим через вкладку настроек.
   async function openLogout(recoveryConfigured: boolean) {
-    let loggedOut = false
-    vi.spyOn(workspaceApi, 'getSession').mockImplementation(async () => loggedOut ? guest : authSession(recoveryConfigured))
-    vi.spyOn(workspaceApi, 'getBootstrap').mockResolvedValue({ data: expenseBootstrap(), offline: false })
-    vi.spyOn(workspaceApi, 'syncAllWorkspaces').mockResolvedValue(undefined)
-    vi.spyOn(workspaceApi, 'getBybitCardStatus').mockResolvedValue({ connected: false, canManage: true, pendingCount: 0 })
-    vi.spyOn(workspaceApi, 'getCardQueueStatus').mockResolvedValue({ pendingCount: 0 })
-    vi.spyOn(workspaceApi, 'listMembers').mockResolvedValue({ members: [] })
-    vi.spyOn(workspaceApi, 'listSessions').mockResolvedValue({ sessions: [] })
-    vi.spyOn(workspaceApi, 'listInvitations').mockResolvedValue({ invitations: [] })
-    vi.spyOn(workspaceApi, 'prepareInitialOrManualRecovery').mockResolvedValue(prepared)
-    const logout = vi.spyOn(workspaceApi, 'logoutExpected').mockImplementation(async () => { loggedOut = true })
-    vi.spyOn(workspaceOffline, 'cacheProfile').mockResolvedValue(undefined)
-    vi.spyOn(workspaceOffline, 'cacheBootstrap').mockResolvedValue(undefined)
-    vi.spyOn(workspaceOffline, 'readCachedBootstrap').mockResolvedValue(undefined)
-    vi.spyOn(workspaceOffline, 'readCachedProfile').mockResolvedValue(undefined)
-    vi.spyOn(workspaceOffline, 'outboxStats').mockResolvedValue({ total: 0, conflicts: 0, failed: 0 })
-    vi.spyOn(workspaceOffline, 'waitForWorkspaceOfflineWrites').mockResolvedValue(undefined)
-    vi.spyOn(workspaceOffline, 'clearUserOfflineData').mockResolvedValue(undefined)
-    render(<App/>)
+    const { logout } = await renderSignedInApp({ recoveryConfigured })
     fireEvent.click(await screen.findByRole('button', { name: 'Настройки' }))
     fireEvent.click(await screen.findByRole('button', { name: 'Выйти' }))
     return { logout, dialog: await screen.findByRole('alertdialog') }

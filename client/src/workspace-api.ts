@@ -3,7 +3,7 @@ import { appTimeZone } from './utils'
 import type {
   AnalyticsData, AuthenticatedSession, BybitCardStatus, BybitRegion, CardTransaction, Category, DeviceLinkMetadata, DeviceLinkPreview, DeviceSession, Expense, InvitationMetadata,
   InvitationPreview, Participant, RecoveryPrepareResponse, RecoveryPreview, SessionState, SyncResult, UserProfile, WorkspaceBootstrap,
-  Tag, ExpenseSplitPart, TbankStatementResult, WorkspaceOutboxItem, WorkspaceSummary,
+  Tag, ExpenseSplitPart, TbankStatementResult, WorkspaceMod, WorkspaceOutboxItem, WorkspaceSummary,
 } from './types'
 
 type ErrorEnvelope = { error?: { code?: string; message?: string; details?: unknown }; message?: string }
@@ -28,6 +28,8 @@ const SERVER_ERROR_MESSAGES: Record<string, string> = {
   INVALID_PIN: 'PIN не подошёл.',
   INVALID_WORKSPACE_NAME: 'Проверьте название пространства.',
   LINK_INVALID: 'Ссылка недействительна или больше не действует.',
+  MOD_NOT_ADDED: 'Этот мод уже убрали из пространства. Добавьте его снова в «Модах».',
+  MOD_NOT_FOUND: 'Такого мода нет. Обновите приложение.',
   NOT_FOUND: 'Запрошенные данные не найдены.',
   OWNER_CANNOT_LEAVE: 'Сначала передайте владение пространством другому участнику.',
   RATES_UNAVAILABLE: 'Курсы валют временно недоступны.',
@@ -292,17 +294,29 @@ export function getAnalytics(workspaceId: string, from: string, to: string, curr
   return request<AnalyticsData>(workspacePath(workspaceId, `/analytics?${query}`), { signal })
 }
 
-const bybitCardPath = (workspaceId: string, suffix = '') => workspacePath(workspaceId, `/integrations/bybit-card${suffix}`)
-export function getBybitCardStatus(workspaceId: string, signal?: AbortSignal) {
-  return request<BybitCardStatus>(bybitCardPath(workspaceId), { signal })
+/*
+ * Моды пространства: каталог целиком, у добавленных — их состояние. Добавить и убрать мод может любой участник;
+ * убранный мод оставляет неразобранные операции в очереди. Незнакомые этому клиенту моды не показываются.
+ */
+const KNOWN_MODS: readonly string[] = ['bybit-card', 'tbank'] satisfies readonly WorkspaceMod['id'][]
+const knownMods = (result: { mods: Array<{ id: string }> }) => result.mods.filter((mod): mod is WorkspaceMod => KNOWN_MODS.includes(mod.id))
+const modPath = (workspaceId: string, modId: WorkspaceMod['id']) => workspacePath(workspaceId, `/mods/${encodeURIComponent(modId)}`)
+export async function listMods(workspaceId: string, signal?: AbortSignal): Promise<WorkspaceMod[]> {
+  return knownMods(await request<{ mods: Array<{ id: string }> }>(workspacePath(workspaceId, '/mods'), { signal }))
 }
+export async function addMod(workspaceId: string, modId: WorkspaceMod['id'], signal?: AbortSignal): Promise<WorkspaceMod[]> {
+  assertMutationsAllowed()
+  return knownMods(await request<{ mods: Array<{ id: string }> }>(modPath(workspaceId, modId), { method: 'PUT', body: JSON.stringify({}), signal }))
+}
+export async function removeMod(workspaceId: string, modId: WorkspaceMod['id'], signal?: AbortSignal): Promise<WorkspaceMod[]> {
+  assertMutationsAllowed()
+  return knownMods(await request<{ mods: Array<{ id: string }> }>(modPath(workspaceId, modId), { method: 'DELETE', body: JSON.stringify({}), signal }))
+}
+
+const bybitCardPath = (workspaceId: string, suffix = '') => workspacePath(workspaceId, `/integrations/bybit-card${suffix}`)
 export function connectBybitCard(workspaceId: string, apiKey: string, apiSecret: string, region: BybitRegion, signal?: AbortSignal) {
   assertMutationsAllowed()
   return request<BybitCardStatus>(bybitCardPath(workspaceId), { method: 'POST', body: JSON.stringify({ apiKey, apiSecret, region }), signal })
-}
-export async function disconnectBybitCard(workspaceId: string, signal?: AbortSignal): Promise<void> {
-  assertMutationsAllowed()
-  await request<void>(bybitCardPath(workspaceId), { method: 'DELETE', body: JSON.stringify({}), signal })
 }
 export function syncBybitCard(workspaceId: string, signal?: AbortSignal) {
   assertMutationsAllowed()
