@@ -149,15 +149,15 @@ test("a clean file reaches the latest schema without hidden identity, workspace,
   const fixture = temporaryDatabase();
   try {
     let db = openDatabase(fixture.path);
-    assert.equal((db.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number }).version, 15);
-    for (const table of ["users", "workspaces", "memberships", "categories", "legacy_claims", "oauth_clients", "oauth_authorization_codes", "oauth_tokens", "bybit_card_connections", "card_transactions", "workspace_mods"] as const) {
+    assert.equal((db.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number }).version, 16);
+    for (const table of ["users", "workspaces", "memberships", "categories", "legacy_claims", "oauth_clients", "oauth_authorization_codes", "oauth_tokens", "bybit_card_connections", "card_transactions", "workspace_mods", "user_settings", "member_settings"] as const) {
       assert.equal((db.prepare(`SELECT count(*) AS count FROM ${table}`).get() as { count: number }).count, 0);
     }
     db.close();
     const sizeAfterFirstStart = statSync(fixture.path).size;
 
     db = openDatabase(fixture.path);
-    assert.equal((db.prepare("SELECT count(*) AS count FROM schema_migrations").get() as { count: number }).count, 15);
+    assert.equal((db.prepare("SELECT count(*) AS count FROM schema_migrations").get() as { count: number }).count, 16);
     assert.equal((db.prepare("SELECT count(*) AS count FROM users").get() as { count: number }).count, 0);
     assert.equal(statSync(fixture.path).size, sizeAfterFirstStart);
     db.close();
@@ -424,7 +424,7 @@ test("an existing v3 database receives the singleton hardening migration", () =>
     db.close();
 
     db = openDatabase(fixture.path);
-    assert.equal((db.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number }).version, 15);
+    assert.equal((db.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number }).version, 16);
     assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type='index' AND name='legacy_claims_singleton_idx'").get());
     db.close();
   } finally {
@@ -449,7 +449,7 @@ test("a copy failure rolls v3 back and leaves a retryable v2 database", () => {
     db.close();
 
     db = openDatabase(fixture.path);
-    assert.equal((db.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number }).version, 15);
+    assert.equal((db.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number }).version, 16);
     assert.equal((db.prepare("SELECT count(*) AS count FROM expenses").get() as { count: number }).count, 2);
     assert.deepEqual(db.pragma("foreign_key_check"), []);
     db.close();
@@ -540,7 +540,7 @@ test("schemas 14 and 15 move Bybit operations, split parts included, into the sh
     db.close();
 
     db = openDatabase(fixture.path);
-    assert.equal((db.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number }).version, 15);
+    assert.equal((db.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number }).version, 16);
     assert.equal(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='bybit_card_transactions'").get(), undefined);
     assert.deepEqual(db.prepare("SELECT id,source,connection_id,external_key,review_status,split_of_id,split_index FROM card_transactions ORDER BY id").all(), [
       { id: "parent", source: "bybit-card", connection_id: "connection", external_key: "1:parent", review_status: "split", split_of_id: null, split_index: 0 },
@@ -614,7 +614,7 @@ test("schema 15 adds the mods a workspace already uses and forgets the key of so
     db.close();
 
     db = openDatabase(fixture.path);
-    assert.equal((db.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number }).version, 15);
+    assert.equal((db.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number }).version, 16);
     const mods = db.prepare("SELECT workspace_id,mod_id,added_by_user_id,added_at FROM workspace_mods").all() as Array<Record<string, string | null>>;
     const modsOf = (workspaceId: string) => mods.filter((mod) => mod.workspace_id === workspaceId).map(({ workspace_id: _, ...mod }) => mod);
     assert.deepEqual(modsOf(withCard), [{ mod_id: "bybit-card", added_by_user_id: bybitOwner, added_at: now }]);

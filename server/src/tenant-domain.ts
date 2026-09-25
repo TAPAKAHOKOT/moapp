@@ -9,6 +9,7 @@ import { noStore, workspaceContext } from "./tenant-domain-guard.js";
 import { jsonError } from "./validation.js";
 import { bootstrapWindowStart, localDateKey, requestTimeZone } from "./calendar.js";
 import { getWorkspaceSummary } from "./workspaces.js";
+import { readMemberSettings } from "./settings.js";
 
 function availableCurrencies() {
   const display = new Intl.DisplayNames(["ru"], { type: "currency" });
@@ -100,6 +101,8 @@ async function registerBootstrapRoute(app: FastifyInstance): Promise<void> {
       timeZone,
       // Итоги по умолчанию показываются в валюте пространства; поле оставлено под именем, которое знают старые кэши.
       defaultAnalyticsCurrency: workspace.currency,
+      // Свои настройки человека в этом пространстве; чужие сюда не попадают.
+      settings: readMemberSettings(app.db, workspaceId, userId),
       serverTime: new Date().toISOString()
     };
   });

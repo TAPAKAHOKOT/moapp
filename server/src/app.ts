@@ -19,6 +19,7 @@ import { registerBybitCardRoutes, startBybitCardScheduler } from "./bybit-card.j
 import { registerCardQueueRoutes } from "./card-queue.js";
 import { registerTbankStatementRoutes } from "./tbank-statement.js";
 import { registerModRoutes } from "./mods.js";
+import { registerSettingsRoutes } from "./settings.js";
 
 function loggerOptions(enabled: boolean | undefined) {
   if (enabled === false) return false;
@@ -80,6 +81,7 @@ export async function buildApp(config: AppConfig, options: { logger?: boolean; s
   await registerBybitCardRoutes(app);
   await registerTbankStatementRoutes(app);
   await registerModRoutes(app);
+  await registerSettingsRoutes(app);
 
   const clientRoot = options.staticRoot ?? resolve(process.cwd(), "../client/dist");
   if (existsSync(resolve(clientRoot, "index.html"))) {

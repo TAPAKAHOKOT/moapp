@@ -71,7 +71,7 @@ const seeds = [
   ["other", "Прочее", "additional", 4, "#A8A8A8"]
 ] as const;
 
-const LATEST_SCHEMA_VERSION = 15;
+const LATEST_SCHEMA_VERSION = 16;
 
 type TableCount = {
   categories: number;
@@ -673,6 +673,29 @@ export function openDatabase(path: string): Database.Database {
           DELETE FROM bybit_card_connections WHERE NOT EXISTS (
             SELECT 1 FROM memberships m
             WHERE m.workspace_id = bybit_card_connections.workspace_id AND m.user_id = bybit_card_connections.connected_by_user_id
+          );
+        `);
+        /*
+         * Личные настройки переезжают из памяти телефона в аккаунт (settings.ts). Настройки в пространстве держатся
+         * за участие в нём: вышел или удалили — они стираются каскадом. Пересборка memberships в будущей миграции
+         * при включённых внешних ключах сотрёт их тоже, поэтому её нужно проводить с переносом этой таблицы.
+         */
+        else if (version === 16) db.exec(`
+          CREATE TABLE user_settings (
+            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            key TEXT NOT NULL,
+            value_json TEXT NOT NULL CHECK(json_valid(value_json)),
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY(user_id, key)
+          );
+          CREATE TABLE member_settings (
+            workspace_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            key TEXT NOT NULL,
+            value_json TEXT NOT NULL CHECK(json_valid(value_json)),
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY(workspace_id, user_id, key),
+            FOREIGN KEY(workspace_id, user_id) REFERENCES memberships(workspace_id, user_id) ON DELETE CASCADE
           );
         `);
         db.prepare("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)").run(version, appliedAt);

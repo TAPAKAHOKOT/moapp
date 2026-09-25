@@ -9,6 +9,7 @@ import type {
   UserRow,
   WorkspaceSummary
 } from "./types.js";
+import { readUserSettings } from "./settings.js";
 
 const FORBIDDEN_NAME_CHARACTERS = /[\p{Cc}\p{Cf}]/u;
 
@@ -86,7 +87,8 @@ export function authenticatedSession(
     serverTime,
     restrictedToRecovery: principal.sessionKind === "legacy_claim_pending",
     workspaces: principal.sessionKind === "normal" ? listWorkspaceSummaries(db, principal.userId) : [],
-    legacyWorkspaceId: legacy?.workspace_id ?? null
+    legacyWorkspaceId: legacy?.workspace_id ?? null,
+    settings: readUserSettings(db, principal.userId)
   };
 }
 

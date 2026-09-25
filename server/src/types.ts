@@ -86,6 +86,8 @@ export type AuthenticatedSession = {
   restrictedToRecovery: boolean;
   workspaces: WorkspaceSummary[];
   legacyWorkspaceId: string | null;
+  /** The person's own settings shared by all their workspaces (see settings.ts). */
+  settings: Record<string, unknown>;
 };
 
 export type GuestSession = {
