@@ -93,7 +93,7 @@ Deployment files live in `infra`, with the production workflow in
 - SQLite as the primary database.
 - Cloudflare R2 as off-server backup storage.
 - Read-only MCP access with built-in OAuth 2.1 and live workspace membership checks.
-- Optional read-only Bybit Card import with an explicit enable-time boundary and a separate review queue.
+- Optional read-only Bybit Card import with an explicit enable-time boundary, and T-Bank statement upload (CSV); both feed one card review queue.
 - Host Nginx terminates HTTPS and proxies to `127.0.0.1:8892`.
 
 The recovery link is the profile's long-lived master secret. Save it somewhere

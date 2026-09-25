@@ -818,7 +818,7 @@ textarea,
     font-size: clamp(30px, 10vw, 38px);
   }
 
-  .bybit-review-page .review-operation {
+  .card-review-page .review-operation {
     min-height: 98px;
   }
 
@@ -917,25 +917,25 @@ textarea,
     font-size: 11px;
   }
 
-  .page.bybit-review-page {
+  .page.card-review-page {
     padding: 8px 12px 6px;
   }
 
-  .bybit-review-page .review-operation {
+  .card-review-page .review-operation {
     min-height: 94px;
     margin-bottom: 0;
   }
 
-  .bybit-review-page .review-merchant {
+  .card-review-page .review-merchant {
     min-height: 0;
     border-radius: 14px;
   }
 
-  .bybit-review-page .review-save {
+  .card-review-page .review-save {
     margin-top: 6px;
   }
 
-  .bybit-review-page .review-secondary {
+  .card-review-page .review-secondary {
     margin-top: 2px;
   }
 
@@ -1090,7 +1090,7 @@ textarea,
   text-align: center;
 }
 
-.bybit-review-page {
+.card-review-page {
   display: flex;
   height: 100%;
   min-height: 0;
@@ -1099,7 +1099,7 @@ textarea,
   padding: 12px 16px 9px;
 }
 
-.bybit-review-page .review-topline {
+.card-review-page .review-topline {
   flex: 0 0 auto;
   align-items: center;
   padding: 4px 4px 0;
@@ -1116,7 +1116,7 @@ textarea,
 }
 
 /* Строка суммы разбора живёт по метрикам расхода (.amount-row + .amount-row button), чтобы общая формула ширины и общие пороги data-size работали одинаково; своя тут только горизонтальная вставка, потому что боковые поля уже заданы самой странице. */
-.bybit-review-page .amount-row {
+.card-review-page .amount-row {
   flex: 0 0 auto;
   padding-inline: 4px;
 }
@@ -1186,25 +1186,25 @@ textarea,
 }
 
 /* Ряд категорий — те же .categories / .main-categories, что на расходе: собственных правил нет, поэтому и лестница медиазапросов по высоте применяется к разбору сама. Боковые поля уже заданы странице, вертикальные приходят из общих правил. */
-.bybit-review-page .categories {
+.card-review-page .categories {
   padding-inline: 0;
 }
 
-.bybit-review-page .review-save {
+.card-review-page .review-save {
   flex: 0 0 auto;
   margin-top: 10px;
 }
 
-.bybit-review-page .review-secondary {
+.card-review-page .review-secondary {
   flex: 0 0 auto;
   margin-top: 6px;
 }
 
-.bybit-review-page .review-secondary button {
+.card-review-page .review-secondary button {
   min-height: 38px;
 }
 
-.bybit-review-page .review-done {
+.card-review-page .review-done {
   min-height: min(62dvh, 480px);
   display: flex;
   flex-direction: column;
@@ -1212,8 +1212,8 @@ textarea,
   justify-content: center;
 }
 
-.bybit-review-page > .form-error,
-.bybit-review-page > .management-state {
+.card-review-page > .form-error,
+.card-review-page > .management-state {
   margin-top: 12px;
 }
 
@@ -1253,30 +1253,30 @@ textarea,
     min-height: 40px;
   }
 
-  .page.bybit-review-page {
+  .page.card-review-page {
     padding: 6px 12px 4px;
   }
 
   /* Полоса забирает всю свободную высоту, поэтому «Сохранить расход» стоит на одном месте и с закрытой операцией, и с открытой авторизацией, которой нужна лишняя строка. */
-  .bybit-review-page .review-scroll {
+  .card-review-page .review-scroll {
     flex-grow: 1;
   }
 
-  .bybit-review-page .review-operation {
+  .card-review-page .review-operation {
     min-height: 0;
   }
 
-  .bybit-review-page .review-merchant {
+  .card-review-page .review-merchant {
     min-height: 0;
     padding: 6px 10px;
   }
 
-  .bybit-review-page .review-save {
+  .card-review-page .review-save {
     min-height: 44px;
     margin-top: 4px;
   }
 
-  .bybit-review-page .review-secondary button {
+  .card-review-page .review-secondary button {
     min-height: 36px;
   }
 
@@ -1635,7 +1635,7 @@ textarea,
   text-align: center;
 }
 
-.review-overlay .bybit-review-page {
+.review-overlay .card-review-page {
   flex: 1 1 auto;
   height: auto;
   min-height: 0;

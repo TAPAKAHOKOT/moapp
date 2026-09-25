@@ -1659,7 +1659,7 @@ body {
   background: var(--danger);
 }
 
-.bybit-mark {
+.card-mark {
   width: 38px;
   height: 38px;
   border-radius: 12px;
@@ -1668,6 +1668,17 @@ body {
   display: grid;
   place-items: center;
   font-weight: 900;
+}
+
+/* Т‑Банк тоже жёлтый, поэтому его пометка — тёмная плитка с жёлтой буквой: рядом с «B» Bybit их не спутать. */
+.card-mark.tbank {
+  background: #262626;
+  color: #ffdd2d;
+}
+
+.card-mark.any {
+  background: color-mix(in srgb, var(--sage) 18%, var(--card));
+  color: var(--sage);
 }
 
 .integration-meta {

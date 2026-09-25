@@ -298,6 +298,23 @@ type SyncResult = {
 
 The response is exactly `{workspaceId,results,serverTime}`. Replay identity is `(workspaceId, operationId)`: a retry in the same workspace returns the stored result with `replayed: true` and never reapplies the mutation. Conflict results include the current expense when available. Membership is rechecked as the first read inside the batch transaction.
 
+## Card review queue
+
+Operations from every card source wait in one workspace-scoped review queue and
+are reviewed the same way; each item carries `source` (`"bybit-card"` or `"tbank"`).
+
+- `GET /api/workspaces/:workspaceId/integrations/card-queue` returns `{pendingCount}` for the whole queue.
+- `GET /api/workspaces/:workspaceId/integrations/card-queue/transactions?limit=` returns oldest-first pending transactions, capped at 200.
+- `POST .../transactions/:transactionId/classify` accepts `{categoryId,comment,tagIds?}` and atomically creates one expense carrying those tags. The response is `{transaction,expense,expenses,pendingCount}`. Compatible retries return the linked expenses.
+- `POST .../transactions/:transactionId/split` accepts `{amounts}` — two to ten positive minor-unit amounts adding up to the operation (`400 SPLIT_MISMATCH` otherwise). The operation becomes `review_status:"split"` and leaves review; in its place come that many ordinary pending rows carrying its merchant, date and metadata, each with its own amount, `splitIndex` (1-based) and `splitCount`. The response is `{transactions,pendingCount}`. A part cannot be split again (`409 ALREADY_SPLIT`), and only a pending operation can be split (`409 ALREADY_REVIEWED`).
+- `POST .../transactions/:transactionId/unsplit` requires `{}` and puts a split payment back together; it accepts the id of any part or of the payment itself. The parts are deleted and the payment returns to review with its full amount. While one of the parts is already classified it returns `409 SPLIT_IN_USE`: undo that part first. The response is `{transaction,removedTransactionIds,pendingCount}`.
+- `POST .../transactions/:transactionId/ignore` requires `{}` and removes the item from review without creating an expense.
+- `POST .../transactions/:transactionId/undo` returns an ignored item to review. For a classified item it accepts `{expenses:[{id,version}]}` (or `{expenseId,expenseVersion}` for a single one) and soft-deletes the linked expenses only if the list covers every one of them at its current version; otherwise it returns `409 UNDO_CONFLICT`. A split operation is undone whole or not at all. The response carries `undoneExpenseIds` and, for one part, `undoneExpenseId`.
+
+The same transaction routes still answer under the former
+`/integrations/bybit-card/transactions` prefix for clients cached before the queue
+became shared.
+
 ## Bybit Card integration
 
 The optional integration is workspace-scoped. Only the workspace owner can
@@ -305,16 +322,11 @@ connect, replace, or remove credentials; every member may read and classify the
 shared review queue. Credentials are accepted only for a read-only Bybit API key
 with the `BitCard` permission and are encrypted before storage.
 
-- `GET /api/workspaces/:workspaceId/integrations/bybit-card` returns connection state, `enabledAt`, last sync state, management capability, and `pendingCount`.
+- `GET /api/workspaces/:workspaceId/integrations/bybit-card` returns connection state, `enabledAt`, last sync state, management capability, and `pendingCount` of the whole review queue.
 - `POST /api/workspaces/:workspaceId/integrations/bybit-card` accepts `{apiKey,apiSecret,region}`. A successful replacement resets `enabledAt` to the current server instant and discards the old provider queue.
 - `DELETE /api/workspaces/:workspaceId/integrations/bybit-card` requires `{}`. Classified expenses remain.
 - `POST /api/workspaces/:workspaceId/integrations/bybit-card/sync` requires `{}` and polls cleared card transactions.
-- `GET /api/workspaces/:workspaceId/integrations/bybit-card/transactions?limit=` returns oldest-first pending transactions, capped at 200.
-- `POST .../transactions/:transactionId/classify` accepts `{categoryId,comment,tagIds?}` and atomically creates one expense carrying those tags. The response is `{transaction,expense,expenses,pendingCount}`. Compatible retries return the linked expenses.
-- `POST .../transactions/:transactionId/split` accepts `{amounts}` — two to ten positive minor-unit amounts adding up to the operation (`400 SPLIT_MISMATCH` otherwise). The operation becomes `review_status:"split"` and leaves review; in its place come that many ordinary pending rows carrying its merchant, date and metadata, each with its own amount, `splitIndex` (1-based) and `splitCount`. The response is `{transactions,pendingCount}`. A part cannot be split again (`409 ALREADY_SPLIT`), and only a pending operation can be split (`409 ALREADY_REVIEWED`).
-- `POST .../transactions/:transactionId/unsplit` requires `{}` and puts a split payment back together; it accepts the id of any part or of the payment itself. The parts are deleted and the payment returns to review with its full amount. While one of the parts is already classified it returns `409 SPLIT_IN_USE`: undo that part first. The response is `{transaction,removedTransactionIds,pendingCount}`.
-- `POST .../transactions/:transactionId/ignore` requires `{}` and removes the item from review without creating an expense.
-- `POST .../transactions/:transactionId/undo` returns an ignored item to review. For a classified item it accepts `{expenses:[{id,version}]}` (or `{expenseId,expenseVersion}` for a single one) and soft-deletes the linked expenses only if the list covers every one of them at its current version; otherwise it returns `409 UNDO_CONFLICT`. A split operation is undone whole or not at all. The response carries `undoneExpenseIds` and, for one part, `undoneExpenseId`.
+Bybit operations are reviewed through the shared card review queue above.
 
 Both the provider query and the storage transaction enforce
 `occurredAt >= enabledAt`. Subsequent polls overlap recent time to absorb delayed
@@ -336,12 +348,38 @@ total. `type` is `atm` for side 13 or MCC 6011.
 When Bybit declines or reverses an operation whose expense was already created,
 nothing is deleted: every expense that operation produced — including the expenses of
 all of its parts when it was split — gets `voidedAt` and a `voidReason` describing the whole operation
-(`{provider:"bybit-card",kind:"declined"|"reversed",txnId,merchantName,amountMinor,currency}`),
+(`{provider:"bybit-card"|"tbank",kind:"declined"|"reversed",txnId,merchantName,amountMinor,currency}`),
 its version increments, and it is excluded from analytics, history totals and
 the MCP history while staying visible in the expense list.
 `POST /api/workspaces/:workspaceId/expenses/:id/include` with `{version}` clears
 that mark ("count it anyway"); `409 VERSION_CONFLICT` applies as for other
 expense mutations. Deleting the expense works as usual.
+
+## T-Bank statement import
+
+T-Bank has no API for personal cards, so the person exports operations as CSV on
+tbank.ru and uploads the file. Any workspace member may upload.
+
+- `POST /api/workspaces/:workspaceId/integrations/tbank/statement` accepts `{csv,timeZone}` (up to 8 MB). The response is `{imported,known,skipped,pendingCount}`: new spending put into review, rows recognised from earlier uploads, and rows without a readable date, amount or currency. A file without the date, amount, currency and status columns returns `422 TBANK_STATEMENT_INVALID`.
+
+Columns are found by their Russian header names, so their order does not matter.
+Only outflows are considered. A new outflow enters review when its status is not a
+failure and the bank counts it as spending (`Учёт в аналитике` is not `Нет` —
+that excludes transfers between one's own accounts); incoming money is never stored.
+The amount and currency are the operation's own (`Сумма операции`/`Валюта операции`),
+and the file's wall-clock time is read in the uploader's `timeZone`.
+
+The file has no operation id and exports overlap, so an operation is recognised by
+its fingerprint: card, time to the second, amount and currency, plus an occurrence
+number among fully identical rows of one file. Description, account name,
+account-currency amount and status are left out because they change. When the
+exporting computer changed time zone, the same operation arrives shifted by a whole
+number of quarter hours; it is matched to a stored row with the same card, amount
+and seconds within 14 hours, but only if that row's own key is not in the same file.
+A recognised row refreshes its status and description; a row that turns into a
+failure (`Ошибка`) voids expenses already created from it exactly like a Bybit
+decline. Operations missing from a newer file are left alone. There is no date
+boundary: the first upload may bring any period.
 
 ## Analytics and rates
 

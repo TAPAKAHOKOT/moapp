@@ -149,15 +149,15 @@ test("a clean file reaches the latest schema without hidden identity, workspace,
   const fixture = temporaryDatabase();
   try {
     let db = openDatabase(fixture.path);
-    assert.equal((db.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number }).version, 13);
-    for (const table of ["users", "workspaces", "memberships", "categories", "legacy_claims", "oauth_clients", "oauth_authorization_codes", "oauth_tokens", "bybit_card_connections", "bybit_card_transactions"] as const) {
+    assert.equal((db.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number }).version, 14);
+    for (const table of ["users", "workspaces", "memberships", "categories", "legacy_claims", "oauth_clients", "oauth_authorization_codes", "oauth_tokens", "bybit_card_connections", "card_transactions"] as const) {
       assert.equal((db.prepare(`SELECT count(*) AS count FROM ${table}`).get() as { count: number }).count, 0);
     }
     db.close();
     const sizeAfterFirstStart = statSync(fixture.path).size;
 
     db = openDatabase(fixture.path);
-    assert.equal((db.prepare("SELECT count(*) AS count FROM schema_migrations").get() as { count: number }).count, 13);
+    assert.equal((db.prepare("SELECT count(*) AS count FROM schema_migrations").get() as { count: number }).count, 14);
     assert.equal((db.prepare("SELECT count(*) AS count FROM users").get() as { count: number }).count, 0);
     assert.equal(statSync(fixture.path).size, sizeAfterFirstStart);
     db.close();
@@ -424,7 +424,7 @@ test("an existing v3 database receives the singleton hardening migration", () =>
     db.close();
 
     db = openDatabase(fixture.path);
-    assert.equal((db.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number }).version, 13);
+    assert.equal((db.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number }).version, 14);
     assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type='index' AND name='legacy_claims_singleton_idx'").get());
     db.close();
   } finally {
@@ -449,7 +449,7 @@ test("a copy failure rolls v3 back and leaves a retryable v2 database", () => {
     db.close();
 
     db = openDatabase(fixture.path);
-    assert.equal((db.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number }).version, 13);
+    assert.equal((db.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number }).version, 14);
     assert.equal((db.prepare("SELECT count(*) AS count FROM expenses").get() as { count: number }).count, 2);
     assert.deepEqual(db.pragma("foreign_key_check"), []);
     db.close();
@@ -497,6 +497,68 @@ test("a schema newer than this server fails before migrations run", () => {
     db.exec("CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY,applied_at TEXT NOT NULL); INSERT INTO schema_migrations VALUES (99,'now')");
     db.close();
     assert.throws(() => openDatabase(fixture.path), /newer than supported/);
+  } finally {
+    rmSync(fixture.directory, { recursive: true, force: true });
+  }
+});
+
+test("schema 14 moves Bybit operations, split parts included, into the shared card queue", () => {
+  const fixture = temporaryDatabase();
+  try {
+    let db = openDatabase(fixture.path);
+    const userId = randomUUID();
+    const workspaceId = randomUUID();
+    createWorkspace(db, workspaceId, userId, "Cards");
+    const now = "2026-09-01T10:00:00.000Z";
+    db.prepare(`INSERT INTO bybit_card_connections
+      (id,workspace_id,connected_by_user_id,credentials_encrypted,region,enabled_at,last_synced_at,status,last_error,created_at,updated_at)
+      VALUES ('connection',?,?,'v1:x:y:z','global',?,NULL,'active',NULL,?,?)`).run(workspaceId, userId, now, now, now);
+    /* Схема 13 как есть: таблица Bybit с разделёнными частями, и миграция 14 ещё не применялась. */
+    db.exec(`DROP TABLE card_transactions; DELETE FROM schema_migrations WHERE version=14;
+      CREATE TABLE bybit_card_transactions (
+        id TEXT PRIMARY KEY,
+        connection_id TEXT NOT NULL REFERENCES bybit_card_connections(id) ON DELETE CASCADE,
+        workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+        external_key TEXT NOT NULL, txn_id TEXT, order_no TEXT, side TEXT NOT NULL, trade_status TEXT NOT NULL, provider_status TEXT NOT NULL,
+        amount_minor INTEGER NOT NULL CHECK(amount_minor > 0), currency TEXT NOT NULL CHECK(length(currency)=3),
+        merchant_name TEXT, merchant_country TEXT, merchant_city TEXT, mcc_code TEXT, merchant_category TEXT, occurred_at TEXT NOT NULL,
+        review_status TEXT NOT NULL CHECK(review_status IN ('pending','classified','ignored','split')), expense_id TEXT,
+        split_of_id TEXT REFERENCES bybit_card_transactions(id) ON DELETE CASCADE,
+        split_index INTEGER NOT NULL DEFAULT 0 CHECK(split_index >= 0),
+        raw_json TEXT NOT NULL CHECK(json_valid(raw_json)), created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+        UNIQUE(connection_id,external_key),
+        CHECK((split_of_id IS NULL AND split_index = 0) OR (split_of_id IS NOT NULL AND split_index > 0))
+      );`);
+    const insert = db.prepare(`INSERT INTO bybit_card_transactions
+      (id,connection_id,workspace_id,external_key,side,trade_status,provider_status,amount_minor,currency,merchant_name,occurred_at,
+        review_status,split_of_id,split_index,raw_json,created_at,updated_at)
+      VALUES (?,'connection',?,?,'1','1','1',?,'RSD',?,?,?,?,?,'{}',?,?)`);
+    insert.run("whole", workspaceId, "1:whole", 1000, "Shop", now, "pending", null, 0, now, now);
+    insert.run("parent", workspaceId, "1:parent", 3000, "Market", now, "split", null, 0, now, now);
+    insert.run("part-1", workspaceId, "1:parent#1", 1000, "Market", now, "classified", "parent", 1, now, now);
+    insert.run("part-2", workspaceId, "1:parent#2", 2000, "Market", now, "pending", "parent", 2, now, now);
+    db.close();
+
+    db = openDatabase(fixture.path);
+    assert.equal((db.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number }).version, 14);
+    assert.equal(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='bybit_card_transactions'").get(), undefined);
+    assert.deepEqual(db.prepare("SELECT id,source,connection_id,external_key,review_status,split_of_id,split_index FROM card_transactions ORDER BY id").all(), [
+      { id: "parent", source: "bybit-card", connection_id: "connection", external_key: "1:parent", review_status: "split", split_of_id: null, split_index: 0 },
+      { id: "part-1", source: "bybit-card", connection_id: "connection", external_key: "1:parent#1", review_status: "classified", split_of_id: "parent", split_index: 1 },
+      { id: "part-2", source: "bybit-card", connection_id: "connection", external_key: "1:parent#2", review_status: "pending", split_of_id: "parent", split_index: 2 },
+      { id: "whole", source: "bybit-card", connection_id: "connection", external_key: "1:whole", review_status: "pending", split_of_id: null, split_index: 0 }
+    ]);
+    assert.deepEqual(db.pragma("foreign_key_check"), []);
+    /* Отключение Bybit по-прежнему уносит её строки, а строки выписки без подключения живут сами. */
+    db.prepare(`INSERT INTO card_transactions
+      (id,workspace_id,source,connection_id,external_key,side,trade_status,provider_status,amount_minor,currency,occurred_at,review_status,raw_json,created_at,updated_at)
+      VALUES ('statement',?,'tbank',NULL,'-|2026-09-01T12:00:00|100|RUB#1','debit','1','1',100,'RUB',?,'pending','{}',?,?)`).run(workspaceId, now, now, now);
+    assert.throws(() => db.prepare(`INSERT INTO card_transactions
+      (id,workspace_id,source,connection_id,external_key,side,trade_status,provider_status,amount_minor,currency,occurred_at,review_status,raw_json,created_at,updated_at)
+      VALUES ('orphan',?,'bybit-card',NULL,'1:orphan','1','1','1',100,'RSD',?,'pending','{}',?,?)`).run(workspaceId, now, now, now), /CHECK/);
+    db.prepare("DELETE FROM bybit_card_connections WHERE id='connection'").run();
+    assert.deepEqual(db.prepare("SELECT id FROM card_transactions").pluck().all(), ["statement"]);
+    db.close();
   } finally {
     rmSync(fixture.directory, { recursive: true, force: true });
   }

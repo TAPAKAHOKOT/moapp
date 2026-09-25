@@ -39,7 +39,7 @@ export type Expense = {
   updatedAt: string
   version: number
   deletedAt: string | null
-  /** Set when the provider (Bybit Card) declined or reversed the operation this expense came from. */
+  /** Set when the provider (Bybit Card, a T-Bank statement) declined or reversed the operation this expense came from. */
   voidedAt?: string | null
   voidReason?: ExpenseVoidReason | null
   pending?: boolean
@@ -55,7 +55,7 @@ export type ExpenseSplitPart = {
 }
 
 export type ExpenseVoidReason = {
-  provider: 'bybit-card'
+  provider: 'bybit-card' | 'tbank'
   kind: 'declined' | 'reversed'
   txnId: string | null
   merchantName: string | null
@@ -76,8 +76,10 @@ export type BybitCardStatus = {
   pendingCount: number
 }
 
-export type BybitCardTransaction = {
+/** Операция с карты в очереди разбора: пришла от Bybit сама или из загруженной выписки Т‑Банка. */
+export type CardTransaction = {
   id: string
+  source: 'bybit-card' | 'tbank'
   txnId: string | null
   orderNo: string | null
   type: 'purchase' | 'atm'
@@ -94,8 +96,17 @@ export type BybitCardTransaction = {
   /** Часть разделённого платежа: её номер и общее число частей. У целой операции — null. */
   splitIndex?: number | null
   splitCount?: number | null
-  /** false while Bybit still holds the authorization; the amount may change when it settles */
+  /** false while the bank still holds the authorization; the amount may change when it settles */
   settled: boolean
+}
+
+/** Итог загрузки выписки: сколько трат встало в разбор и сколько уже было загружено раньше. */
+export type TbankStatementResult = {
+  imported: number
+  known: number
+  /** Строки, которые не удалось прочитать: без даты, суммы или валюты. */
+  skipped: number
+  pendingCount: number
 }
 
 export type RateSnapshot = {

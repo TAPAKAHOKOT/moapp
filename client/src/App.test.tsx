@@ -3,8 +3,9 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import { useState } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import * as accessFlow from './access-flow'
-import App, { AnalyticsView, BybitReviewView, CapabilityScreen, CreateWorkspaceSheet, EntryView, fallbackAnalytics, formatEntryDate, formatHistoryDate, HistoryView, pagerTabsAt, RecoverySave, SettingsView, useToast, WorkspaceSwitcher } from './App'
+import App, { AnalyticsView, CardReviewView, CapabilityScreen, CreateWorkspaceSheet, EntryView, fallbackAnalytics, formatEntryDate, formatHistoryDate, HistoryView, pagerTabsAt, RecoverySave, SettingsView, useToast, WorkspaceSwitcher } from './App'
 import { splitDraft, SplitSheet } from './screens/Split'
+import { readStatementFile, statementFeedback } from './screens/Settings'
 import * as workspaceApi from './workspace-api'
 import * as workspaceOffline from './workspace-offline'
 import type { AuthenticatedSession, Category, WorkspaceBootstrap } from './types'
@@ -608,10 +609,10 @@ describe('offline analytics fallback', () => {
   })
 })
 
-describe('Bybit transaction review', () => {
+describe('card transaction review', () => {
   it('undoes from a toast and restores the chosen category and comment', async () => {
     const transaction = {
-      id: 'card-transaction-a', txnId: 'bybit-a', orderNo: null, type: 'purchase' as const, settled: true,
+      id: 'card-transaction-a', source: 'bybit-card' as const, txnId: 'bybit-a', orderNo: null, type: 'purchase' as const, settled: true,
       amountMinor: 1_250, currency: 'RSD', merchantName: 'Coffee Corner', merchantCountry: 'RS', merchantCity: 'Beograd',
       mccCode: '5812', merchantCategory: 'Cafe', occurredAt: '2026-08-10T12:00:00.000Z', reviewStatus: 'pending' as const, expenseId: null,
     }
@@ -619,12 +620,12 @@ describe('Bybit transaction review', () => {
       id: 'expense-a', amountMinor: transaction.amountMinor, currency: transaction.currency, categoryId: 'products', note: 'Coffee Corner · Встреча с Димой',
       occurredAt: transaction.occurredAt, createdAt: '2026-08-10T14:00:00.000Z', updatedAt: '2026-08-10T14:00:00.000Z', version: 1, deletedAt: null,
     }
-    vi.spyOn(workspaceApi, 'listBybitCardTransactions').mockResolvedValue({ transactions: [transaction], pendingCount: 1 })
-    vi.spyOn(workspaceApi, 'classifyBybitCardTransaction').mockResolvedValue({ transaction: { ...transaction, reviewStatus: 'classified', expenseId: expense.id }, expense, expenses: [expense], pendingCount: 0 })
-    vi.spyOn(workspaceApi, 'undoBybitCardTransaction').mockResolvedValue({ transaction, undoneExpenseId: expense.id, undoneExpenseIds: [expense.id], pendingCount: 1 })
+    vi.spyOn(workspaceApi, 'listCardTransactions').mockResolvedValue({ transactions: [transaction], pendingCount: 1 })
+    vi.spyOn(workspaceApi, 'classifyCardTransaction').mockResolvedValue({ transaction: { ...transaction, reviewStatus: 'classified', expenseId: expense.id }, expense, expenses: [expense], pendingCount: 0 })
+    vi.spyOn(workspaceApi, 'undoCardTransaction').mockResolvedValue({ transaction, undoneExpenseId: expense.id, undoneExpenseIds: [expense.id], pendingCount: 1 })
     const onExpensesUndo = vi.fn()
 
-    render(<BybitReviewView workspaceId="workspace-a" categories={expenseBootstrap().categories} currencies={expenseBootstrap().currencies} online onExpenses={vi.fn()} onExpensesUndo={onExpensesUndo} onStatus={vi.fn()}/>)
+    render(<CardReviewView workspaceId="workspace-a" categories={expenseBootstrap().categories} currencies={expenseBootstrap().currencies} online onExpenses={vi.fn()} onExpensesUndo={onExpensesUndo} onStatus={vi.fn()}/>)
 
     await screen.findByText('Coffee Corner')
     expect(screen.getByLabelText('Сумма').textContent).toBe('12,50')
@@ -635,10 +636,10 @@ describe('Bybit transaction review', () => {
     fireEvent.change(screen.getByRole('textbox', { name: 'Заметка' }), { target: { value: 'Встреча с Димой' } })
     fireEvent.click(screen.getByRole('button', { name: 'Готово' }))
     fireEvent.click(screen.getByRole('button', { name: 'Продукты' }))
-    expect(workspaceApi.classifyBybitCardTransaction).not.toHaveBeenCalled()
+    expect(workspaceApi.classifyCardTransaction).not.toHaveBeenCalled()
     fireEvent.click(screen.getByRole('button', { name: /^Сохранить/ }))
     await screen.findByText('Расход добавлен')
-    expect(workspaceApi.classifyBybitCardTransaction).toHaveBeenCalledWith('workspace-a', transaction.id, 'products', 'Встреча с Димой', [])
+    expect(workspaceApi.classifyCardTransaction).toHaveBeenCalledWith('workspace-a', transaction.id, 'products', 'Встреча с Димой', [])
 
     fireEvent.click(screen.getByRole('button', { name: 'Отменить' }))
     await screen.findByText('Coffee Corner')
@@ -647,20 +648,33 @@ describe('Bybit transaction review', () => {
     expect(screen.getByRole('button', { name: 'Продукты' }).getAttribute('aria-pressed')).toBe('true')
   })
 
+  it('marks a statement operation with the T-Bank letter', async () => {
+    const transaction = {
+      id: 'statement-row', source: 'tbank' as const, txnId: null, orderNo: null, type: 'purchase' as const, settled: true, amountMinor: 250_000, currency: 'RUB',
+      merchantName: 'selectel', merchantCountry: null, merchantCity: null, mccCode: '5734', merchantCategory: 'Различные товары',
+      occurredAt: '2026-09-01T07:05:00.000Z', reviewStatus: 'pending' as const, expenseId: null,
+    }
+    vi.spyOn(workspaceApi, 'listCardTransactions').mockResolvedValue({ transactions: [transaction], pendingCount: 1 })
+    const { container } = render(<CardReviewView workspaceId="workspace-a" categories={expenseBootstrap().categories} currencies={expenseBootstrap().currencies} online onExpenses={vi.fn()} onExpensesUndo={vi.fn()} onStatus={vi.fn()}/>)
+    await screen.findByText('selectel')
+    expect(container.querySelector('.card-mark.tbank')?.textContent).toBe('Т')
+    expect(screen.getByText('Различные товары')).not.toBeNull()
+  })
+
   it('reloads the queue when a sync elsewhere raises the pending count and marks open authorizations', async () => {
     const base = {
-      txnId: null, orderNo: null, type: 'purchase' as const, currency: 'RSD', merchantCountry: 'SRB', merchantCity: 'Belgrade',
+      source: 'bybit-card' as const, txnId: null, orderNo: null, type: 'purchase' as const, currency: 'RSD', merchantCountry: 'SRB', merchantCity: 'Belgrade',
       mccCode: '5411', merchantCategory: null, reviewStatus: 'pending' as const, expenseId: null,
     }
     const first = { ...base, id: 'txn-1', settled: true, amountMinor: 86_036, merchantName: 'VERO 3', occurredAt: '2026-09-02T17:22:09.000Z' }
     const second = { ...base, id: 'txn-2', settled: false, amountMinor: 383_500, merchantName: 'Silver Dreams', occurredAt: '2026-09-03T08:00:00.000Z' }
-    const list = vi.spyOn(workspaceApi, 'listBybitCardTransactions')
+    const list = vi.spyOn(workspaceApi, 'listCardTransactions')
       .mockResolvedValueOnce({ transactions: [first], pendingCount: 1 })
       .mockResolvedValueOnce({ transactions: [first, second], pendingCount: 2 })
     const onStatus = vi.fn()
     const props = { workspaceId: 'workspace-a', categories: expenseBootstrap().categories, currencies: expenseBootstrap().currencies, online: true, onExpenses: vi.fn(), onExpensesUndo: vi.fn(), onStatus, active: true }
 
-    const view = render(<BybitReviewView {...props} pendingCount={1}/>)
+    const view = render(<CardReviewView {...props} pendingCount={1}/>)
     await screen.findByText('VERO 3')
     fireEvent.click(screen.getByRole('button', { name: 'Добавить заметку' }))
     fireEvent.change(screen.getByRole('textbox', { name: 'Заметка' }), { target: { value: 'черновик' } })
@@ -668,7 +682,7 @@ describe('Bybit transaction review', () => {
     await waitFor(() => expect(list).toHaveBeenCalledTimes(1))
 
     // Settings → "Обновить" reports a higher pendingCount through the shared status.
-    view.rerender(<BybitReviewView {...props} pendingCount={2}/>)
+    view.rerender(<CardReviewView {...props} pendingCount={2}/>)
     await waitFor(() => expect(list).toHaveBeenCalledTimes(2))
     await screen.findByText(/В очереди · 2/)
     expect(screen.getByText('VERO 3')).not.toBeNull()
@@ -683,7 +697,7 @@ describe('Bybit transaction review', () => {
   // Разбор берёт ряд категорий у расхода: плитками только основные, остальные — за «Ещё N».
   it('shows only main categories with a "more" tile, and picking from the sheet selects without saving', async () => {
     const transaction = {
-      id: 'card-transaction-b', txnId: 'bybit-b', orderNo: null, type: 'purchase' as const, settled: true,
+      id: 'card-transaction-b', source: 'bybit-card' as const, txnId: 'bybit-b', orderNo: null, type: 'purchase' as const, settled: true,
       amountMinor: 4_200, currency: 'RSD', merchantName: 'Maxi', merchantCountry: 'RS', merchantCity: 'Beograd',
       mccCode: '5411', merchantCategory: 'Grocery', occurredAt: '2026-08-10T12:00:00.000Z', reviewStatus: 'pending' as const, expenseId: null,
     }
@@ -692,10 +706,10 @@ describe('Bybit transaction review', () => {
       { id: 'home', name: 'Для дома', color: '#7d9db4', placement: 'additional' as const, sortOrder: 0, createdAt: '2026-08-01T00:00:00.000Z', updatedAt: '2026-08-01T00:00:00.000Z', archivedAt: null, version: 1 },
       { id: 'fun', name: 'Развлечения', color: '#aa8aaf', placement: 'additional' as const, sortOrder: 1, createdAt: '2026-08-01T00:00:00.000Z', updatedAt: '2026-08-01T00:00:00.000Z', archivedAt: null, version: 1 },
     ]
-    vi.spyOn(workspaceApi, 'listBybitCardTransactions').mockResolvedValue({ transactions: [transaction], pendingCount: 1 })
-    const classify = vi.spyOn(workspaceApi, 'classifyBybitCardTransaction')
+    vi.spyOn(workspaceApi, 'listCardTransactions').mockResolvedValue({ transactions: [transaction], pendingCount: 1 })
+    const classify = vi.spyOn(workspaceApi, 'classifyCardTransaction')
 
-    const { container } = render(<BybitReviewView workspaceId="workspace-a" categories={categories} currencies={expenseBootstrap().currencies} online onExpenses={vi.fn()} onExpensesUndo={vi.fn()} onStatus={vi.fn()}/>)
+    const { container } = render(<CardReviewView workspaceId="workspace-a" categories={categories} currencies={expenseBootstrap().currencies} online onExpenses={vi.fn()} onExpensesUndo={vi.fn()} onStatus={vi.fn()}/>)
     await screen.findByText('Maxi')
 
     const tiles = [...container.querySelectorAll('.main-categories button')].map((node) => node.textContent)
@@ -719,12 +733,12 @@ describe('Bybit transaction review', () => {
   // Крупные суммы иначе упирались в многоточие: порог общий для карточки расхода и строки разбора.
   it('sizes the amount by its digit count on both the entry and the review screen', async () => {
     const transaction = {
-      id: 'card-transaction-c', txnId: 'bybit-c', orderNo: null, type: 'purchase' as const, settled: true,
+      id: 'card-transaction-c', source: 'bybit-card' as const, txnId: 'bybit-c', orderNo: null, type: 'purchase' as const, settled: true,
       amountMinor: 20_000_000, currency: 'RSD', merchantName: 'Stan i komunalije', merchantCountry: 'RS', merchantCity: 'Beograd',
       mccCode: '6513', merchantCategory: 'Rent', occurredAt: '2026-08-10T12:00:00.000Z', reviewStatus: 'pending' as const, expenseId: null,
     }
-    vi.spyOn(workspaceApi, 'listBybitCardTransactions').mockResolvedValue({ transactions: [transaction], pendingCount: 1 })
-    render(<BybitReviewView workspaceId="workspace-a" categories={expenseBootstrap().categories} currencies={expenseBootstrap().currencies} online onExpenses={vi.fn()} onExpensesUndo={vi.fn()} onStatus={vi.fn()}/>)
+    vi.spyOn(workspaceApi, 'listCardTransactions').mockResolvedValue({ transactions: [transaction], pendingCount: 1 })
+    render(<CardReviewView workspaceId="workspace-a" categories={expenseBootstrap().categories} currencies={expenseBootstrap().currencies} online onExpenses={vi.fn()} onExpensesUndo={vi.fn()} onStatus={vi.fn()}/>)
 
     await screen.findByText('Stan i komunalije')
     const reviewAmount = screen.getByLabelText('Сумма')
@@ -745,12 +759,12 @@ describe('Bybit transaction review', () => {
   // оно наследовало nowrap + ellipsis и обрезалось на полуслове.
   it('renders the open-authorization warning in full outside the merchant card', async () => {
     const transaction = {
-      id: 'card-transaction-d', txnId: 'bybit-d', orderNo: null, type: 'purchase' as const, settled: false,
+      id: 'card-transaction-d', source: 'bybit-card' as const, txnId: 'bybit-d', orderNo: null, type: 'purchase' as const, settled: false,
       amountMinor: 120_000, currency: 'RSD', merchantName: 'Pending Authorization', merchantCountry: 'RS', merchantCity: 'Beograd',
       mccCode: '5999', merchantCategory: 'Retail', occurredAt: '2026-08-10T12:00:00.000Z', reviewStatus: 'pending' as const, expenseId: null,
     }
-    vi.spyOn(workspaceApi, 'listBybitCardTransactions').mockResolvedValue({ transactions: [transaction], pendingCount: 1 })
-    const { container } = render(<BybitReviewView workspaceId="workspace-a" categories={expenseBootstrap().categories} currencies={expenseBootstrap().currencies} online onExpenses={vi.fn()} onExpensesUndo={vi.fn()} onStatus={vi.fn()}/>)
+    vi.spyOn(workspaceApi, 'listCardTransactions').mockResolvedValue({ transactions: [transaction], pendingCount: 1 })
+    const { container } = render(<CardReviewView workspaceId="workspace-a" categories={expenseBootstrap().categories} currencies={expenseBootstrap().currencies} online onExpenses={vi.fn()} onExpensesUndo={vi.fn()} onStatus={vi.fn()}/>)
 
     await screen.findByText('Pending Authorization')
     const warning = screen.getByText('Ожидает списания · сумма может уточниться после расчёта')
@@ -761,12 +775,12 @@ describe('Bybit transaction review', () => {
 
   it('keeps the warning out of settled operations', async () => {
     const settled = {
-      id: 'card-transaction-e', txnId: 'bybit-e', orderNo: null, type: 'purchase' as const, settled: true,
+      id: 'card-transaction-e', source: 'bybit-card' as const, txnId: 'bybit-e', orderNo: null, type: 'purchase' as const, settled: true,
       amountMinor: 1_000, currency: 'RSD', merchantName: 'Coffee Corner', merchantCountry: 'RS', merchantCity: 'Beograd',
       mccCode: '5812', merchantCategory: 'Cafe', occurredAt: '2026-08-10T12:00:00.000Z', reviewStatus: 'pending' as const, expenseId: null,
     }
-    vi.spyOn(workspaceApi, 'listBybitCardTransactions').mockResolvedValue({ transactions: [settled], pendingCount: 1 })
-    render(<BybitReviewView workspaceId="workspace-a" categories={expenseBootstrap().categories} currencies={expenseBootstrap().currencies} online onExpenses={vi.fn()} onExpensesUndo={vi.fn()} onStatus={vi.fn()}/>)
+    vi.spyOn(workspaceApi, 'listCardTransactions').mockResolvedValue({ transactions: [settled], pendingCount: 1 })
+    render(<CardReviewView workspaceId="workspace-a" categories={expenseBootstrap().categories} currencies={expenseBootstrap().currencies} online onExpenses={vi.fn()} onExpensesUndo={vi.fn()} onStatus={vi.fn()}/>)
 
     await screen.findByText('Coffee Corner')
     expect(screen.queryByText(/Ожидает списания/)).toBeNull()
@@ -798,7 +812,7 @@ describe('splitting one payment into parts', () => {
   })
 
   const transaction = {
-    id: 'card-transaction-split', txnId: 'bybit-split', orderNo: null, type: 'purchase' as const, settled: true,
+    id: 'card-transaction-split', source: 'bybit-card' as const, txnId: 'bybit-split', orderNo: null, type: 'purchase' as const, settled: true,
     amountMinor: 120_000, currency: 'RSD', merchantName: 'Maxi', merchantCountry: 'RS', merchantCity: 'Beograd',
     mccCode: '5411', merchantCategory: 'Grocery', occurredAt: '2026-08-10T12:00:00.000Z', reviewStatus: 'pending' as const,
     expenseId: null, splitIndex: null, splitCount: null,
@@ -807,12 +821,12 @@ describe('splitting one payment into parts', () => {
 
   it('replaces a card payment with its parts and classifies each one on the usual card', async () => {
     const parts = [part('part-1', 80_000, 1), part('part-2', 40_000, 2)]
-    vi.spyOn(workspaceApi, 'listBybitCardTransactions').mockResolvedValue({ transactions: [transaction], pendingCount: 1 })
-    const split = vi.spyOn(workspaceApi, 'splitBybitCardTransaction').mockResolvedValue({ transactions: parts, pendingCount: 2 })
-    const classify = vi.spyOn(workspaceApi, 'classifyBybitCardTransaction')
+    vi.spyOn(workspaceApi, 'listCardTransactions').mockResolvedValue({ transactions: [transaction], pendingCount: 1 })
+    const split = vi.spyOn(workspaceApi, 'splitCardTransaction').mockResolvedValue({ transactions: parts, pendingCount: 2 })
+    const classify = vi.spyOn(workspaceApi, 'classifyCardTransaction')
     const onStatus = vi.fn()
 
-    render(<BybitReviewView workspaceId="workspace-a" categories={categories} currencies={currencies} online onExpenses={vi.fn()} onExpensesUndo={vi.fn()} onStatus={onStatus}/>)
+    render(<CardReviewView workspaceId="workspace-a" categories={categories} currencies={currencies} online onExpenses={vi.fn()} onExpensesUndo={vi.fn()} onStatus={onStatus}/>)
     await screen.findByText('Maxi')
     expect(screen.queryByText(/Часть/)).toBeNull()
 
@@ -840,11 +854,11 @@ describe('splitting one payment into parts', () => {
 
   it('puts a split payment back together while no part is recorded', async () => {
     const parts = [part('part-1', 80_000, 1), part('part-2', 40_000, 2)]
-    vi.spyOn(workspaceApi, 'listBybitCardTransactions').mockResolvedValue({ transactions: parts, pendingCount: 2 })
-    const unsplit = vi.spyOn(workspaceApi, 'unsplitBybitCardTransaction')
+    vi.spyOn(workspaceApi, 'listCardTransactions').mockResolvedValue({ transactions: parts, pendingCount: 2 })
+    const unsplit = vi.spyOn(workspaceApi, 'unsplitCardTransaction')
       .mockResolvedValue({ transaction, removedTransactionIds: ['part-1', 'part-2'], undoneExpenseIds: [], pendingCount: 1 })
 
-    render(<BybitReviewView workspaceId="workspace-a" categories={categories} currencies={currencies} online onExpenses={vi.fn()} onExpensesUndo={vi.fn()} onStatus={vi.fn()}/>)
+    render(<CardReviewView workspaceId="workspace-a" categories={categories} currencies={currencies} online onExpenses={vi.fn()} onExpensesUndo={vi.fn()} onStatus={vi.fn()}/>)
     await screen.findByText('Часть 1 из 2')
     // У части предлагается обратное действие: делить её ещё раз нельзя.
     expect(screen.queryByRole('button', { name: 'Разделить' })).toBeNull()
@@ -867,13 +881,13 @@ describe('splitting one payment into parts', () => {
         version: 2, deletedAt: null, tagIds: [],
       }],
     }
-    vi.spyOn(workspaceApi, 'listBybitCardTransactions').mockResolvedValue({ transactions: [parts[1]!], pendingCount: 1 })
-    const unsplit = vi.spyOn(workspaceApi, 'unsplitBybitCardTransaction')
+    vi.spyOn(workspaceApi, 'listCardTransactions').mockResolvedValue({ transactions: [parts[1]!], pendingCount: 1 })
+    const unsplit = vi.spyOn(workspaceApi, 'unsplitCardTransaction')
       .mockRejectedValueOnce(new workspaceApi.WorkspaceApiError(409, 'SPLIT_IN_USE', 'Одна из частей уже записана в историю.', { recorded: [recorded] }))
       .mockResolvedValue({ transaction, removedTransactionIds: ['part-1', 'part-2'], undoneExpenseIds: ['expense-part-1'], pendingCount: 1 })
     const onExpensesUndo = vi.fn()
 
-    render(<BybitReviewView workspaceId="workspace-a" categories={categories} currencies={currencies} online onExpenses={vi.fn()} onExpensesUndo={onExpensesUndo} onStatus={vi.fn()}/>)
+    render(<CardReviewView workspaceId="workspace-a" categories={categories} currencies={currencies} online onExpenses={vi.fn()} onExpensesUndo={onExpensesUndo} onStatus={vi.fn()}/>)
     await screen.findByText('Часть 2 из 2')
 
     fireEvent.click(screen.getByRole('button', { name: 'Собрать части' }))
@@ -894,13 +908,13 @@ describe('splitting one payment into parts', () => {
 
   it('keeps the recorded part when the sheet is dismissed', async () => {
     const parts = [part('part-1', 80_000, 1), part('part-2', 40_000, 2)]
-    vi.spyOn(workspaceApi, 'listBybitCardTransactions').mockResolvedValue({ transactions: [parts[1]!], pendingCount: 1 })
-    const unsplit = vi.spyOn(workspaceApi, 'unsplitBybitCardTransaction')
+    vi.spyOn(workspaceApi, 'listCardTransactions').mockResolvedValue({ transactions: [parts[1]!], pendingCount: 1 })
+    const unsplit = vi.spyOn(workspaceApi, 'unsplitCardTransaction')
       .mockRejectedValue(new workspaceApi.WorkspaceApiError(409, 'SPLIT_IN_USE', 'Одна из частей уже записана в историю.', {
         recorded: [{ id: 'part-1', splitIndex: 1, splitCount: 2, amountMinor: 80_000, currency: 'RSD', expenses: [] }],
       }))
 
-    render(<BybitReviewView workspaceId="workspace-a" categories={categories} currencies={currencies} online onExpenses={vi.fn()} onExpensesUndo={vi.fn()} onStatus={vi.fn()}/>)
+    render(<CardReviewView workspaceId="workspace-a" categories={categories} currencies={currencies} online onExpenses={vi.fn()} onExpensesUndo={vi.fn()} onStatus={vi.fn()}/>)
     await screen.findByText('Часть 2 из 2')
     fireEvent.click(screen.getByRole('button', { name: 'Собрать части' }))
     const sheet = await screen.findByRole('alertdialog')
@@ -1095,6 +1109,39 @@ describe('settings identity transitions', () => {
     // Сервер не ходит в Bybit чаще раза в минуту; молчание выглядело бы как сломанная кнопка.
     await screen.findByText('Уже актуально: обновлялось меньше минуты назад')
     expect(sync).toHaveBeenCalledWith(workspace.id)
+  })
+
+  it('uploads a T-Bank statement file and leads straight to the review', async () => {
+    vi.spyOn(workspaceApi, 'listMembers').mockResolvedValue({ members: [] })
+    vi.spyOn(workspaceApi, 'listSessions').mockResolvedValue({ sessions: [] })
+    vi.spyOn(workspaceApi, 'listInvitations').mockResolvedValue({ invitations: [] })
+    const upload = vi.spyOn(workspaceApi, 'uploadTbankStatement').mockResolvedValue({ imported: 3, known: 2, skipped: 0, pendingCount: 5 })
+    const onStatementImported = vi.fn()
+    const onOpenReview = vi.fn()
+    const workspace = expenseBootstrap().workspace
+    const user: AuthenticatedSession = { authenticated: true, user: { id: 'user-a', displayName: 'Аня', recoveryConfigured: true, recoveryGeneration: 1 }, currentSessionId: 'session-a', currentSessionExpiresAt: '2030-01-01T00:00:00.000Z', serverTime: '2026-08-10T14:00:00.000Z', restrictedToRecovery: false, workspaces: [workspace], legacyWorkspaceId: null }
+    const { container } = render(<SettingsView user={user} workspace={workspace} workspaceId={workspace.id} bootstrap={expenseBootstrap()} setBootstrap={vi.fn()} pendingCount={0} refreshPending={vi.fn()} onLogout={vi.fn()} theme="system" onThemeChange={vi.fn()} onSession={vi.fn()} online onStatementImported={onStatementImported} onOpenReview={onOpenReview}/>)
+
+    fireEvent.click(screen.getByRole('button', { name: /Выписка Т‑Банка/ }))
+    const csv = '"Дата операции";"Сумма операции";"Валюта операции";"Статус";"Описание"\r\n"01.09.2026 09:05:00";"-2500,00";"RUB";"Ок";"selectel"\r\n'
+    const input = container.ownerDocument.querySelector('input[type="file"]') as HTMLInputElement
+    fireEvent.change(input, { target: { files: [new File([csv], 'Operations.csv', { type: 'text/csv' })] } })
+    await screen.findByText('Новых трат: 3 · уже были: 2.')
+    expect(upload).toHaveBeenCalledWith(workspace.id, csv)
+    expect(onStatementImported).toHaveBeenCalledWith(5)
+    fireEvent.click(screen.getByRole('button', { name: 'Разобрать' }))
+    expect(onOpenReview).toHaveBeenCalled()
+    expect(screen.queryByRole('dialog', { name: 'Выписка Т‑Банка' })).toBeNull()
+  })
+
+  it('says plainly what a statement upload changed', async () => {
+    expect(statementFeedback({ imported: 0, known: 12, skipped: 0, pendingCount: 0 })).toBe('Новых трат нет — всё уже загружено.')
+    expect(statementFeedback({ imported: 0, known: 0, skipped: 0, pendingCount: 0 })).toBe('В файле нет трат.')
+    expect(statementFeedback({ imported: 1, known: 0, skipped: 2, pendingCount: 1 })).toBe('Новых трат: 1. Не удалось прочитать строк: 2.')
+    // Старые выгрузки Тинькофф были в Windows‑1251: «Статус» в этой кодировке — D1 F2 E0 F2 F3 F1.
+    const legacy = new File([new Uint8Array([0xd1, 0xf2, 0xe0, 0xf2, 0xf3, 0xf1])], 'old.csv')
+    expect(await readStatementFile(legacy)).toBe('Статус')
+    expect(await readStatementFile(new File(['Статус'], 'new.csv'))).toBe('Статус')
   })
 
   it('shows the Bybit card row to a member only once the card is connected', () => {
@@ -1646,6 +1693,7 @@ describe('logout confirmation', () => {
     vi.spyOn(workspaceApi, 'getBootstrap').mockResolvedValue({ data: expenseBootstrap(), offline: false })
     vi.spyOn(workspaceApi, 'syncAllWorkspaces').mockResolvedValue(undefined)
     vi.spyOn(workspaceApi, 'getBybitCardStatus').mockResolvedValue({ connected: false, canManage: true, pendingCount: 0 })
+    vi.spyOn(workspaceApi, 'getCardQueueStatus').mockResolvedValue({ pendingCount: 0 })
     vi.spyOn(workspaceApi, 'listMembers').mockResolvedValue({ members: [] })
     vi.spyOn(workspaceApi, 'listSessions').mockResolvedValue({ sessions: [] })
     vi.spyOn(workspaceApi, 'listInvitations').mockResolvedValue({ invitations: [] })

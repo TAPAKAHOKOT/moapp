@@ -239,22 +239,36 @@ A stale tag version returns `409 VERSION_CONFLICT` with `error.details.current`.
 
 Tag mutations are online requests. Creating a tag whose name already exists returns `409 DUPLICATE` with the existing tag in `error.details.current`; the client reuses that tag instead of failing.
 
-## Bybit Card integration
+## Card review queue
 
-The client exposes workspace-scoped status, connection, disconnection, manual
-sync, review-list, classify, split, unsplit, ignore, and guarded undo calls. Classify sends `{categoryId,comment,tagIds}` so the review flow can tag the created expense. These mutations are online-only.
-The connection UI displays `enabledAt`: transactions before that instant are
-never imported. Review items remain outside `Expense[]` and analytics until
+Review items from Bybit and from T-Bank statements share one queue
+(`/integrations/card-queue`): `getCardQueueStatus` feeds the history inbox count,
+and the list, classify, split, unsplit, ignore and guarded undo calls
+(`listCardTransactions` … `undoCardTransaction`) work for either `source`. Classify sends `{categoryId,comment,tagIds}` so the review flow can tag the created expense. These mutations are online-only.
+Review items remain outside `Expense[]` and analytics until
 classification returns normal expenses and adds them to the workspace bootstrap.
 Undo supplies every returned expense id/version as `{expenses}`, removes those
 unchanged classified expenses from the bootstrap, and restores its provider
 transaction to review.
 
 A payment that covered several categories is split before it is classified:
-`splitBybitCardTransaction` sends `{amounts}` and gets back the parts, which replace
+`splitCardTransaction` sends `{amounts}` and gets back the parts, which replace
 the payment in the queue as ordinary rows — each carries `splitIndex`/`splitCount`, is
 classified on the same card as any other operation, and can be put back together with
-`unsplitBybitCardTransaction` until one of the parts is recorded (`409 SPLIT_IN_USE`).
+`unsplitCardTransaction` until one of the parts is recorded (`409 SPLIT_IN_USE`).
+
+## Bybit Card integration
+
+The client exposes workspace-scoped status, connection, disconnection and manual
+sync calls. The connection UI displays `enabledAt`: transactions before that instant are
+never imported.
+
+## T-Bank statement
+
+`uploadTbankStatement` sends the CSV text read on the device (UTF-8, or Windows-1251
+for old Tinkoff files) together with the device time zone, and gets back
+`{imported,known,skipped,pendingCount}`. The settings sheet reports what changed and
+offers «Разобрать» when new spending arrived.
 
 ## Analytics and rates
 

@@ -345,6 +345,14 @@ export const GridIcon = () => <i className="grid-icon" aria-hidden="true"><svg v
 
 export const SearchIcon = () => <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/></svg>
 
+export const CardIcon = () => <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="3" y="5.5" width="18" height="13" rx="2.5"/><path d="M3 10h18M7 14.5h3"/></svg>
+
+/* Откуда операция: жёлтая «B» — Bybit, тёмная «Т» — выписка Т‑Банка. Без источника — просто карта (сводная очередь). */
+export const CardMark = ({ source }: { source?: 'bybit-card' | 'tbank' }) => source === 'tbank'
+  ? <span className="card-mark tbank" title="Т‑Банк">Т</span>
+  : source === 'bybit-card' ? <span className="card-mark" title="Bybit">B</span>
+  : <span className="card-mark any"><CardIcon/></span>
+
 export const LockIcon = () => <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2.5"/><path d="M8 11V7.5a4 4 0 0 1 8 0V11"/></svg>
 
 // Шит со списком (участники, устройства, категории, теги): заголовок, содержимое, при необходимости — не закрывается, пока идёт запрос.

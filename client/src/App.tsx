@@ -1,6 +1,6 @@
 import { startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { appTimeZone, localInputToIso, workspaceCurrency } from './utils'
-import { WorkspaceApiError as ApiError, allowWorkspaceMutations, blockWorkspaceMutations, discardOutboxIssues, getBootstrap, getBybitCardStatus, getSession, listExpenses, logoutExpected, prepareInitialOrManualRecovery, probeServer, retryOutboxIssue, setSessionContext, syncAllWorkspaces } from './workspace-api'
+import { WorkspaceApiError as ApiError, allowWorkspaceMutations, blockWorkspaceMutations, discardOutboxIssues, getBootstrap, getBybitCardStatus, getCardQueueStatus, getSession, listExpenses, logoutExpected, prepareInitialOrManualRecovery, probeServer, retryOutboxIssue, setSessionContext, syncAllWorkspaces } from './workspace-api'
 import { cacheBootstrap, migrateLegacyOfflineData, outboxStats, readCachedProfile, waitForWorkspaceOfflineWrites } from './workspace-offline'
 import { REMINDER_COMPACT_AFTER, applyMembershipLoss, beginLogout, chooseCachedWorkspace, closeCapability, createAppState, createIdentityCoordinator, createLoggedOutState, forgetKnownProfile, hydrateAppState, openLegacyClaim, readReminderMemory, reminderSnoozed, setActiveWorkspace, settlePendingLogout, snoozeReminder, updateWorkspace, writeReminderMemory } from './app-state'
 import type { AppState, ReminderMemory } from './app-state'
@@ -17,7 +17,7 @@ import { HistoryView } from './screens/History'
 import { AnalyticsView } from './screens/Analytics'
 import { SettingsView } from './screens/Settings'
 import type { ThemePreference } from './screens/Settings'
-import { BybitReviewView, ReviewOverlay } from './screens/Review'
+import { CardReviewView, ReviewOverlay } from './screens/Review'
 import { CapabilityScreen, CreateWorkspaceSheet, LegacyClaimFlow, RecoverySave, RestrictedRecovery, SyncIssuesSheet, WorkspaceSwitcher } from './screens/Access'
 
 export type Tab = 'entry' | 'history' | 'analytics' | 'settings'
@@ -168,6 +168,8 @@ export default function App({ capability = null }: { capability?: CapabilityInte
   const [issuesOpen,setIssuesOpen]=useState(false)
   const [reviewOpen,setReviewOpen]=useState(false)
   const [bybitRuntime,setBybitRuntime]=useState<{workspaceId:string;status:BybitCardStatus}|null>(null)
+  // Очередь разбора общая для карт: Bybit подкладывает операции сам, выписка Т‑Банка — после загрузки файла.
+  const [queueRuntime,setQueueRuntime]=useState<{workspaceId:string;pendingCount:number}|null>(null)
   const [initialRecovery,setInitialRecovery]=useState<RecoveryPrepareResponse|null>(null)
   const [error,setError]=useState('')
   const { toast: notice, notify: setNotice, dismiss: hideNotice } = useToast()
@@ -193,7 +195,6 @@ export default function App({ capability = null }: { capability?: CapabilityInte
   const stateRef=useRef(state); stateRef.current=state
   const tab=pagerState.workspaceId===state.activeWorkspaceId?pagerState.tab:'entry'
   const mountedTabs=pagerState.workspaceId===state.activeWorkspaceId?pagerState.mounted:['entry']
-  const reviewConnected=bybitRuntime?.workspaceId===state.activeWorkspaceId&&bybitRuntime.status.connected
   const navigationTabs=tabs
   const setTab=useCallback((next:Tab)=>{
     const workspaceId=stateRef.current.activeWorkspaceId
@@ -324,7 +325,7 @@ export default function App({ capability = null }: { capability?: CapabilityInte
     // не должен переключать вкладку на промежуточную, иначе анимация развернётся обратно.
     pagerTarget.current=left
     animatePager(node,left)
-  },[state.activeWorkspaceId,tab,reviewConnected,Boolean(state.activeWorkspaceId&&state.runtimes[state.activeWorkspaceId]?.bootstrap)])
+  },[state.activeWorkspaceId,tab,Boolean(state.activeWorkspaceId&&state.runtimes[state.activeWorkspaceId]?.bootstrap)])
   useEffect(()=>()=>clearTimeout(pagerTimer.current),[])
   const pagerTarget=useRef<number|null>(null)
   const pagerAnimation=useRef<number|null>(null)
@@ -360,25 +361,39 @@ export default function App({ capability = null }: { capability?: CapabilityInte
   const workspaceId=state.activeWorkspaceId
   const workspacesKey=auth?.workspaces.map((workspace)=>`${workspace.id}:${workspace.version}`).join('|')??''
   const bybitStatus=bybitRuntime?.workspaceId===workspaceId?bybitRuntime.status:null
-  const updateBybitStatus=useCallback((next:Partial<BybitCardStatus>&Pick<BybitCardStatus,'pendingCount'>)=>{
+  const updateQueueCount=useCallback((pendingCount:number)=>{
     const id=stateRef.current.activeWorkspaceId;if(!id)return
-    setBybitRuntime((current)=>({workspaceId:id,status:{connected:false,canManage:false,...(current?.workspaceId===id?current.status:{}),...next}}))
+    setQueueRuntime({workspaceId:id,pendingCount})
   },[])
+  // Сервер отдаёт в статусе Bybit счётчик всей очереди, поэтому обновление карты двигает и карточку «ждут разбора».
+  // После отключения карты статус собран на телефоне, а в очереди могут остаться строки выписки — счётчик спрашиваем у сервера.
+  const updateBybitStatus=useCallback((next:BybitCardStatus)=>{
+    const id=stateRef.current.activeWorkspaceId;if(!id)return
+    setBybitRuntime({workspaceId:id,status:next})
+    if(next.connected){updateQueueCount(next.pendingCount);return}
+    void getCardQueueStatus(id).then(({pendingCount})=>{if(stateRef.current.activeWorkspaceId===id)setQueueRuntime({workspaceId:id,pendingCount})}).catch(()=>{/* the next workspace load refreshes it */})
+  },[updateQueueCount])
 
   useEffect(()=>{
-    if(!auth||!workspaceId||!online){setBybitRuntime(null);return}
+    if(!auth||!workspaceId||!online){setBybitRuntime(null);setQueueRuntime(null);return}
     const controller=new AbortController();const id=workspaceId
     setBybitRuntime((current)=>current?.workspaceId===id?current:null)
+    setQueueRuntime((current)=>current?.workspaceId===id?current:null)
     void getBybitCardStatus(id,controller.signal).then((status)=>{
       if(controller.signal.aborted)return
       setBybitRuntime({workspaceId:id,status})
     }).catch(()=>{/* Bybit status is supplemental and must not block the workspace. */})
+    void getCardQueueStatus(id,controller.signal).then(({pendingCount})=>{
+      if(controller.signal.aborted)return
+      setQueueRuntime({workspaceId:id,pendingCount})
+    }).catch(()=>{/* The review queue is supplemental and must not block the workspace. */})
     return()=>controller.abort()
   },[auth?.currentSessionId,auth?.user.id,online,workspaceId])
-  useEffect(()=>{if(!reviewConnected)setReviewOpen(false)},[reviewConnected])
+  // Разбор открыт поверх истории своего пространства; смена пространства его закрывает.
+  useEffect(()=>setReviewOpen(false),[workspaceId])
   // История мемоизирована: карточка очереди отдаётся ей стабильным объектом, чтобы не перерисовывать список на каждый рендер приложения.
   const openReview=useCallback(()=>setReviewOpen(true),[])
-  const reviewCount=reviewConnected?bybitStatus?.pendingCount??0:0
+  const reviewCount=queueRuntime?.workspaceId===workspaceId?queueRuntime.pendingCount:0
   const historyInbox=useMemo(()=>reviewCount?{count:reviewCount,onOpen:openReview}:null,[reviewCount,openReview])
   // Ссылку доступа предлагаем спокойной карточкой над историей после первого расхода, а не тремя модалками при первом запуске.
   const recoveryNeeded=Boolean(auth&&!auth.user.recoveryConfigured&&!auth.restrictedToRecovery)
@@ -428,7 +443,7 @@ export default function App({ capability = null }: { capability?: CapabilityInte
   const olderSince=activeBootstrap?.expensesSince??null
   const historyOlder=useMemo(()=>olderCount&&olderSince?{count:olderCount,since:olderSince,busy:olderBusy,load:()=>{setOlderBusy(true);loadOlderExpenses().catch((reason)=>setError(reason instanceof ApiError?reason.message:'Не удалось загрузить ранние записи')).finally(()=>setOlderBusy(false))}}:null,[olderCount,olderSince,olderBusy,loadOlderExpenses])
 
-  // A Bybit sync can change expenses server-side (declined operations void their expense); pull the
+  // A Bybit sync or a T-Bank statement can change expenses server-side (declined operations void their expense); pull the
   // workspace again without the loading state so history and analytics reflect it immediately.
   const reloadWorkspaceData=useCallback(()=>{
     const id=stateRef.current.activeWorkspaceId;const session=stateRef.current.session
@@ -681,10 +696,10 @@ if(Math.abs(node.scrollLeft-pagerTarget.current)>1)node.scrollLeft=pagerTarget.c
       <div className="page-slot" inert={tab!=='entry'} aria-hidden={tab!=='entry'}>{mountedTabs.includes('entry')&&<EntryView userId={auth.user.id} workspaceId={workspaceId} workspace={workspace} bootstrap={bootstrap} setBootstrap={setWorkspaceData} currentId={currentId} setCurrentId={setCurrentId} refreshPending={refreshPending} onDraftDirtyChange={setDraftDirty} active={tab==='entry'} newExpenseRequest={newExpenseRequest}/>}</div>
       <div className="page-slot" inert={tab!=='history'} aria-hidden={tab!=='history'}>{mountedTabs.includes('history')&&<HistoryView userId={auth.user.id} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} edit={editExpense} createNew={createNewExpense} refreshPending={refreshPending} inbox={historyInbox} reminder={historyReminder} timeZone={timeZone} older={historyOlder}/>}</div>
       <div className="page-slot" inert={tab!=='analytics'} aria-hidden={tab!=='analytics'}>{mountedTabs.includes('analytics')&&<AnalyticsView userId={auth.user.id} workspaceId={workspaceId} bootstrap={bootstrap} theme={theme} online={serverAvailable} timeZone={timeZone}/>}</div>
-      <div className="page-slot" inert={tab!=='settings'} aria-hidden={tab!=='settings'}>{mountedTabs.includes('settings')&&<SettingsView user={auth} workspace={workspace} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} pendingCount={stats.total} refreshPending={refreshPending} onLogout={()=>void logoutCurrent()} theme={themePreference} onThemeChange={setThemePreference} onSession={(next)=>hydrate(next,false,settingsIdentityEpoch)} online={serverAvailable} bybitStatus={bybitStatus} onBybitStatus={(status)=>updateBybitStatus(status)} onBybitSynced={reloadWorkspaceData} loadOlderExpenses={loadOlderExpenses}/>}</div>
+      <div className="page-slot" inert={tab!=='settings'} aria-hidden={tab!=='settings'}>{mountedTabs.includes('settings')&&<SettingsView user={auth} workspace={workspace} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} pendingCount={stats.total} refreshPending={refreshPending} onLogout={()=>void logoutCurrent()} theme={themePreference} onThemeChange={setThemePreference} onSession={(next)=>hydrate(next,false,settingsIdentityEpoch)} online={serverAvailable} bybitStatus={bybitStatus} onBybitStatus={(status)=>updateBybitStatus(status)} onBybitSynced={reloadWorkspaceData} onStatementImported={(pendingCount)=>{updateQueueCount(pendingCount);reloadWorkspaceData()}} onOpenReview={openReview} loadOlderExpenses={loadOlderExpenses}/>}</div>
     </main>
     <nav className="bottom-nav" aria-label="Основная навигация">{navigationTabs.map((item)=><button type="button" key={item.id} aria-current={tab===item.id?'page':undefined} aria-label={item.id==='history'&&reviewCount?`История: ${reviewCount} операций с карты ждут разбора`:item.label} className={tab===item.id?'active':''} onClick={()=>{if(tab!==item.id)tap(4);else if(item.id==='entry'&&currentId)setNewExpenseRequest((value)=>value+1);setTab(item.id)}}><span><NavIcon tab={item.id}/>{item.id==='history'&&reviewCount>0&&<b className="nav-badge">{reviewCount>99?'99+':reviewCount}</b>}</span><small>{item.label}</small></button>)}</nav>
-    {reviewOpen&&reviewConnected&&<ReviewOverlay onClose={()=>setReviewOpen(false)}><BybitReviewView workspaceId={workspaceId} categories={bootstrap.categories} currencies={bootstrap.currencies} tags={bootstrap.tags??[]} onTag={(tag)=>setWorkspaceData((data)=>({...data,tags:[tag,...(data.tags??[]).filter((item)=>item.id!==tag.id)]}))} online={serverAvailable} onStatus={updateBybitStatus} pendingCount={bybitStatus?.pendingCount??0} active onExpenses={(expenses)=>setWorkspaceData((data)=>({...data,expenses:[...expenses,...data.expenses.filter((item)=>!expenses.some((created)=>created.id===item.id))]}))} onExpensesUndo={(expenseIds)=>setWorkspaceData((data)=>({...data,expenses:data.expenses.filter((item)=>!expenseIds.includes(item.id))}))}/></ReviewOverlay>}
+    {reviewOpen&&<ReviewOverlay onClose={()=>setReviewOpen(false)}><CardReviewView workspaceId={workspaceId} categories={bootstrap.categories} currencies={bootstrap.currencies} tags={bootstrap.tags??[]} onTag={(tag)=>setWorkspaceData((data)=>({...data,tags:[tag,...(data.tags??[]).filter((item)=>item.id!==tag.id)]}))} online={serverAvailable} onStatus={({pendingCount})=>updateQueueCount(pendingCount)} pendingCount={reviewCount} active onExpenses={(expenses)=>setWorkspaceData((data)=>({...data,expenses:[...expenses,...data.expenses.filter((item)=>!expenses.some((created)=>created.id===item.id))]}))} onExpensesUndo={(expenseIds)=>setWorkspaceData((data)=>({...data,expenses:data.expenses.filter((item)=>!expenseIds.includes(item.id))}))}/></ReviewOverlay>}
     {switchOpen&&<WorkspaceSwitcher items={auth.workspaces} active={workspaceId} runtimes={state.runtimes} online={serverAvailable} onSelect={(id)=>void switchWorkspace(id)} onCreate={()=>void openCreate()}/>} {createOpen&&<CreateWorkspaceSheet existing initialCurrency={workspaceCurrency(bootstrap)} onClose={()=>setCreateOpen(false)} onCreate={create}/>} {issuesOpen&&<SyncIssuesSheet userId={auth.user.id} workspaceId={workspaceId} bootstrap={bootstrap} online={serverAvailable} onClose={()=>setIssuesOpen(false)} onRetry={retryIssue} onDiscard={discardIssues}/>} {initialRecovery&&<RecoverySave key={initialRecovery.completionToken} prepared={initialRecovery} mode="initial" close={()=>setInitialRecovery(null)} complete={async()=>{
       const outcome=await completeRotationSafely({prepared:initialRecovery,targetUserId:auth.user.id})
       if(outcome.status!=='completed')throw new Error(outcome.status==='rotation-stale'?'Параллельно была сохранена другая ссылка доступа.':'Не удалось подтвердить ссылку. Повторите из настроек.')
@@ -702,7 +717,7 @@ export { EntryView } from './screens/Entry'
 export { HistoryView } from './screens/History'
 export { AnalyticsView, fallbackAnalytics } from './screens/Analytics'
 export { SettingsView, exportHistoryCsv } from './screens/Settings'
-export { BybitReviewView } from './screens/Review'
+export { CardReviewView } from './screens/Review'
 export { CapabilityScreen, CreateWorkspaceSheet, RecoverySave, WorkspaceSwitcher } from './screens/Access'
 export { useToast } from './ui'
 export { amountSize, formatDateRange, formatEntryDate, formatHistoryDate, formatShortDate } from './format'

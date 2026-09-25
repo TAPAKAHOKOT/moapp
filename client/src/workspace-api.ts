@@ -1,9 +1,9 @@
 import { cacheBootstrap, queueMutation, queueMutations, readCachedBootstrap, readOutbox, removeMutation } from './workspace-offline'
 import { appTimeZone } from './utils'
 import type {
-  AnalyticsData, AuthenticatedSession, BybitCardStatus, BybitCardTransaction, BybitRegion, Category, DeviceLinkMetadata, DeviceLinkPreview, DeviceSession, Expense, InvitationMetadata,
+  AnalyticsData, AuthenticatedSession, BybitCardStatus, BybitRegion, CardTransaction, Category, DeviceLinkMetadata, DeviceLinkPreview, DeviceSession, Expense, InvitationMetadata,
   InvitationPreview, Participant, RecoveryPrepareResponse, RecoveryPreview, SessionState, SyncResult, UserProfile, WorkspaceBootstrap,
-  Tag, ExpenseSplitPart, WorkspaceOutboxItem, WorkspaceSummary,
+  Tag, ExpenseSplitPart, TbankStatementResult, WorkspaceOutboxItem, WorkspaceSummary,
 } from './types'
 
 type ErrorEnvelope = { error?: { code?: string; message?: string; details?: unknown }; message?: string }
@@ -50,6 +50,7 @@ const SERVER_ERROR_MESSAGES: Record<string, string> = {
   BYBIT_RATE_LIMITED: 'Bybit временно ограничил частоту запросов. Подождите немного и повторите.',
   BYBIT_REJECTED: 'Bybit отклонил запрос. Проверьте ключ, регион и ограничения по IP.',
   BYBIT_UNAVAILABLE: 'Bybit сейчас недоступен. Повторите синхронизацию позже.',
+  TBANK_STATEMENT_INVALID: 'Это не выписка Т‑Банка. Выгрузите операции на tbank.ru в формате CSV.',
   WORKSPACE_NOT_FOUND: 'Пространство не найдено или доступ к нему закрыт.',
 }
 
@@ -307,25 +308,30 @@ export function syncBybitCard(workspaceId: string, signal?: AbortSignal) {
   assertMutationsAllowed()
   return request<BybitCardStatus & { imported: number; throttled?: boolean }>(bybitCardPath(workspaceId, '/sync'), { method: 'POST', body: JSON.stringify({}), signal })
 }
-export function listBybitCardTransactions(workspaceId: string, signal?: AbortSignal) {
-  return request<{ transactions: BybitCardTransaction[]; pendingCount: number }>(bybitCardPath(workspaceId, '/transactions?limit=200'), { signal })
+/* Очередь разбора общая для всех карт: операции Bybit и строки выписки Т‑Банка разбираются одинаково. */
+const cardQueuePath = (workspaceId: string, suffix = '') => workspacePath(workspaceId, `/integrations/card-queue${suffix}`)
+export function getCardQueueStatus(workspaceId: string, signal?: AbortSignal) {
+  return request<{ pendingCount: number }>(cardQueuePath(workspaceId), { signal })
 }
-export function classifyBybitCardTransaction(workspaceId: string, transactionId: string, categoryId: string, comment: string, tagIds: string[] = [], signal?: AbortSignal) {
+export function listCardTransactions(workspaceId: string, signal?: AbortSignal) {
+  return request<{ transactions: CardTransaction[]; pendingCount: number }>(cardQueuePath(workspaceId, '/transactions?limit=200'), { signal })
+}
+export function classifyCardTransaction(workspaceId: string, transactionId: string, categoryId: string, comment: string, tagIds: string[] = [], signal?: AbortSignal) {
   assertMutationsAllowed()
-  return request<{ transaction: BybitCardTransaction; expense: Expense; expenses: Expense[]; pendingCount: number }>(bybitCardPath(workspaceId, `/transactions/${encodeURIComponent(transactionId)}/classify`), { method: 'POST', body: JSON.stringify({ categoryId, comment, tagIds }), signal })
+  return request<{ transaction: CardTransaction; expense: Expense; expenses: Expense[]; pendingCount: number }>(cardQueuePath(workspaceId, `/transactions/${encodeURIComponent(transactionId)}/classify`), { method: 'POST', body: JSON.stringify({ categoryId, comment, tagIds }), signal })
 }
 /** Платёж распадается на части: каждая встаёт в очередь отдельной строкой со своей суммой. */
-export function splitBybitCardTransaction(workspaceId: string, transactionId: string, amounts: number[], signal?: AbortSignal) {
+export function splitCardTransaction(workspaceId: string, transactionId: string, amounts: number[], signal?: AbortSignal) {
   assertMutationsAllowed()
-  return request<{ transactions: BybitCardTransaction[]; pendingCount: number }>(bybitCardPath(workspaceId, `/transactions/${encodeURIComponent(transactionId)}/split`), { method: 'POST', body: JSON.stringify({ amounts }), signal })
+  return request<{ transactions: CardTransaction[]; pendingCount: number }>(cardQueuePath(workspaceId, `/transactions/${encodeURIComponent(transactionId)}/split`), { method: 'POST', body: JSON.stringify({ amounts }), signal })
 }
 /**
  * Собрать части обратно в один платёж. Пока ни одна не записана — просто собирает; записанные части
  * сервер не сносит молча, а возвращает 409 SPLIT_IN_USE со списком: повтор с их расходами и версиями удаляет записи.
  */
-export function unsplitBybitCardTransaction(workspaceId: string, transactionId: string, expenses: Array<{ id: string; version: number }> = [], signal?: AbortSignal) {
+export function unsplitCardTransaction(workspaceId: string, transactionId: string, expenses: Array<{ id: string; version: number }> = [], signal?: AbortSignal) {
   assertMutationsAllowed()
-  return request<{ transaction: BybitCardTransaction; removedTransactionIds: string[]; undoneExpenseIds: string[]; pendingCount: number }>(bybitCardPath(workspaceId, `/transactions/${encodeURIComponent(transactionId)}/unsplit`), { method: 'POST', body: JSON.stringify({ expenses }), signal })
+  return request<{ transaction: CardTransaction; removedTransactionIds: string[]; undoneExpenseIds: string[]; pendingCount: number }>(cardQueuePath(workspaceId, `/transactions/${encodeURIComponent(transactionId)}/unsplit`), { method: 'POST', body: JSON.stringify({ expenses }), signal })
 }
 
 export type RecordedSplitPart = { id: string; splitIndex: number; splitCount: number; amountMinor: number; currency: string; expenses: Expense[] }
@@ -335,14 +341,20 @@ export function recordedSplitParts(error: unknown): RecordedSplitPart[] {
   const recorded = (error.details as { recorded?: unknown } | undefined)?.recorded
   return Array.isArray(recorded) ? recorded as RecordedSplitPart[] : []
 }
-export function ignoreBybitCardTransaction(workspaceId: string, transactionId: string, signal?: AbortSignal) {
+export function ignoreCardTransaction(workspaceId: string, transactionId: string, signal?: AbortSignal) {
   assertMutationsAllowed()
-  return request<{ pendingCount: number }>(bybitCardPath(workspaceId, `/transactions/${encodeURIComponent(transactionId)}/ignore`), { method: 'POST', body: JSON.stringify({}), signal })
+  return request<{ pendingCount: number }>(cardQueuePath(workspaceId, `/transactions/${encodeURIComponent(transactionId)}/ignore`), { method: 'POST', body: JSON.stringify({}), signal })
 }
-export function undoBybitCardTransaction(workspaceId: string, transactionId: string, expenses?: Pick<Expense, 'id'|'version'>[], signal?: AbortSignal) {
+export function undoCardTransaction(workspaceId: string, transactionId: string, expenses?: Pick<Expense, 'id'|'version'>[], signal?: AbortSignal) {
   assertMutationsAllowed()
   const body = expenses?.length ? { expenses: expenses.map((expense) => ({ id: expense.id, version: expense.version })) } : {}
-  return request<{ transaction: BybitCardTransaction; undoneExpenseId: string|null; undoneExpenseIds: string[]; pendingCount: number }>(bybitCardPath(workspaceId, `/transactions/${encodeURIComponent(transactionId)}/undo`), { method: 'POST', body: JSON.stringify(body), signal })
+  return request<{ transaction: CardTransaction; undoneExpenseId: string|null; undoneExpenseIds: string[]; pendingCount: number }>(cardQueuePath(workspaceId, `/transactions/${encodeURIComponent(transactionId)}/undo`), { method: 'POST', body: JSON.stringify(body), signal })
+}
+
+/** Выписка Т‑Банка в CSV: время в файле читается по поясу этого устройства — с него же обычно и выгружали. */
+export function uploadTbankStatement(workspaceId: string, csv: string, signal?: AbortSignal) {
+  assertMutationsAllowed()
+  return request<TbankStatementResult>(workspacePath(workspaceId, '/integrations/tbank/statement'), { method: 'POST', body: JSON.stringify({ csv, timeZone: appTimeZone() }), signal })
 }
 
 export function buildExpenseOperation(userId: string, workspaceId: string, type: WorkspaceOutboxItem['type'], expense: Expense, operationId: string, createdAt: string): WorkspaceOutboxItem {

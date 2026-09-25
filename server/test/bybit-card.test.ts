@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createHmac, randomUUID } from "node:crypto";
 import { after, before, test } from "node:test";
 import { registerBybitCardRoutes } from "../src/bybit-card.js";
+import { registerCardQueueRoutes } from "../src/card-queue.js";
 import { registerTenantDomainRoutes } from "../src/tenant-domain.js";
 import { buildTestApp, testConfig } from "./test-app.js";
 
@@ -95,7 +96,7 @@ const mockFetch: typeof fetch = async (input, init) => {
   });
 };
 
-const app = await buildTestApp({ config, plugins: [registerTenantDomainRoutes, (instance) => registerBybitCardRoutes(instance, { fetch: mockFetch })] });
+const app = await buildTestApp({ config, plugins: [registerTenantDomainRoutes, registerCardQueueRoutes, (instance) => registerBybitCardRoutes(instance, { fetch: mockFetch })] });
 const origin = { origin: config.appOrigin };
 let cookie = "";
 let userId = "";
@@ -150,7 +151,7 @@ test("Bybit Card imports only records at or after the exact connection boundary"
 
   const storedConnection = app.db.prepare("SELECT * FROM bybit_card_connections WHERE workspace_id=?").get(workspaceId) as { credentials_encrypted: string };
   assert.doesNotMatch(storedConnection.credentials_encrypted, /read-only-card-key|super-secret/);
-  assert.equal((app.db.prepare("SELECT count(*) count FROM bybit_card_transactions WHERE workspace_id=?").get(workspaceId) as { count: number }).count, 3, "declined and pre-boundary records are never stored");
+  assert.equal((app.db.prepare("SELECT count(*) count FROM card_transactions WHERE workspace_id=?").get(workspaceId) as { count: number }).count, 3, "declined and pre-boundary records are never stored");
 
   const repeatedSync = await app.inject({
     method: "POST",
@@ -173,7 +174,7 @@ test("Bybit Card imports only records at or after the exact connection boundary"
 
 test("a later sync settles open authorizations and drops reversed ones from review", async () => {
   /* The reversed authorization was already classified: its expense must be voided, not deleted. */
-  const reversedRow = app.db.prepare("SELECT id FROM bybit_card_transactions WHERE workspace_id=? AND merchant_name='Reversed'").get(workspaceId) as { id: string };
+  const reversedRow = app.db.prepare("SELECT id FROM card_transactions WHERE workspace_id=? AND merchant_name='Reversed'").get(workspaceId) as { id: string };
   const classified = await app.inject({
     method: "POST",
     url: `/api/workspaces/${workspaceId}/integrations/bybit-card/transactions/${reversedRow.id}/classify`,
@@ -194,7 +195,7 @@ test("a later sync settles open authorizations and drops reversed ones from revi
   });
   assert.equal(sync.statusCode, 200, sync.body);
   assert.equal(assetRequests.length, requestsBefore + 1);
-  assert.ok((assetRequests.at(-1)!.createBeginTime as number) <= Date.parse((app.db.prepare("SELECT min(occurred_at) occurred_at FROM bybit_card_transactions WHERE workspace_id=? AND merchant_name='Pending'").get(workspaceId) as { occurred_at: string }).occurred_at),
+  assert.ok((assetRequests.at(-1)!.createBeginTime as number) <= Date.parse((app.db.prepare("SELECT min(occurred_at) occurred_at FROM card_transactions WHERE workspace_id=? AND merchant_name='Pending'").get(workspaceId) as { occurred_at: string }).occurred_at),
     "the window reaches back to the oldest open authorization even after the overlap would have passed");
   assert.equal(sync.json().imported, 0, "settling an already imported authorization is not a new import");
   assert.equal(sync.json().pendingCount, 2);
@@ -202,7 +203,7 @@ test("a later sync settles open authorizations and drops reversed ones from revi
   const queue = await app.inject({ method: "GET", url: `/api/workspaces/${workspaceId}/integrations/bybit-card/transactions`, headers: contextHeaders() });
   const settled = [...(queue.json().transactions as Array<{ merchantName: string; settled: boolean; amountMinor: number }>)].sort((a, b) => a.merchantName.localeCompare(b.merchantName));
   assert.deepEqual(settled.map((item) => [item.merchantName, item.settled, item.amountMinor]), [["Pending", true, 55000], ["WOLT", true, 123400]]);
-  const reversed = app.db.prepare("SELECT review_status, trade_status, expense_id FROM bybit_card_transactions WHERE workspace_id=? AND merchant_name='Reversed'").get(workspaceId) as { review_status: string; trade_status: string; expense_id: string };
+  const reversed = app.db.prepare("SELECT review_status, trade_status, expense_id FROM card_transactions WHERE workspace_id=? AND merchant_name='Reversed'").get(workspaceId) as { review_status: string; trade_status: string; expense_id: string };
   assert.deepEqual(reversed, { review_status: "classified", trade_status: "3", expense_id: reversedExpense.id }, "a classified operation keeps its link; only pending ones are ignored");
 
   const voided = await app.inject({ method: "GET", url: `/api/workspaces/${workspaceId}/expenses/${reversedExpense.id}`, headers: contextHeaders() });
@@ -235,7 +236,7 @@ test("a later sync settles open authorizations and drops reversed ones from revi
 });
 
 test("review actions can be safely undone and disconnect keeps the final expense", async () => {
-  const row = app.db.prepare("SELECT id FROM bybit_card_transactions WHERE workspace_id=? AND merchant_name='WOLT'").get(workspaceId) as { id: string };
+  const row = app.db.prepare("SELECT id FROM card_transactions WHERE workspace_id=? AND merchant_name='WOLT'").get(workspaceId) as { id: string };
   const classify = async () => app.inject({
     method: "POST",
     url: `/api/workspaces/${workspaceId}/integrations/bybit-card/transactions/${row.id}/classify`,
@@ -289,7 +290,7 @@ test("review actions can be safely undone and disconnect keeps the final expense
     method: "DELETE", url: `/api/workspaces/${workspaceId}/integrations/bybit-card`, headers: { ...origin, ...contextHeaders() }, payload: {}
   });
   assert.equal(disconnected.statusCode, 204, disconnected.body);
-  assert.equal((app.db.prepare("SELECT count(*) count FROM bybit_card_transactions WHERE workspace_id=?").get(workspaceId) as { count: number }).count, 0);
+  assert.equal((app.db.prepare("SELECT count(*) count FROM card_transactions WHERE workspace_id=?").get(workspaceId) as { count: number }).count, 0);
   assert.equal((app.db.prepare("SELECT count(*) count FROM expenses WHERE workspace_id=? AND deleted_at IS NULL").get(workspaceId) as { count: number }).count, 2);
 });
 
@@ -307,7 +308,7 @@ test("a payment splits into ordinary queue rows and can be put back together", a
   assert.equal(reconnected.statusCode, 201, reconnected.body);
   assert.equal(reconnected.json().pendingCount, 2, "the settled WOLT payment and the settled authorization are back in review");
 
-  const rowId = (name: string) => (app.db.prepare(`SELECT id FROM bybit_card_transactions
+  const rowId = (name: string) => (app.db.prepare(`SELECT id FROM card_transactions
     WHERE workspace_id=? AND merchant_name=? AND split_of_id IS NULL`).get(workspaceId, name) as { id: string }).id;
   const wolt = rowId("WOLT");
   const post = (path: string, payload: Record<string, unknown>) => app.inject({
@@ -362,13 +363,13 @@ test("a payment splits into ordinary queue rows and can be put back together", a
   assert.equal(merged.json().transaction.amountMinor, 123400);
   assert.equal(merged.json().transaction.splitIndex, null);
   assert.equal(merged.json().pendingCount, 2);
-  assert.equal((app.db.prepare("SELECT count(*) count FROM bybit_card_transactions WHERE split_of_id IS NOT NULL").get() as { count: number }).count, 0,
+  assert.equal((app.db.prepare("SELECT count(*) count FROM card_transactions WHERE split_of_id IS NOT NULL").get() as { count: number }).count, 0,
     "the parts are gone once the payment is whole again");
 });
 
 /* «Собрать части» умеет убрать записанные части сразу, но только по названным версиям расходов. */
 test("collecting the parts removes the already recorded ones when their expenses are named", async () => {
-  const wolt = (app.db.prepare(`SELECT id FROM bybit_card_transactions
+  const wolt = (app.db.prepare(`SELECT id FROM card_transactions
     WHERE workspace_id=? AND merchant_name='WOLT' AND split_of_id IS NULL`).get(workspaceId) as { id: string }).id;
   const post = (path: string, payload: Record<string, unknown>) => app.inject({
     method: "POST", url: `/api/workspaces/${workspaceId}/integrations/bybit-card/transactions/${path}`,
@@ -395,14 +396,14 @@ test("collecting the parts removes the already recorded ones when their expenses
   assert.equal(merged.json().transaction.amountMinor, 123400);
   assert.equal(merged.json().transaction.reviewStatus, "pending");
   assert.equal(merged.json().pendingCount, 2);
-  assert.equal((app.db.prepare("SELECT count(*) count FROM bybit_card_transactions WHERE split_of_id IS NOT NULL").get() as { count: number }).count, 0);
+  assert.equal((app.db.prepare("SELECT count(*) count FROM card_transactions WHERE split_of_id IS NOT NULL").get() as { count: number }).count, 0);
   const gone = await app.inject({ method: "GET", url: `/api/workspaces/${workspaceId}/expenses/${expense.id}`, headers: contextHeaders() });
   assert.ok(gone.statusCode === 404 || gone.json().deletedAt, "the part's expense is no longer in the history");
 });
 
 /* Незакрытая авторизация могла быть разделена до расчёта: если сумма изменилась, деление распускается само. */
 test("a settled amount that no longer matches the parts puts the payment back together", async () => {
-  const pending = (app.db.prepare(`SELECT id FROM bybit_card_transactions
+  const pending = (app.db.prepare(`SELECT id FROM card_transactions
     WHERE workspace_id=? AND merchant_name='Pending' AND split_of_id IS NULL`).get(workspaceId) as { id: string }).id;
   const split = await app.inject({
     method: "POST", url: `/api/workspaces/${workspaceId}/integrations/bybit-card/transactions/${pending}/split`,
@@ -418,13 +419,13 @@ test("a settled amount that no longer matches the parts puts the payment back to
   });
   assert.equal(sync.statusCode, 200, sync.body);
 
-  const row = app.db.prepare("SELECT amount_minor,review_status FROM bybit_card_transactions WHERE id=?").get(pending) as { amount_minor: number; review_status: string };
+  const row = app.db.prepare("SELECT amount_minor,review_status FROM card_transactions WHERE id=?").get(pending) as { amount_minor: number; review_status: string };
   assert.deepEqual(row, { amount_minor: 60000, review_status: "pending" }, "the payment is back in review with the amount that was actually charged");
-  assert.equal((app.db.prepare("SELECT count(*) count FROM bybit_card_transactions WHERE split_of_id=?").get(pending) as { count: number }).count, 0);
+  assert.equal((app.db.prepare("SELECT count(*) count FROM card_transactions WHERE split_of_id=?").get(pending) as { count: number }).count, 0);
 });
 
 test("a reversal marks the expenses of every part as declined", async () => {
-  const wolt = (app.db.prepare(`SELECT id FROM bybit_card_transactions
+  const wolt = (app.db.prepare(`SELECT id FROM card_transactions
     WHERE workspace_id=? AND merchant_name='WOLT' AND split_of_id IS NULL`).get(workspaceId) as { id: string }).id;
   const post = (path: string, payload: Record<string, unknown>) => app.inject({
     method: "POST", url: `/api/workspaces/${workspaceId}/integrations/bybit-card/transactions/${path}`,

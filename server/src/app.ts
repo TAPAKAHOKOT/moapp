@@ -16,6 +16,8 @@ import { cleanupExpiredOAuthRows, registerOAuthRoutes } from "./oauth.js";
 import { registerMcpRoutes } from "./mcp.js";
 import { cleanupSyncOperations } from "./sync.js";
 import { registerBybitCardRoutes, startBybitCardScheduler } from "./bybit-card.js";
+import { registerCardQueueRoutes } from "./card-queue.js";
+import { registerTbankStatementRoutes } from "./tbank-statement.js";
 
 function loggerOptions(enabled: boolean | undefined) {
   if (enabled === false) return false;
@@ -73,7 +75,9 @@ export async function buildApp(config: AppConfig, options: { logger?: boolean; s
   await registerCoreRoutes(app);
   await registerTenantDomainRoutes(app);
   await registerAccessRoutes(app);
+  await registerCardQueueRoutes(app);
   await registerBybitCardRoutes(app);
+  await registerTbankStatementRoutes(app);
 
   const clientRoot = options.staticRoot ?? resolve(process.cwd(), "../client/dist");
   if (existsSync(resolve(clientRoot, "index.html"))) {

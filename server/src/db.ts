@@ -71,7 +71,7 @@ const seeds = [
   ["other", "Прочее", "additional", 4, "#A8A8A8"]
 ] as const;
 
-const LATEST_SCHEMA_VERSION = 13;
+const LATEST_SCHEMA_VERSION = 14;
 
 type TableCount = {
   categories: number;
@@ -555,6 +555,57 @@ export function openDatabase(path: string): Database.Database {
           CREATE INDEX bybit_card_transactions_review_idx ON bybit_card_transactions(workspace_id,review_status,occurred_at);
           CREATE INDEX bybit_card_transactions_expense_idx ON bybit_card_transactions(workspace_id,expense_id);
           CREATE INDEX bybit_card_transactions_split_idx ON bybit_card_transactions(split_of_id,split_index);
+        `);
+        /*
+         * Очередь разбора становится общей для всех карт: к операциям Bybit добавляются строки выписки Т‑Банка,
+         * у которых нет подключения. Ключ операции уникален в пределах пространства и источника — у Bybit
+         * в пространстве одно подключение, и при переподключении старые строки уходят вместе с ним.
+         */
+        else if (version === 14) db.exec(`
+          CREATE TABLE card_transactions (
+            id TEXT PRIMARY KEY,
+            workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+            source TEXT NOT NULL CHECK(source IN ('bybit-card','tbank')),
+            connection_id TEXT REFERENCES bybit_card_connections(id) ON DELETE CASCADE,
+            external_key TEXT NOT NULL,
+            txn_id TEXT,
+            order_no TEXT,
+            side TEXT NOT NULL,
+            trade_status TEXT NOT NULL,
+            provider_status TEXT NOT NULL,
+            amount_minor INTEGER NOT NULL CHECK(amount_minor > 0),
+            currency TEXT NOT NULL CHECK(length(currency)=3),
+            merchant_name TEXT,
+            merchant_country TEXT,
+            merchant_city TEXT,
+            mcc_code TEXT,
+            merchant_category TEXT,
+            occurred_at TEXT NOT NULL,
+            review_status TEXT NOT NULL CHECK(review_status IN ('pending','classified','ignored','split')),
+            expense_id TEXT,
+            split_of_id TEXT REFERENCES card_transactions(id) ON DELETE CASCADE,
+            split_index INTEGER NOT NULL DEFAULT 0 CHECK(split_index >= 0),
+            raw_json TEXT NOT NULL CHECK(json_valid(raw_json)),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(workspace_id,source,external_key),
+            CHECK((source = 'bybit-card') = (connection_id IS NOT NULL)),
+            CHECK((split_of_id IS NULL AND split_index = 0) OR (split_of_id IS NOT NULL AND split_index > 0))
+          );
+          INSERT INTO card_transactions
+            (id,workspace_id,source,connection_id,external_key,txn_id,order_no,side,trade_status,provider_status,amount_minor,currency,
+             merchant_name,merchant_country,merchant_city,mcc_code,merchant_category,occurred_at,review_status,expense_id,
+             split_of_id,split_index,raw_json,created_at,updated_at)
+            SELECT id,workspace_id,'bybit-card',connection_id,external_key,txn_id,order_no,side,trade_status,provider_status,amount_minor,currency,
+             merchant_name,merchant_country,merchant_city,mcc_code,merchant_category,occurred_at,review_status,expense_id,
+             split_of_id,split_index,raw_json,created_at,updated_at FROM bybit_card_transactions
+            ORDER BY split_of_id IS NOT NULL, rowid;
+          DROP TABLE bybit_card_transactions;
+          CREATE INDEX card_transactions_review_idx ON card_transactions(workspace_id,review_status,occurred_at);
+          CREATE INDEX card_transactions_expense_idx ON card_transactions(workspace_id,expense_id);
+          CREATE INDEX card_transactions_split_idx ON card_transactions(split_of_id,split_index);
+          CREATE INDEX card_transactions_connection_idx ON card_transactions(connection_id,external_key);
+          CREATE INDEX card_transactions_amount_idx ON card_transactions(workspace_id,source,currency,amount_minor,occurred_at);
         `);
         db.prepare("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)").run(version, appliedAt);
       }

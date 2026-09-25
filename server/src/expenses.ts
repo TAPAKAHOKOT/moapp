@@ -22,12 +22,12 @@ export type ExpenseRow = {
 };
 
 /*
- * A voided expense was created from a provider operation (Bybit Card) that the provider later
+ * A voided expense was created from a provider operation (Bybit Card, a T-Bank statement) that the provider later
  * declined or reversed. It stays visible in history so the person can decide, but is excluded
  * from every total until they explicitly choose to count it again.
  */
 export type ExpenseVoidReason = {
-  provider: "bybit-card";
+  provider: "bybit-card" | "tbank";
   kind: "declined" | "reversed";
   txnId: string | null;
   merchantName: string | null;
