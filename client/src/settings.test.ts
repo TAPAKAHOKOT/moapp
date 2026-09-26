@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { THEME_MIRROR, patchSettings, queueMemberSettings, queuedAccountSettings, queuedMemberSettings, settleMemberSettings, withAccountSettings, withMemberSettings, workspacesWithQueuedSettings } from './settings'
+import { THEME_MIRROR } from './appearance'
+import { patchSettings, queueMemberSettings, queuedAccountSettings, queuedMemberSettings, settleMemberSettings, withAccountSettings, withMemberSettings, workspacesWithQueuedSettings } from './settings'
 import type { AuthenticatedSession, WorkspaceBootstrap } from './types'
 
 function memoryStorage(): Storage {

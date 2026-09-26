@@ -3,11 +3,13 @@ import { QRCodeSVG } from 'qrcode.react'
 import { WorkspaceApiError as ApiError, changeWorkspaceCurrency, createCategory, createDeviceLink, createInvitation, createTag, deleteTag, getSession, leaveWorkspace, listInvitations, listMembers, listSessions, prepareInitialOrManualRecovery, removeMember, renameWorkspace, reorderCategories, reorderTags, revokeInvitation, revokeSession, saveMemberSettings, transferOwnership, updateCategory, updateProfile, updateTag } from '../workspace-api'
 import { clearWorkspaceOfflineData } from '../workspace-offline'
 import { patchSettings } from '../settings'
+import { ACCENTS, DEFAULT_APPEARANCE, TEXT_SIZES, accentInfo } from '../appearance'
+import type { Appearance } from '../appearance'
 import { completeRotationSafely } from '../recovery-flow'
 import type { AuthenticatedSession, Category, Expense, RecoveryPrepareResponse, SessionState, Tag, ThemePreference, WorkspaceMod, WorkspaceSummary } from '../types'
 import { PINNED_CURRENCIES, localDateKey, workspaceCurrency } from '../utils'
 import { buildHistoryCsv } from '../history'
-import { ChevronIcon, CurrencySheet, ListSheet, SelectSheet, TextSheet, Toast, copyText, tap, useConfirm, useDialog, useToast } from '../ui'
+import { ChevronIcon, CurrencySheet, ListSheet, TextSheet, Toast, copyText, tap, useConfirm, useDialog, useToast } from '../ui'
 import type { SelectOption } from '../ui'
 import { formatLinkLifetime, formatRelativeTime } from '../format'
 import type { Bootstrap } from '../format'
@@ -58,7 +60,7 @@ export function AccessLinkSheet({ link, onClose, onRevoke }: { link: { title: st
 }
 
 // Строка настроек: слева понятие, справа значение и стрелка. Всё, что требует экрана, открывается шитом.
-export function SettingsRow({ label, value, tone, disabled = false, onClick }: { label: string; value?: string; tone?: 'warn' | 'danger'; disabled?: boolean; onClick?: () => void }) {
+export function SettingsRow({ label, value, tone, disabled = false, onClick }: { label: string; value?: React.ReactNode; tone?: 'warn' | 'danger'; disabled?: boolean; onClick?: () => void }) {
   const className = `settings-row${tone ? ` ${tone}` : ''}`
   if (!onClick) return <div className={className}><span>{label}</span>{value !== undefined && <span className="settings-row-value"><span>{value}</span></span>}</div>
   return <button type="button" className={className} disabled={disabled} onClick={() => { tap(4); onClick() }}><span>{label}</span><span className="settings-row-value">{value !== undefined && <span>{value}</span>}{tone !== 'danger' && <ChevronIcon/>}</span></button>
@@ -333,6 +335,29 @@ export type { ThemePreference }
 
 export const THEME_OPTIONS: SelectOption[] = [{ value: 'system', label: 'Как в системе' }, { value: 'light', label: 'Светлая' }, { value: 'dark', label: 'Тёмная' }]
 
+// Строка «Внешний вид» коротко показывает выбранное: точку своего цвета и тему. Крупный текст виден и так;
+// название цвета слышит экранный диктор.
+export function AppearanceValue({ appearance }: { appearance: Appearance }) {
+  const theme = THEME_OPTIONS.find((option) => option.value === appearance.theme)?.label
+  return <><i className="accent-dot" aria-hidden="true"/><span className="sr-only">{`${accentInfo(appearance.accent).name} цвет, `}</span>{theme}</>
+}
+
+// Тема, свой цвет и размер текста — в одном шите. Выбор применяется сразу, на этом экране и на других устройствах
+// человека; другие участники пространства его не видят.
+export function AppearanceSheet({ appearance, onChange, onClose }: { appearance: Appearance; onChange: (patch: Partial<Appearance>) => void; onClose: () => void }) {
+  const pick = (patch: Partial<Appearance>) => { tap(4); onChange(patch) }
+  return <ListSheet title="Внешний вид" onClose={onClose}>
+    <h3 id="appearance-theme">Тема</h3>
+    <div className="segmented" role="group" aria-labelledby="appearance-theme">{THEME_OPTIONS.map((option) => <button type="button" key={option.value} className={appearance.theme === option.value ? 'selected' : undefined} aria-pressed={appearance.theme === option.value} onClick={() => pick({ theme: option.value as Appearance['theme'] })}>{option.label}</button>)}</div>
+    <h3 id="appearance-accent">Цвет</h3>
+    <div className="colors" role="group" aria-labelledby="appearance-accent">{ACCENTS.map((accent) => <button type="button" key={accent.id} aria-label={`Цвет: ${accent.name}`} aria-pressed={appearance.accent === accent.id} className={`accent-swatch${appearance.accent === accent.id ? ' selected' : ''}`} style={{ '--swatch': accent.light, '--swatch-dark': accent.dark } as React.CSSProperties} onClick={() => pick({ accent: accent.id })}/>)}</div>
+    <h3 id="appearance-text">Размер текста</h3>
+    <div className="segmented" role="group" aria-labelledby="appearance-text">{TEXT_SIZES.map((size) => <button type="button" key={size.id} className={appearance.textSize === size.id ? 'selected' : undefined} aria-pressed={appearance.textSize === size.id} onClick={() => pick({ textSize: size.id })}>{size.label}</button>)}</div>
+    <p className="sheet-copy">Видно только вам — на любом вашем устройстве.</p>
+    <button type="button" className="primary sheet-action" onClick={onClose}>Готово</button>
+  </ListSheet>
+}
+
 // Экспорт CSV живёт в настройках: это действие раз в квартал, а не при каждом просмотре истории.
 export function exportHistoryCsv(bootstrap: Bootstrap) {
   const expenses = bootstrap.expenses.filter((item) => !item.deletedAt).sort((left, right) => right.occurredAt.localeCompare(left.occurredAt))
@@ -349,12 +374,12 @@ export function exportHistoryCsv(bootstrap: Bootstrap) {
   return expenses.length
 }
 
-export type SettingsSheet = 'categories' | 'tags' | 'theme' | null
+export type SettingsSheet = 'categories' | 'tags' | 'appearance' | null
 
 // Настройки — плоский список в три группы: «что это за пространство», «кто я и как у меня выглядит приложение»
 // (это живёт в аккаунте и едет на любое устройство), «что на этом телефоне». Без сегментов и вложенных заголовков:
 // строка = одно понятие, всё, что требует экрана, открывается шитом.
-export function SettingsView({ user, workspace, workspaceId, bootstrap, setBootstrap, pendingCount, refreshPending, onLogout, theme, onThemeChange, onSession, online, mods=null, onOpenMods=()=>{}, loadOlderExpenses }: { user: AuthenticatedSession; workspace:WorkspaceSummary; workspaceId:string; bootstrap:Bootstrap; setBootstrap:React.Dispatch<React.SetStateAction<Bootstrap>>; pendingCount:number; refreshPending:()=>void;onLogout:()=>void;theme:ThemePreference;onThemeChange:(theme:ThemePreference)=>void;onSession:(session:SessionState)=>Promise<void>;online:boolean;mods?:WorkspaceMod[]|null;onOpenMods?:()=>void;loadOlderExpenses?:()=>Promise<Expense[]> }) {
+export function SettingsView({ user, workspace, workspaceId, bootstrap, setBootstrap, pendingCount, refreshPending, onLogout, appearance=DEFAULT_APPEARANCE, onAppearanceChange=()=>{}, onSession, online, mods=null, onOpenMods=()=>{}, loadOlderExpenses }: { user: AuthenticatedSession; workspace:WorkspaceSummary; workspaceId:string; bootstrap:Bootstrap; setBootstrap:React.Dispatch<React.SetStateAction<Bootstrap>>; pendingCount:number; refreshPending:()=>void;onLogout:()=>void;appearance?:Appearance;onAppearanceChange?:(patch:Partial<Appearance>)=>void;onSession:(session:SessionState)=>Promise<void>;online:boolean;mods?:WorkspaceMod[]|null;onOpenMods?:()=>void;loadOlderExpenses?:()=>Promise<Expense[]> }) {
   const [sheet,setSheet]=useState<SettingsSheet>(null)
   const [editing,setEditing]=useState<Category|null>(null)
   const [adding,setAdding]=useState(false)
@@ -452,7 +477,7 @@ export function SettingsView({ user, workspace, workspaceId, bootstrap, setBoots
   const categoryRow=(category:Category)=><><i style={{background:category.color??'#a9afa5'}}/><button type="button" className="category-name" disabled={!online||reordering} onClick={()=>setEditing(category)}>{category.name}</button></>
   return <section className="page settings-page">
     <AccessSettings user={user} workspace={workspace} bootstrap={bootstrap} setBootstrap={setBootstrap} pendingCount={pendingCount} online={online} onSession={onSession} onNotice={accessNotice} onBusyChange={setAccessBusy}
-      profileRows={<SettingsRow label="Тема" value={THEME_OPTIONS.find((option)=>option.value===theme)?.label} onClick={()=>setSheet('theme')}/>}>
+      profileRows={<SettingsRow label="Внешний вид" value={<AppearanceValue appearance={appearance}/>} onClick={()=>setSheet('appearance')}/>}>
       <SettingsRow label="Категории" value={String(activeCategories.length)} onClick={()=>setSheet('categories')}/>
       <SettingsRow label="Теги" value={tags.length?String(tags.length):'нет'} onClick={()=>setSheet('tags')}/>
       <SettingsRow label="Моды" value={modsValue} tone={modsNeedAttention?'warn':undefined} onClick={onOpenMods}/>
@@ -485,7 +510,7 @@ export function SettingsView({ user, workspace, workspaceId, bootstrap, setBoots
       <p className="sheet-copy">{tags.length?'Тег — короткая пометка поверх категории, например «отпуск». Один расход может нести несколько тегов.':'Тегов пока нет. Тег — короткая пометка поверх категории, например «отпуск» или «вдвоём».'}</p>
       <button type="button" className="primary sheet-action" disabled={!online} onClick={()=>setAddingTag(true)}>Новый тег</button>
     </ListSheet>}
-    {sheet==='theme'&&<SelectSheet title="Тема" value={theme} options={THEME_OPTIONS} searchable={false} onClose={()=>setSheet(null)} onSelect={(value)=>{setSheet(null);onThemeChange(value as ThemePreference)}}/>}
+    {sheet==='appearance'&&<AppearanceSheet appearance={appearance} onChange={onAppearanceChange} onClose={()=>setSheet(null)}/>}
     {(editing||adding)&&<CategoryEditor category={editing} mainCount={mainCategories.length} onClose={()=>{setEditing(null);setAdding(false)}} onSave={save}/>}
     {(editingTag||addingTag)&&<TagEditor tag={editingTag} onClose={()=>{setEditingTag(null);setAddingTag(false)}} onSave={saveTag} onDelete={editingTag?()=>removeTag(editingTag):undefined}/>}
     {notice&&<Toast toast={notice} onDismiss={hideNotice}/>}

@@ -1005,7 +1005,7 @@ describe('splitting one payment into parts', () => {
 function SettingsHarness({ bootstrap: initial }: { bootstrap: WorkspaceBootstrap }) {
   const [bootstrap, setBootstrap] = useState(initial)
   const user: AuthenticatedSession = { authenticated: true, user: { id: 'user-a', displayName: 'Аня', recoveryConfigured: true, recoveryGeneration: 1 }, currentSessionId: 'session-a', currentSessionExpiresAt: '2030-01-01T00:00:00.000Z', serverTime: '2026-08-10T14:00:00.000Z', restrictedToRecovery: false, workspaces: [bootstrap.workspace], legacyWorkspaceId: null }
-  return <SettingsView user={user} workspace={bootstrap.workspace} workspaceId={bootstrap.workspaceId} bootstrap={bootstrap} setBootstrap={setBootstrap} pendingCount={0} refreshPending={vi.fn()} onLogout={vi.fn()} theme="system" onThemeChange={vi.fn()} onSession={vi.fn()} online/>
+  return <SettingsView user={user} workspace={bootstrap.workspace} workspaceId={bootstrap.workspaceId} bootstrap={bootstrap} setBootstrap={setBootstrap} pendingCount={0} refreshPending={vi.fn()} onLogout={vi.fn()} onSession={vi.fn()} online/>
 }
 
 const hiddenHome: Category = { id: 'home', name: 'Для дома', color: '#79a9d1', placement: 'additional', sortOrder: 0, createdAt: '2026-08-01T00:00:00.000Z', updatedAt: '2026-09-01T00:00:00.000Z', archivedAt: '2026-09-01T00:00:00.000Z', version: 2 }
@@ -1111,7 +1111,7 @@ describe('mods page', () => {
     vi.spyOn(workspaceApi, 'listSessions').mockResolvedValue({ sessions: [] })
     const member = { ...expenseBootstrap().workspace, role: 'member' as const }
     const user: AuthenticatedSession = { authenticated: true, user: { id: 'user-a', displayName: 'Аня', recoveryConfigured: true, recoveryGeneration: 1 }, currentSessionId: 'session-a', currentSessionExpiresAt: '2030-01-01T00:00:00.000Z', serverTime: '2026-08-10T14:00:00.000Z', restrictedToRecovery: false, workspaces: [member], legacyWorkspaceId: null }
-    const settings = (mods: WorkspaceMod[] | null, online = true) => <SettingsView user={user} workspace={member} workspaceId={member.id} bootstrap={expenseBootstrap({ workspace: member })} setBootstrap={vi.fn()} pendingCount={0} refreshPending={vi.fn()} onLogout={vi.fn()} theme="system" onThemeChange={vi.fn()} onSession={vi.fn()} online={online} mods={mods}/>
+    const settings = (mods: WorkspaceMod[] | null, online = true) => <SettingsView user={user} workspace={member} workspaceId={member.id} bootstrap={expenseBootstrap({ workspace: member })} setBootstrap={vi.fn()} pendingCount={0} refreshPending={vi.fn()} onLogout={vi.fn()} onSession={vi.fn()} online={online} mods={mods}/>
     const empty = render(settings(catalog))
     expect(screen.getByRole('button', { name: /^Моды/ }).textContent).toContain('нет')
     empty.unmount()
@@ -1134,7 +1134,7 @@ describe('settings identity transitions', () => {
     const workspace = expenseBootstrap().workspace
     const user: AuthenticatedSession = { authenticated: true, user: { id: 'user-a', displayName: 'Аня', recoveryConfigured: true, recoveryGeneration: 1 }, currentSessionId: 'session-a', currentSessionExpiresAt: '2030-01-01T00:00:00.000Z', serverTime: '2026-08-10T14:00:00.000Z', restrictedToRecovery: false, workspaces: [workspace], legacyWorkspaceId: null }
     const onOpenMods = vi.fn()
-    render(<SettingsView user={user} workspace={workspace} workspaceId={workspace.id} bootstrap={expenseBootstrap()} setBootstrap={vi.fn()} pendingCount={0} refreshPending={vi.fn()} onLogout={vi.fn()} theme="system" onThemeChange={vi.fn()} onSession={vi.fn()} online mods={[connectedBybit, addedTbank]} onOpenMods={onOpenMods}/>)
+    render(<SettingsView user={user} workspace={workspace} workspaceId={workspace.id} bootstrap={expenseBootstrap()} setBootstrap={vi.fn()} pendingCount={0} refreshPending={vi.fn()} onLogout={vi.fn()} onSession={vi.fn()} online mods={[connectedBybit, addedTbank]} onOpenMods={onOpenMods}/>)
 
     // Ни сегментов, ни заголовков-эйбрау: сразу строки с понятиями и значениями.
     expect(screen.queryByText('Люди и доступ')).toBeNull()
@@ -1145,7 +1145,7 @@ describe('settings identity transitions', () => {
     fireEvent.click(screen.getByRole('button', { name: /^Моды/ }))
     expect(screen.getByRole('button', { name: /^Моды/ }).textContent).toContain('2')
     expect(onOpenMods).toHaveBeenCalled()
-    expect(screen.getByRole('button', { name: /^Тема/ }).textContent).toContain('Как в системе')
+    expect(screen.getByRole('button', { name: /^Внешний вид/ }).textContent).toBe('Внешний видшалфейный цвет, Как в системе')
     expect(screen.queryByRole('button', { name: 'Новая категория' })).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: /^Категории/ }))
     expect(screen.getByRole('dialog', { name: 'Категории' })).not.toBeNull()
@@ -1233,7 +1233,7 @@ describe('settings identity transitions', () => {
     const setBootstrap = vi.fn()
     const onSession = vi.fn().mockResolvedValue(undefined)
     const bootstrap = expenseBootstrap({ currencies: [{ code: 'RSD', name: 'Сербский динар', symbol: 'дин.', decimals: 2 }, { code: 'EUR', name: 'Евро', symbol: '€', decimals: 2 }], settings: { lastCurrency: 'USD', analyticsCurrency: 'USD' } })
-    render(<SettingsView user={user} workspace={workspace} workspaceId={workspace.id} bootstrap={bootstrap} setBootstrap={setBootstrap} pendingCount={0} refreshPending={vi.fn()} onLogout={vi.fn()} theme="light" onThemeChange={vi.fn()} onSession={onSession} online/>)
+    render(<SettingsView user={user} workspace={workspace} workspaceId={workspace.id} bootstrap={bootstrap} setBootstrap={setBootstrap} pendingCount={0} refreshPending={vi.fn()} onLogout={vi.fn()} onSession={onSession} online/>)
 
     expect(screen.getByRole('button', { name: /^Валюта/ }).textContent).toContain('RSD')
     fireEvent.click(screen.getByRole('button', { name: /^Валюта/ }))
@@ -1257,7 +1257,7 @@ describe('settings identity transitions', () => {
     vi.spyOn(workspaceApi, 'listInvitations').mockResolvedValue({ invitations: [] })
     const member = { ...expenseBootstrap().workspace, role: 'member' as const, currency: 'EUR' }
     const user: AuthenticatedSession = { authenticated: true, user: { id: 'user-b', displayName: 'Боря', recoveryConfigured: true, recoveryGeneration: 1 }, currentSessionId: 'session-b', currentSessionExpiresAt: '2030-01-01T00:00:00.000Z', serverTime: '2026-08-10T14:00:00.000Z', restrictedToRecovery: false, workspaces: [member], legacyWorkspaceId: null }
-    render(<SettingsView user={user} workspace={member} workspaceId={member.id} bootstrap={expenseBootstrap({ workspace: member })} setBootstrap={vi.fn()} pendingCount={0} refreshPending={vi.fn()} onLogout={vi.fn()} theme="light" onThemeChange={vi.fn()} onSession={vi.fn()} online/>)
+    render(<SettingsView user={user} workspace={member} workspaceId={member.id} bootstrap={expenseBootstrap({ workspace: member })} setBootstrap={vi.fn()} pendingCount={0} refreshPending={vi.fn()} onLogout={vi.fn()} onSession={vi.fn()} online/>)
     expect(screen.queryByRole('button', { name: /^Валюта/ })).toBeNull()
     expect(screen.getByText('Валюта').parentElement?.textContent).toContain('EUR')
   })
@@ -1283,7 +1283,7 @@ describe('settings identity transitions', () => {
     const logout = vi.fn()
     render(<SettingsView
       user={user} workspace={workspace} workspaceId={workspace.id} bootstrap={bootstrap} setBootstrap={vi.fn()}
-      pendingCount={0} refreshPending={vi.fn()} onLogout={logout} theme="light" onThemeChange={vi.fn()}
+      pendingCount={0} refreshPending={vi.fn()} onLogout={logout}
       onSession={vi.fn().mockResolvedValue(undefined)} online
     />)
 
@@ -1306,7 +1306,7 @@ describe('settings identity transitions', () => {
     const revokeDevice = vi.spyOn(workspaceApi, 'revokeSession').mockResolvedValue(undefined)
     const workspace = expenseBootstrap().workspace
     const user: AuthenticatedSession = { authenticated: true, user: { id: 'user-a', displayName: 'Аня', recoveryConfigured: true, recoveryGeneration: 1 }, currentSessionId: 'session-a', currentSessionExpiresAt: '2030-01-01T00:00:00.000Z', serverTime: '2026-08-10T14:00:00.000Z', restrictedToRecovery: false, workspaces: [workspace], legacyWorkspaceId: null }
-    render(<SettingsView user={user} workspace={workspace} workspaceId={workspace.id} bootstrap={expenseBootstrap()} setBootstrap={vi.fn()} pendingCount={0} refreshPending={vi.fn()} onLogout={vi.fn()} theme="light" onThemeChange={vi.fn()} onSession={vi.fn()} online/>)
+    render(<SettingsView user={user} workspace={workspace} workspaceId={workspace.id} bootstrap={expenseBootstrap()} setBootstrap={vi.fn()} pendingCount={0} refreshPending={vi.fn()} onLogout={vi.fn()} onSession={vi.fn()} online/>)
 
     fireEvent.click(screen.getByRole('button', { name: /^Участники/ }))
     fireEvent.click(await screen.findByRole('button', { name: 'Отозвать' }))
@@ -1350,7 +1350,7 @@ describe('settings identity transitions', () => {
     vi.spyOn(workspaceApi, 'listInvitations').mockResolvedValue({ invitations: [] })
     const workspace = bootstrap.workspace
     const user: AuthenticatedSession = { authenticated: true, user: { id: 'user-a', displayName: 'Аня', recoveryConfigured: true, recoveryGeneration: 1 }, currentSessionId: 'session-a', currentSessionExpiresAt: '2030-01-01T00:00:00.000Z', serverTime: '2026-08-10T14:00:00.000Z', restrictedToRecovery: false, workspaces: [workspace], legacyWorkspaceId: null }
-    render(<SettingsView user={user} workspace={workspace} workspaceId={workspace.id} bootstrap={bootstrap} setBootstrap={vi.fn()} pendingCount={0} refreshPending={vi.fn()} onLogout={vi.fn()} theme="light" onThemeChange={vi.fn()} onSession={vi.fn()} online/>)
+    render(<SettingsView user={user} workspace={workspace} workspaceId={workspace.id} bootstrap={bootstrap} setBootstrap={vi.fn()} pendingCount={0} refreshPending={vi.fn()} onLogout={vi.fn()} onSession={vi.fn()} online/>)
 
     fireEvent.click(screen.getByRole('button', { name: 'Экспорт в CSV' }))
 
@@ -1369,7 +1369,7 @@ describe('settings identity transitions', () => {
     vi.spyOn(workspaceApi, 'updateProfile').mockRejectedValue(new Error('Нет связи'))
     const workspace = expenseBootstrap().workspace
     const user: AuthenticatedSession = { authenticated: true, user: { id: 'user-a', displayName: 'Аня', recoveryConfigured: true, recoveryGeneration: 1 }, currentSessionId: 'session-a', currentSessionExpiresAt: '2030-01-01T00:00:00.000Z', serverTime: '2026-08-10T14:00:00.000Z', restrictedToRecovery: false, workspaces: [workspace], legacyWorkspaceId: null }
-    render(<SettingsView user={user} workspace={workspace} workspaceId={workspace.id} bootstrap={expenseBootstrap()} setBootstrap={vi.fn()} pendingCount={0} refreshPending={vi.fn()} onLogout={vi.fn()} theme="light" onThemeChange={vi.fn()} onSession={vi.fn()} online/>)
+    render(<SettingsView user={user} workspace={workspace} workspaceId={workspace.id} bootstrap={expenseBootstrap()} setBootstrap={vi.fn()} pendingCount={0} refreshPending={vi.fn()} onLogout={vi.fn()} onSession={vi.fn()} online/>)
     fireEvent.click(screen.getByRole('button', { name: /Ваше имя/ }))
     const input = screen.getByRole('textbox', { name: 'Ваше имя' }) as HTMLInputElement
     fireEvent.change(input, { target: { value: 'Новое имя' } })
@@ -1776,27 +1776,44 @@ async function renderSignedInApp({ recoveryConfigured = true, mods = [] as Works
   return { logout, fetchMock }
 }
 
-describe('theme in the account', () => {
-  afterEach(() => { workspaceApi.allowWorkspaceMutations(); workspaceApi.setSessionContext(null); delete document.documentElement.dataset.theme })
+describe('appearance in the account', () => {
+  afterEach(() => {
+    workspaceApi.allowWorkspaceMutations(); workspaceApi.setSessionContext(null)
+    for (const key of ['theme', 'accent', 'textSize']) delete document.documentElement.dataset[key]
+  })
 
-  it('takes the theme from the account, changes it there, and follows the system again after logout', async () => {
-    const { fetchMock } = await renderSignedInApp({ settings: { theme: 'dark' } })
-    await waitFor(() => expect(document.documentElement.dataset.theme).toBe('dark'))
-    expect(localStorage.getItem('moapp:theme')).toBe('dark')
+  it('takes the look from the account, changes it there in one sheet, and returns to the default after logout', async () => {
+    const { fetchMock } = await renderSignedInApp({ settings: { theme: 'dark', accent: 'blue' } })
+    const root = document.documentElement
+    await waitFor(() => expect(root.dataset.theme).toBe('dark'))
+    expect(root.dataset.accent).toBe('blue')
+    expect(root.dataset.textSize).toBeUndefined()
+    expect([localStorage.getItem('moapp:theme'), localStorage.getItem('moapp:accent')]).toEqual(['dark', 'blue'])
 
     fireEvent.click(await screen.findByRole('button', { name: 'Настройки' }))
-    const profile = screen.getByRole('group', { name: 'Профиль' })
-    fireEvent.click(within(profile).getByRole('button', { name: /^Тема/ }))
-    fireEvent.click(within(screen.getByRole('dialog', { name: 'Тема' })).getByRole('option', { name: /Светлая/ }))
+    const row = within(screen.getByRole('group', { name: 'Профиль' })).getByRole('button', { name: /^Внешний вид/ })
+    expect(row.textContent).toBe('Внешний видголубой цвет, Тёмная')
+    fireEvent.click(row)
+    const sheet = screen.getByRole('dialog', { name: 'Внешний вид' })
+    fireEvent.click(within(within(sheet).getByRole('group', { name: 'Тема' })).getByRole('button', { name: 'Светлая' }))
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Цвет: терракотовый' }))
+    fireEvent.click(within(within(sheet).getByRole('group', { name: 'Размер текста' })).getByRole('button', { name: 'Крупный' }))
 
-    expect(document.documentElement.dataset.theme).toBe('light')
-    await waitFor(() => expect(fetchMock.mock.calls.some(([url, init]) => url === '/api/me/settings' && init?.method === 'PATCH' && init.body === JSON.stringify({ settings: { theme: 'light' } }))).toBe(true))
-    expect(within(screen.getByRole('group', { name: 'Этот телефон' })).queryByRole('button', { name: /^Тема/ })).toBeNull()
+    // Каждый выбор виден сразу, а в аккаунт уходит одним запросом.
+    expect([root.dataset.theme, root.dataset.accent, root.dataset.textSize]).toEqual(['light', 'terracotta', 'large'])
+    expect(within(sheet).getByRole('button', { name: 'Цвет: терракотовый' }).getAttribute('aria-pressed')).toBe('true')
+    await waitFor(() => expect(fetchMock.mock.calls.some(([url, init]) => url === '/api/me/settings' && init?.method === 'PATCH'
+      && init.body === JSON.stringify({ settings: { theme: 'light', accent: 'terracotta', textSize: 'large' } }))).toBe(true))
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Готово' }))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Внешний вид' })).toBeNull())
+    expect(row.textContent).toBe('Внешний видтерракотовый цвет, Светлая')
+    expect(within(screen.getByRole('group', { name: 'Этот телефон' })).queryByRole('button', { name: /^Внешний вид|^Тема/ })).toBeNull()
 
     fireEvent.click(screen.getByRole('button', { name: 'Выйти' }))
     fireEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Выйти' }))
     expect(await screen.findByRole('button', { name: 'Создать пространство' })).not.toBeNull()
-    expect(localStorage.getItem('moapp:theme')).toBeNull()
+    expect([localStorage.getItem('moapp:theme'), localStorage.getItem('moapp:accent'), localStorage.getItem('moapp:text-size')]).toEqual([null, null, null])
+    expect([root.dataset.accent, root.dataset.textSize]).toEqual([undefined, undefined])
   })
 })
 

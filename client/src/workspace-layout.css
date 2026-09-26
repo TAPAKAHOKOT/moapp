@@ -294,13 +294,13 @@ textarea,
 
 .confirm-sheet h2 {
   margin: 6px 0;
-  font-size: 18px;
+  font-size: calc(18px * var(--text-scale));
 }
 
 .confirm-sheet p {
   margin: 0 0 16px;
   color: var(--muted);
-  font-size: 13px;
+  font-size: calc(13px * var(--text-scale));
   line-height: 1.5;
 }
 
@@ -369,7 +369,7 @@ textarea,
 .management-state,
 .history-empty {
   color: var(--muted);
-  font-size: 11px;
+  font-size: calc(11px * var(--text-scale));
   line-height: 1.5;
   text-align: center;
 }
@@ -415,7 +415,7 @@ textarea,
 .inline-feedback {
   margin: 6px 0 10px;
   color: var(--sage);
-  font-size: 11px;
+  font-size: calc(11px * var(--text-scale));
   font-weight: 650;
   text-align: center;
 }
@@ -441,7 +441,7 @@ textarea,
 
 .sync-issues-sheet > p {
   color: var(--muted);
-  font-size: 12px;
+  font-size: calc(12px * var(--text-scale));
   line-height: 1.5;
 }
 
@@ -471,12 +471,12 @@ textarea,
 }
 
 .sync-issue-head b {
-  font-size: 12px;
+  font-size: calc(12px * var(--text-scale));
 }
 
 .sync-issue-head small {
   color: var(--text-tertiary);
-  font-size: 11px;
+  font-size: calc(11px * var(--text-scale));
   white-space: nowrap;
 }
 
@@ -486,20 +486,20 @@ textarea,
 }
 
 .sync-issue-expense strong {
-  font-size: 17px;
+  font-size: calc(17px * var(--text-scale));
   letter-spacing: -0.01em;
 }
 
 .sync-issue-expense span {
   color: var(--muted);
-  font-size: 11px;
+  font-size: calc(11px * var(--text-scale));
   line-height: 1.4;
 }
 
 .sync-issue-reason,
 .sync-issue-server {
   margin: 0;
-  font-size: 11px;
+  font-size: calc(11px * var(--text-scale));
   line-height: 1.45;
 }
 
@@ -523,7 +523,7 @@ textarea,
   width: auto;
   min-height: 40px;
   margin: 0;
-  font-size: 12px;
+  font-size: calc(12px * var(--text-scale));
 }
 
 .sync-issue-actions .sheet-cancel {
@@ -575,7 +575,7 @@ textarea,
   padding: 6px 0;
   border-top: 1px dashed color-mix(in srgb, var(--line) 75%, transparent);
   color: var(--muted);
-  font-size: 11px;
+  font-size: calc(11px * var(--text-scale));
 }
 
 .legend-detail > span:first-child {
@@ -615,7 +615,7 @@ textarea,
   border-top: 1px dashed color-mix(in srgb, var(--line) 75%, transparent);
   background: transparent;
   color: var(--ink);
-  font-size: 11px;
+  font-size: calc(11px * var(--text-scale));
   text-align: left;
   transition: opacity 0.15s ease;
 }
@@ -648,14 +648,14 @@ textarea,
   border: 0;
   background: transparent;
   color: var(--sage);
-  font-size: 11px;
+  font-size: calc(11px * var(--text-scale));
   font-weight: 700;
 }
 
 .legend-empty {
   margin: 8px 0 0;
   color: var(--muted);
-  font-size: 11px;
+  font-size: calc(11px * var(--text-scale));
 }
 
 /* Period sheet: five choices in one list. */
@@ -672,7 +672,7 @@ textarea,
   border-radius: 13px;
   background: var(--card);
   color: var(--ink);
-  font-size: 12px;
+  font-size: calc(12px * var(--text-scale));
   font-weight: 600;
   transition: transform 0.12s ease, border-color 0.15s ease, background-color 0.15s ease;
 }
@@ -710,7 +710,7 @@ textarea,
 }
 
 .calendar-nav b {
-  font-size: 13px;
+  font-size: calc(13px * var(--text-scale));
   text-align: center;
   text-transform: capitalize;
 }
@@ -736,7 +736,7 @@ textarea,
   border-radius: 12px;
   background: transparent;
   color: var(--ink);
-  font-size: 13px;
+  font-size: calc(13px * var(--text-scale));
   font-weight: 600;
 }
 
@@ -777,7 +777,7 @@ textarea,
 .workspace-header .sync-status {
   flex: 0 0 auto;
   max-width: min(64vw, 280px);
-  font-size: 11px;
+  font-size: calc(11px * var(--text-scale));
   font-weight: 700;
 }
 
@@ -907,14 +907,14 @@ textarea,
   .categories > p {
     min-height: 17px;
     margin: 0 3px 2px;
-    line-height: 15px;
+    line-height: calc(15px * var(--text-scale));
   }
 
   .main-categories button {
     min-height: 54px;
     border-radius: 14px;
     gap: 5px;
-    font-size: 11px;
+    font-size: calc(11px * var(--text-scale));
   }
 
   .page.card-review-page {
@@ -1112,7 +1112,7 @@ textarea,
 .review-date {
   margin: 0;
   color: var(--muted);
-  font-size: 12px;
+  font-size: calc(12px * var(--text-scale));
 }
 
 /* Строка суммы разбора живёт по метрикам расхода (.amount-row + .amount-row button), чтобы общая формула ширины и общие пороги data-size работали одинаково; своя тут только горизонтальная вставка, потому что боковые поля уже заданы самой странице. */
@@ -1145,7 +1145,7 @@ textarea,
 .review-merchant h3 {
   margin: 0 0 4px;
   overflow: hidden;
-  font-size: 13px;
+  font-size: calc(13px * var(--text-scale));
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1154,7 +1154,7 @@ textarea,
   margin: 0;
   overflow: hidden;
   color: var(--muted);
-  font-size: 11px;
+  font-size: calc(11px * var(--text-scale));
   line-height: 1.35;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1164,9 +1164,9 @@ textarea,
 .review-pending-note {
   margin: 6px 4px 0;
   color: var(--pending);
-  font-size: 11px;
+  font-size: calc(11px * var(--text-scale));
   font-weight: 600;
-  line-height: 15px;
+  line-height: calc(15px * var(--text-scale));
 }
 
 /* Единственное отступление от модели расхода: на самых низких экранах (320×568) средняя полоса — мерчант, категории, теги и комментарий — сжимается и прокручивается, а строка суммы сверху и действия снизу остаются на месте. Выше 568 px она не прокручивается ни разу. */
@@ -1325,7 +1325,7 @@ textarea,
   min-height: 30px;
   padding: 0 11px;
   border-radius: 999px;
-  font-size: 11px;
+  font-size: calc(11px * var(--text-scale));
   max-width: 200px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1424,7 +1424,7 @@ textarea,
   border-radius: 999px;
   background: var(--card);
   color: var(--ink);
-  font-size: 12px;
+  font-size: calc(12px * var(--text-scale));
   font-weight: 600;
   max-width: 190px;
   text-align: left;
@@ -1476,7 +1476,7 @@ textarea,
   flex-wrap: wrap;
   min-height: 24px;
   color: var(--muted);
-  font-size: 11px;
+  font-size: calc(11px * var(--text-scale));
 }
 
 .history-total-line .history-total {
@@ -1484,7 +1484,7 @@ textarea,
   background: none;
   padding: 0;
   color: var(--ink);
-  font-size: 15px;
+  font-size: calc(15px * var(--text-scale));
   font-weight: 750;
   letter-spacing: -.01em;
 }
@@ -1496,14 +1496,14 @@ textarea,
   background: none;
   padding: 0 4px;
   color: var(--sage);
-  font-size: 11px;
+  font-size: calc(11px * var(--text-scale));
   font-weight: 700;
 }
 
 .history-total-parts {
   margin: -4px 16px 0;
   color: var(--text-tertiary);
-  font-size: 11px;
+  font-size: calc(11px * var(--text-scale));
 }
 
 .history-selectbar {
@@ -1511,17 +1511,17 @@ textarea,
   align-items: center;
   gap: 12px;
   min-height: 36px;
-  font-size: 12px;
+  font-size: calc(12px * var(--text-scale));
   font-weight: 600;
 }
 
 .history-selectbar .danger-link {
   margin: 0 0 0 auto;
-  font-size: 12px;
+  font-size: calc(12px * var(--text-scale));
 }
 
 .history-selectbar .text-button {
-  font-size: 12px;
+  font-size: calc(12px * var(--text-scale));
 }
 
 .history-page .history-list {
@@ -1537,14 +1537,14 @@ textarea,
   margin: -6px 16px 20px;
   padding: 0 5px;
   color: var(--muted);
-  font-size: 11px;
+  font-size: calc(11px * var(--text-scale));
 }
 
 .history-older .text-button {
   flex: 0 0 auto;
   padding: 7px 4px;
   color: var(--sage);
-  font-size: 12px;
+  font-size: calc(12px * var(--text-scale));
   font-weight: 700;
 }
 
@@ -1556,7 +1556,7 @@ textarea,
   padding: 0;
   background: none;
   color: var(--ink);
-  font-size: 11px;
+  font-size: calc(11px * var(--text-scale));
   letter-spacing: 0;
   text-transform: none;
   font-variant-numeric: tabular-nums;
@@ -1566,13 +1566,13 @@ textarea,
   display: block;
   min-width: 0;
   overflow: hidden;
-  font-size: 13px;
+  font-size: calc(13px * var(--text-scale));
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .history-row small {
-  font-size: 11px;
+  font-size: calc(11px * var(--text-scale));
 }
 
 /* Очередь операций с карты — входящие поверх истории, а не пятая вкладка. */
@@ -1593,14 +1593,14 @@ textarea,
 
 .history-inbox b {
   display: block;
-  font-size: 12px;
+  font-size: calc(12px * var(--text-scale));
 }
 
 .history-inbox small {
   display: block;
   margin-top: 2px;
   color: var(--muted);
-  font-size: 11px;
+  font-size: calc(11px * var(--text-scale));
 }
 
 .history-inbox .chevron {
@@ -1631,7 +1631,7 @@ textarea,
 
 .review-overlay-head h2 {
   margin: 0;
-  font-size: 14px;
+  font-size: calc(14px * var(--text-scale));
   text-align: center;
 }
 
@@ -1659,7 +1659,7 @@ textarea,
   border-radius: 50%;
   background: transparent;
   color: var(--muted);
-  font-size: 12px;
+  font-size: calc(12px * var(--text-scale));
   font-weight: 700;
   font-style: italic;
   letter-spacing: 0;
@@ -1678,7 +1678,7 @@ textarea,
 .legend-close {
   width: 12px;
   color: var(--text-tertiary);
-  font-size: 14px;
+  font-size: calc(14px * var(--text-scale));
   line-height: 1;
   text-align: center;
 }
@@ -1691,7 +1691,7 @@ textarea,
   border: 0;
   background: transparent;
   color: var(--sage);
-  font-size: 11px;
+  font-size: calc(11px * var(--text-scale));
   font-weight: 700;
 }
 
@@ -1708,7 +1708,7 @@ textarea,
   margin: 0 0 5px;
   padding: 0 6px;
   color: var(--text-tertiary);
-  font-size: 11px;
+  font-size: calc(11px * var(--text-scale));
   font-weight: 700;
   letter-spacing: .1em;
   text-transform: uppercase;
@@ -1733,7 +1733,7 @@ textarea,
   border-bottom: 1px solid var(--line);
   background: transparent;
   color: var(--ink);
-  font-size: 13px;
+  font-size: calc(13px * var(--text-scale));
   font-weight: 600;
   text-align: left;
   transition: background-color .15s ease;
@@ -1755,7 +1755,7 @@ textarea,
   min-width: 0;
   max-width: 58%;
   color: var(--muted);
-  font-size: 12px;
+  font-size: calc(12px * var(--text-scale));
   font-weight: 500;
 }
 
@@ -1811,7 +1811,7 @@ button.settings-row:disabled .settings-row-value {
 .list-sheet h3 {
   margin: 12px 4px 4px;
   color: var(--text-tertiary);
-  font-size: 11px;
+  font-size: calc(11px * var(--text-scale));
   font-weight: 700;
   letter-spacing: .1em;
   text-transform: uppercase;
@@ -1820,7 +1820,7 @@ button.settings-row:disabled .settings-row-value {
 .sheet-copy {
   margin: 4px 0 12px;
   color: var(--muted);
-  font-size: 12px;
+  font-size: calc(12px * var(--text-scale));
   line-height: 1.5;
 }
 
@@ -1843,7 +1843,7 @@ button.settings-row:disabled .settings-row-value {
 
 .list-sheet .management-row > span:first-child {
   min-width: 0;
-  font-size: 13px;
+  font-size: calc(13px * var(--text-scale));
   font-weight: 600;
 }
 
@@ -1869,7 +1869,7 @@ button.settings-row:disabled .settings-row-value {
 
 .list-sheet .hidden-category > span {
   min-width: 0;
-  font-size: 13px;
+  font-size: calc(13px * var(--text-scale));
   font-weight: 600;
 }
 
@@ -1888,7 +1888,7 @@ button.settings-row:disabled .settings-row-value {
 .mods-intro {
   margin: 14px 22px 2px;
   color: var(--muted);
-  font-size: 12px;
+  font-size: calc(12px * var(--text-scale));
   line-height: 1.5;
 }
 
@@ -1933,13 +1933,13 @@ button.settings-row:disabled .settings-row-value {
 
 .mod-row b,
 .mod-offer b {
-  font-size: 13px;
+  font-size: calc(13px * var(--text-scale));
 }
 
 .mod-row small {
   overflow: hidden;
   color: var(--muted);
-  font-size: 11px;
+  font-size: calc(11px * var(--text-scale));
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1982,7 +1982,7 @@ button.settings-row:disabled .settings-row-value {
 
 .mod-offer small {
   color: var(--muted);
-  font-size: 11px;
+  font-size: calc(11px * var(--text-scale));
   line-height: 1.4;
 }
 
@@ -1993,7 +1993,7 @@ button.settings-row:disabled .settings-row-value {
   border-radius: 10px;
   background: var(--soft);
   color: var(--ink);
-  font-size: 12px;
+  font-size: calc(12px * var(--text-scale));
   font-weight: 650;
 }
 
@@ -2028,7 +2028,7 @@ button.settings-row:disabled .settings-row-value {
   border: 0;
   background: none;
   color: var(--ink);
-  font-size: 13px;
+  font-size: calc(13px * var(--text-scale));
   font-weight: 600;
   text-align: left;
 }
@@ -2088,12 +2088,12 @@ button.settings-row:disabled .settings-row-value {
   flex-direction: column;
   gap: 2px;
   min-width: 0;
-  font-size: 13px;
+  font-size: calc(13px * var(--text-scale));
 }
 
 .editor .switch-row small {
   color: var(--muted);
-  font-size: 11px;
+  font-size: calc(11px * var(--text-scale));
   line-height: 1.35;
 }
 
@@ -2157,7 +2157,7 @@ button.settings-row:disabled .settings-row-value {
   border-radius: 11px;
   background: var(--ink);
   color: var(--on-ink);
-  font-size: 12px;
+  font-size: calc(12px * var(--text-scale));
   font-weight: 700;
 }
 
@@ -2171,7 +2171,7 @@ button.settings-row:disabled .settings-row-value {
 .reminder-later {
   min-height: 26px;
   padding: 0 4px;
-  font-size: 11px;
+  font-size: calc(11px * var(--text-scale));
   color: var(--muted);
 }
 
@@ -2189,7 +2189,7 @@ button.settings-row:disabled .settings-row-value {
 }
 
 .history-reminder.compact > b {
-  font-size: 12px;
+  font-size: calc(12px * var(--text-scale));
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2198,7 +2198,7 @@ button.settings-row:disabled .settings-row-value {
 .history-reminder.compact .text-button {
   min-height: 32px;
   padding: 0 6px;
-  font-size: 12px;
+  font-size: calc(12px * var(--text-scale));
   font-weight: 700;
 }
 
@@ -2208,7 +2208,7 @@ button.settings-row:disabled .settings-row-value {
 
 .access-sheet > h2 {
   margin: 6px 0 8px;
-  font-size: 18px;
+  font-size: calc(18px * var(--text-scale));
 }
 
 .access-sheet .qr {
@@ -2331,7 +2331,7 @@ button.settings-row:disabled .settings-row-value {
 
 .split-ordinal {
   color: var(--text-tertiary);
-  font-size: 13px;
+  font-size: calc(13px * var(--text-scale));
   font-weight: 700;
   text-align: center;
 }
@@ -2339,7 +2339,7 @@ button.settings-row:disabled .settings-row-value {
 .split-sheet .split-amount {
   margin: 0;
   padding: 12px;
-  font-size: 15px;
+  font-size: calc(15px * var(--text-scale));
   font-variant-numeric: tabular-nums;
   text-align: right;
 }
@@ -2368,7 +2368,7 @@ button.settings-row:disabled .settings-row-value {
   border-radius: 10px;
   background: var(--soft);
   color: var(--muted);
-  font-size: 11px;
+  font-size: calc(11px * var(--text-scale));
   font-weight: 700;
   white-space: nowrap;
 }
@@ -2391,7 +2391,7 @@ button.settings-row:disabled .settings-row-value {
   border: 0;
   background: none;
   color: var(--sage);
-  font-size: 13px;
+  font-size: calc(13px * var(--text-scale));
   font-weight: 700;
 }
 
@@ -2403,9 +2403,138 @@ button.settings-row:disabled .settings-row-value {
 .split-hint {
   margin: 6px 0 0;
   color: var(--muted);
-  font-size: 11px;
+  font-size: calc(11px * var(--text-scale));
 }
 
 .split-sheet .primary {
   margin-top: 12px;
+}
+
+/* Внешний вид из аккаунта человека (appearance.ts). Свой цвет подменяет акцентные токены: шалфейный — значения
+   по умолчанию выше, у остальных та же светлота и тот же контраст (OKLCH), меняется только оттенок. Графики берут
+   цвет из appearance.ts. Крупный текст увеличивает кегль интерфейса от 11 до 18px; цифры клавиатуры и итоги
+   и так крупные и остаются как есть. */
+:root[data-text-size="large"] {
+  --text-scale: 1.2;
+}
+
+:root:not([data-theme="dark"])[data-accent="terracotta"] {
+  --sage: #8e5845;
+  --accent-muted: #8e5845;
+  --soft: #f4e4de;
+  --focus: #8c4830;
+}
+
+:root[data-theme="dark"][data-accent="terracotta"] {
+  --sage: #eeb5a2;
+  --accent-muted: #c39585;
+  --focus: #eeb5a2;
+}
+
+:root:not([data-theme="dark"])[data-accent="sand"] {
+  --sage: #7f6335;
+  --accent-muted: #7f6335;
+  --soft: #efe7db;
+  --focus: #7a5613;
+}
+
+:root[data-theme="dark"][data-accent="sand"] {
+  --sage: #debf90;
+  --accent-muted: #b69d77;
+  --focus: #debf90;
+}
+
+:root:not([data-theme="dark"])[data-accent="blue"] {
+  --sage: #436c8f;
+  --accent-muted: #436c8f;
+  --soft: #dfeaf4;
+  --focus: #2a628e;
+}
+
+:root[data-theme="dark"][data-accent="blue"] {
+  --sage: #9ecaf0;
+  --accent-muted: #82a6c5;
+  --focus: #9ecaf0;
+}
+
+:root:not([data-theme="dark"])[data-accent="lilac"] {
+  --sage: #745d86;
+  --accent-muted: #745d86;
+  --soft: #ebe5f1;
+  --focus: #6d4f83;
+}
+
+:root[data-theme="dark"][data-accent="lilac"] {
+  --sage: #d3b8e8;
+  --accent-muted: #ad97be;
+  --focus: #d3b8e8;
+}
+
+:root:not([data-theme="dark"])[data-accent="graphite"] {
+  --sage: #63696e;
+  --accent-muted: #63696e;
+  --soft: #e6e8ea;
+  --focus: #585e66;
+}
+
+:root[data-theme="dark"][data-accent="graphite"] {
+  --sage: #bec5cd;
+  --accent-muted: #9ca2a8;
+  --focus: #bec5cd;
+}
+
+/* Переключатель из двух-трёх вариантов в шите: та же дорожка, что у «Неделя / Месяц» в аналитике. */
+.segmented {
+  display: grid;
+  grid-auto-columns: 1fr;
+  grid-auto-flow: column;
+  gap: 3px;
+  padding: 3px;
+  border-radius: 14px;
+  background: var(--soft);
+}
+
+.segmented button {
+  min-height: 44px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 11px;
+  background: transparent;
+  color: var(--muted);
+  font-size: calc(12px * var(--text-scale));
+  font-weight: 700;
+}
+
+.segmented button.selected {
+  background: var(--card);
+  color: var(--ink);
+  box-shadow: 0 1px 3px #00000012;
+}
+
+:root[data-theme="dark"] .segmented {
+  background: var(--card);
+}
+
+:root[data-theme="dark"] .segmented button.selected {
+  background: #2d2e2e;
+  box-shadow: inset 0 0 0 1px #343535;
+}
+
+.accent-swatch {
+  background: var(--swatch);
+}
+
+:root[data-theme="dark"] .accent-swatch {
+  background: var(--swatch-dark);
+}
+
+/* Точка своего цвета в строке «Внешний вид»: тот же акцент, которым окрашен интерфейс. */
+.accent-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: var(--sage);
+  vertical-align: 0;
 }

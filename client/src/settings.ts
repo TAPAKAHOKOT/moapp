@@ -1,3 +1,4 @@
+import { THEME_MIRROR } from './appearance'
 import { parseHistoryPreferences } from './history'
 import type { AccountSettings, AuthenticatedSession, MemberSettings, WorkspaceBootstrap } from './types'
 import { localDateKey } from './utils'
@@ -11,9 +12,6 @@ import { localDateKey } from './utils'
 
 /** Изменение настроек: `null` возвращает значение по умолчанию. */
 export type SettingsPatch<T> = { [K in keyof T]?: T[K] | null }
-
-/** Тема до входа и в первом кадре: копия темы аккаунта на этом телефоне. До переезда тема хранилась только здесь. */
-export const THEME_MIRROR = 'moapp:theme'
 
 const storage = (): Storage | null => {
   if (typeof localStorage === 'undefined') return null

@@ -179,10 +179,15 @@ export type WorkspaceSummary = {
 }
 
 export type ThemePreference = 'system' | 'light' | 'dark'
+/** Свой цвет интерфейса; шалфейный — исходный. Палитры — в appearance.ts и workspace-layout.css. */
+export type Accent = 'sage' | 'terracotta' | 'sand' | 'blue' | 'lilac' | 'graphite'
+export type TextSize = 'normal' | 'large'
 
 /** Личные настройки, общие для всех пространств человека. Хранятся в аккаунте, видит их только он сам. */
 export type AccountSettings = {
   theme?: ThemePreference
+  accent?: Accent
+  textSize?: TextSize
 }
 
 /** Свои настройки человека в одном пространстве. Фильтры истории — без строки поиска. */

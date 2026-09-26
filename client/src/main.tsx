@@ -1,6 +1,7 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import App from './App'
+import { applyAppearance, readAppearanceMirror } from './appearance'
 import { consumeCapabilityFromLocation } from './capability'
 import './styles.css'
 import './workspace-layout.css'
@@ -33,9 +34,11 @@ function currentTheme(): Theme {
   return document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light'
 }
 
-// Без явного выбора тема повторяет системную — телефон уже решил это за человека.
-const savedTheme = localStorage.getItem('moapp:theme')
-document.documentElement.dataset.theme = savedTheme === 'dark' || savedTheme === 'light' ? savedTheme : window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+// Первый кадр рисуется по копии внешнего вида аккаунта на этом телефоне. Без явного выбора тема повторяет
+// системную — телефон уже решил это за человека.
+const savedAppearance = readAppearanceMirror()
+document.documentElement.dataset.theme = savedAppearance.theme !== 'system' ? savedAppearance.theme : window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+applyAppearance(document.documentElement, savedAppearance)
 syncThemeColor(currentTheme())
 
 // App owns the theme preference. Keep the browser/PWA chrome in sync whenever

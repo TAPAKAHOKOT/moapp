@@ -2,7 +2,9 @@ import { startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useR
 import { appTimeZone, localInputToIso, workspaceCurrency } from './utils'
 import { WorkspaceApiError as ApiError, allowWorkspaceMutations, blockWorkspaceMutations, discardOutboxIssues, flushSettings, getBootstrap, getCardQueueStatus, getSession, listExpenses, listMods, logoutExpected, prepareInitialOrManualRecovery, probeServer, retryOutboxIssue, saveAccountSettings, setSessionContext, syncAllWorkspaces } from './workspace-api'
 import { cacheBootstrap, cacheProfile, migrateLegacyOfflineData, outboxStats, readCachedProfile, waitForWorkspaceOfflineWrites } from './workspace-offline'
-import { THEME_MIRROR, patchSettings } from './settings'
+import { patchSettings } from './settings'
+import { DEFAULT_APPEARANCE, appearanceOf, applyAppearance, readAppearanceMirror, writeAppearanceMirror } from './appearance'
+import type { Appearance } from './appearance'
 import { REMINDER_COMPACT_AFTER, applyMembershipLoss, beginLogout, chooseCachedWorkspace, closeCapability, createAppState, createIdentityCoordinator, createLoggedOutState, forgetKnownProfile, hydrateAppState, openLegacyClaim, readReminderMemory, reminderSnoozed, setActiveWorkspace, settlePendingLogout, snoozeReminder, updateWorkspace, writeReminderMemory } from './app-state'
 import type { AppState, ReminderMemory } from './app-state'
 import { createIdentityWithProbe, createWorkspaceWithProbe } from './access-flow'
@@ -22,14 +24,6 @@ import { ModsOverlay, ModsView } from './screens/Mods'
 import { CapabilityScreen, CreateWorkspaceSheet, LegacyClaimFlow, RecoverySave, RestrictedRecovery, SyncIssuesSheet, WorkspaceSwitcher } from './screens/Access'
 
 export type Tab = 'entry' | 'history' | 'analytics' | 'settings'
-
-// Копия темы аккаунта на этом телефоне: по ней рисуется первый кадр, пока сервер не ответил, и экран истёкшего входа.
-function readThemeMirror(): ThemePreference {
-  try {
-    const saved = localStorage.getItem(THEME_MIRROR)
-    return saved === 'dark' || saved === 'light' ? saved : 'system'
-  } catch { return 'system' }
-}
 
 function systemTheme(): Theme {
   return window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
@@ -181,11 +175,12 @@ export default function App({ capability = null }: { capability?: CapabilityInte
   const { toast: notice, notify: setNotice, dismiss: hideNotice } = useToast()
   const { confirm, confirmation } = useConfirm()
   const online=useOnlineStatus()
-  // Тема принадлежит аккаунту. Пока неизвестно, что в нём (сервер ещё не ответил, вход истёк, кэш старше настроек
-  // в аккаунте), — копия на этом телефоне; без профиля — как в системе.
-  const [themeMirror,setThemeMirror]=useState<ThemePreference>(readThemeMirror)
+  // Внешний вид принадлежит аккаунту. Пока неизвестно, что в нём (сервер ещё не ответил, вход истёк, кэш старше
+  // настроек в аккаунте), — копия на этом телефоне; без профиля — вид по умолчанию, тема как в системе.
+  const [appearanceMirror,setAppearanceMirror]=useState<Appearance>(readAppearanceMirror)
   const accountSettings=state.session?.authenticated?state.session.settings:undefined
-  const themePreference:ThemePreference=accountSettings?accountSettings.theme??'system':state.knownUserId?themeMirror:'system'
+  const appearance:Appearance=accountSettings?appearanceOf(accountSettings):state.knownUserId?appearanceMirror:DEFAULT_APPEARANCE
+  const themePreference:ThemePreference=appearance.theme
   const theme=useResolvedTheme(themePreference)
   const [debugFlag]=useState(readDebugFlag)
   const [updateWaiting,setUpdateWaiting]=useState(false)
@@ -317,19 +312,21 @@ export default function App({ capability = null }: { capability?: CapabilityInte
     return()=>item.dispose()
   },[])
   useEffect(()=>{document.documentElement.dataset.theme=theme},[theme])
+  // Свой цвет и размер текста меняют токены до отрисовки кадра — без вспышки прежнего цвета.
+  useLayoutEffect(()=>applyAppearance(document.documentElement,{accent:appearance.accent,textSize:appearance.textSize}),[appearance.accent,appearance.textSize])
   useEffect(()=>{
     if(!accountSettings)return
-    try{if(themePreference==='system')localStorage.removeItem(THEME_MIRROR);else localStorage.setItem(THEME_MIRROR,themePreference)}catch{/* копия только ускоряет первый кадр */}
-    setThemeMirror(themePreference)
-  },[Boolean(accountSettings),themePreference]) // eslint-disable-line react-hooks/exhaustive-deps
-  // Тема меняется в аккаунте: сразу на экране, в кэше профиля для запуска без сети и в очереди на сервер.
-  const changeTheme=useCallback((next:ThemePreference)=>{
+    writeAppearanceMirror(appearance)
+    setAppearanceMirror((current)=>current.theme===appearance.theme&&current.accent===appearance.accent&&current.textSize===appearance.textSize?current:appearance)
+  },[Boolean(accountSettings),appearance.theme,appearance.accent,appearance.textSize]) // eslint-disable-line react-hooks/exhaustive-deps
+  // Внешний вид меняется в аккаунте: сразу на экране, в кэше профиля для запуска без сети и в очереди на сервер.
+  const changeAppearance=useCallback((patch:Partial<Appearance>)=>{
     const current=stateRef.current.session
     if(!current?.authenticated)return
     const sameSession=(value:SessionState|null)=>value?.authenticated&&value.user.id===current.user.id&&value.currentSessionId===current.currentSessionId
-    updateState((value)=>sameSession(value.session)&&value.session?.authenticated?{...value,session:{...value.session,settings:patchSettings(value.session.settings,{theme:next})}}:value)
-    void cacheProfile(current.user.id,{...current,settings:patchSettings(current.settings,{theme:next})})
-    saveAccountSettings(current.user.id,{theme:next})
+    updateState((value)=>sameSession(value.session)&&value.session?.authenticated?{...value,session:{...value.session,settings:patchSettings(value.session.settings,patch)}}:value)
+    void cacheProfile(current.user.id,{...current,settings:patchSettings(current.settings,patch)})
+    saveAccountSettings(current.user.id,patch)
   },[updateState])
   useLayoutEffect(()=>{
     const node=pager.current
@@ -723,8 +720,8 @@ if(Math.abs(node.scrollLeft-pagerTarget.current)>1)node.scrollLeft=pagerTarget.c
     <main className="pager" ref={pager} onScroll={onPagerScroll} onPointerDown={()=>{stopPagerAnimation();pagerTarget.current=null}} onTouchStart={()=>{stopPagerAnimation();pagerTarget.current=null}}>
       <div className="page-slot" inert={tab!=='entry'} aria-hidden={tab!=='entry'}>{mountedTabs.includes('entry')&&<EntryView userId={auth.user.id} workspaceId={workspaceId} workspace={workspace} bootstrap={bootstrap} setBootstrap={setWorkspaceData} currentId={currentId} setCurrentId={setCurrentId} refreshPending={refreshPending} onDraftDirtyChange={setDraftDirty} active={tab==='entry'} newExpenseRequest={newExpenseRequest}/>}</div>
       <div className="page-slot" inert={tab!=='history'} aria-hidden={tab!=='history'}>{mountedTabs.includes('history')&&<HistoryView userId={auth.user.id} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} edit={editExpense} createNew={createNewExpense} refreshPending={refreshPending} inbox={historyInbox} reminder={historyReminder} timeZone={timeZone} older={historyOlder}/>}</div>
-      <div className="page-slot" inert={tab!=='analytics'} aria-hidden={tab!=='analytics'}>{mountedTabs.includes('analytics')&&<AnalyticsView userId={auth.user.id} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} theme={theme} online={serverAvailable} timeZone={timeZone}/>}</div>
-      <div className="page-slot" inert={tab!=='settings'} aria-hidden={tab!=='settings'}>{mountedTabs.includes('settings')&&<SettingsView user={auth} workspace={workspace} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} pendingCount={stats.total} refreshPending={refreshPending} onLogout={()=>void logoutCurrent()} theme={themePreference} onThemeChange={changeTheme} onSession={(next)=>hydrate(next,false,settingsIdentityEpoch)} online={serverAvailable} mods={mods} onOpenMods={()=>setModsOpen(true)} loadOlderExpenses={loadOlderExpenses}/>}</div>
+      <div className="page-slot" inert={tab!=='analytics'} aria-hidden={tab!=='analytics'}>{mountedTabs.includes('analytics')&&<AnalyticsView userId={auth.user.id} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} theme={theme} accent={appearance.accent} online={serverAvailable} timeZone={timeZone}/>}</div>
+      <div className="page-slot" inert={tab!=='settings'} aria-hidden={tab!=='settings'}>{mountedTabs.includes('settings')&&<SettingsView user={auth} workspace={workspace} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} pendingCount={stats.total} refreshPending={refreshPending} onLogout={()=>void logoutCurrent()} appearance={appearance} onAppearanceChange={changeAppearance} onSession={(next)=>hydrate(next,false,settingsIdentityEpoch)} online={serverAvailable} mods={mods} onOpenMods={()=>setModsOpen(true)} loadOlderExpenses={loadOlderExpenses}/>}</div>
     </main>
     <nav className="bottom-nav" aria-label="Основная навигация">{navigationTabs.map((item)=><button type="button" key={item.id} aria-current={tab===item.id?'page':undefined} aria-label={item.id==='history'&&reviewCount?`История: ${reviewCount} операций с карты ждут разбора`:item.label} className={tab===item.id?'active':''} onClick={()=>{if(tab!==item.id)tap(4);else if(item.id==='entry'&&currentId)setNewExpenseRequest((value)=>value+1);setTab(item.id)}}><span><NavIcon tab={item.id}/>{item.id==='history'&&reviewCount>0&&<b className="nav-badge">{reviewCount>99?'99+':reviewCount}</b>}</span><small>{item.label}</small></button>)}</nav>
     {modsOpen&&<ModsOverlay onClose={()=>setModsOpen(false)}><ModsView workspaceId={workspaceId} mods={mods} online={serverAvailable} onMods={updateMods} onBybitStatus={updateBybitStatus} onBybitSynced={reloadWorkspaceData} onStatementImported={(pendingCount)=>{updateQueueCount(pendingCount);reloadWorkspaceData()}} onOpenReview={openReview}/></ModsOverlay>}

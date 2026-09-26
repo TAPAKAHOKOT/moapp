@@ -1,6 +1,7 @@
 import { cacheProfile, clearUserOfflineData, clearWorkspaceOfflineData, outboxStats, readCachedBootstrap, readCachedProfile, waitForWorkspaceOfflineWrites } from './workspace-offline'
 import { blockWorkspaceMutations, isSessionContextChanged, logoutExpected, setSessionContext } from './workspace-api'
-import { THEME_MIRROR, withAccountSettings, withMemberSettings } from './settings'
+import { clearAppearanceMirror } from './appearance'
+import { withAccountSettings, withMemberSettings } from './settings'
 import type { CapabilityIntent, OutboxStats, SessionState, WorkspaceRuntime, WorkspaceSummary } from './types'
 
 export type AppPhase = 'checking' | 'guest' | 'known-user-locked' | 'legacy-claim' | 'restricted-recovery' | 'no-workspaces' | 'workspace' | 'capability'
@@ -83,8 +84,8 @@ function clearUserPreferences(userId: string, workspaceId?: string): void {
     if (key?.startsWith(prefix)) keys.push(key)
   }
   for (const key of keys) local.removeItem(key)
-  // Тема принадлежит аккаунту: после выхода телефон снова следует за системой.
-  if (workspaceId === undefined) { local.removeItem(activeKey(userId)); local.removeItem(THEME_MIRROR) }
+  // Внешний вид принадлежит аккаунту: после выхода телефон снова выглядит по умолчанию и следует за системой.
+  if (workspaceId === undefined) { local.removeItem(activeKey(userId)); clearAppearanceMirror() }
 }
 
 export function createAppState(capability: CapabilityIntent | null = null): AppState {
