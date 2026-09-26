@@ -30,6 +30,37 @@ export async function launch(kind = 'webkit', { colorScheme = 'light', viewport 
   return { browser, context, page, statePath }
 }
 
+// Часы страницы: каждый документ начинается сегодня в 12:34:00.000 по местному времени — одно и то же время у всех
+// прогонов одного дня (база стенда привязана к «сегодня 12:00», все её траты уже в прошлом). Дальше часы идут с
+// обычной скоростью, поэтому на карточке «Расхода» 12:34 держится минуту после каждой загрузки или перезагрузки, а снимки
+// «Расхода» снимаются в первые ~15 с.
+// Почему не clock.setFixedTime Playwright: Chart.js считает ход анимации по Date.now(), и при стоящих часах графики
+// «Аналитики» навсегда застывают в первом кадре (линия на нуле, пустой бублик). Здесь подменён только Date (new Date()
+// без аргументов и Date.now()); таймеры, requestAnimationFrame и performance.now — настоящие. Intl.DateTimeFormat без
+// даты взял бы настоящее время, но приложение всегда передаёт дату. Ставится до скриптов страницы в каждый документ.
+// Только для снимков: кадры реального времени (row-swipe, cards, стенд) снимаются на настоящих часах.
+export function pinnedNow() {
+  const now = new Date()
+  now.setHours(12, 34, 0, 0)
+  return now
+}
+export async function pinClock(context) {
+  await context.addInitScript((start) => {
+    const RealDate = Date
+    const shift = start - RealDate.now()
+    function PinnedDate(...args) {
+      if (!new.target) return new RealDate(RealDate.now() + shift).toString()
+      return args.length ? new RealDate(...args) : new RealDate(RealDate.now() + shift)
+    }
+    PinnedDate.prototype = RealDate.prototype
+    PinnedDate.now = () => RealDate.now() + shift
+    PinnedDate.parse = RealDate.parse
+    PinnedDate.UTC = RealDate.UTC
+    Object.defineProperty(PinnedDate, 'name', { value: 'Date' })
+    globalThis.Date = PinnedDate
+  }, pinnedNow().getTime())
+}
+
 // Первый запуск: node e2e/<script>.mjs 'http://localhost:5173/#/device/<token>' — ссылка из «Другие устройства».
 export async function acceptDeviceLink(page, context, statePath, url) {
   mkdirSync(dirname(statePath), { recursive: true })

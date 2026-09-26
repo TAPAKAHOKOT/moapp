@@ -1,18 +1,17 @@
 // Visual regression set: node regress.mjs <label> [device link]  → .shots/regress-<label>/*.png + log.json
 // Старые снимки и их имена не меняются (прежние эталоны остаются сравнимыми); новые состояния снимаются после них,
 // со сброшенного аккаунта, и называются по-своему. Аккаунт сбрасывается в начале и в конце прогона.
+// Часы каждой страницы начинаются сегодня в 12:34 (pinClock): время на карточке «Расхода» одно и то же во всех прогонах
+// одного дня, поэтому масок на снимках нет — сравнивается весь экран, в том числе открытые поверх шиты.
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { webkit } from 'playwright'
-import { launch, openApp, goTab, acceptDeviceLink, guard, pinLocalState, patchSettings, resetAccount, ALL_BLOCKS, BASE, SHOTS, sleep, touchDrag } from './common.mjs'
+import { launch, openApp, goTab, acceptDeviceLink, guard, pinLocalState, patchSettings, resetAccount, pinClock, pinnedNow, ALL_BLOCKS, BASE, SHOTS, sleep, touchDrag } from './common.mjs'
 guard(20 * 60_000, 'regress.mjs')
 const link = process.argv.find((arg) => arg.includes('#/device/'))
 const label = process.argv.slice(2).find((arg) => !arg.includes('#/device/')) ?? 'now'
 const dir = `${SHOTS}regress-${label}/`
 mkdirSync(dir, { recursive: true })
-// Дата на карточке «Расхода» показывает текущее время, и ширина чипа меняется с цифрами — маска на всю строку заголовка
-// карточки, чтобы её край не зависел от часов.
-const mask = (page) => [page.locator('.entry-card .topline')]
-const log = { label, base: BASE, settingsWidth: {}, historyEnd: {} }
+const log = { label, base: BASE, clock: pinnedNow().toString(), settingsWidth: {}, historyEnd: {} }
 const HISTORY = 1, ANALYTICS = 2
 
 // Ответы сервера с ошибкой видны в выводе: 429 от ограничителя частоты или 5xx портят снимки молча.
@@ -34,26 +33,33 @@ if (link) {
 }
 await resetAccount()
 
+// Телефон WebKit с входом, закреплённым хранилищем и часами на 12:34 — до первой загрузки страницы.
+async function phoneContext(scheme, viewport, tag) {
+  const opened = await launch('webkit', { colorScheme: scheme, viewport })
+  await pinLocalState(opened.context)
+  await pinClock(opened.context)
+  watchErrors(opened.page, `${tag}-${scheme}`)
+  return opened
+}
+
 async function phone(scheme, viewport, tag) {
-  const { browser, context, page } = await launch('webkit', { colorScheme: scheme, viewport })
-  await pinLocalState(context)
-  watchErrors(page, `${tag}-${scheme}`)
+  const { browser, page } = await phoneContext(scheme, viewport, tag)
   await openApp(page)
   await sleep(300)
-  await page.screenshot({ path: `${dir}${tag}-${scheme}-entry.png`, mask: mask(page) })
+  await page.screenshot({ path: `${dir}${tag}-${scheme}-entry.png` })
   await touchDrag(page, '.swipe-area', { x: 60, y: 150 }, { x: 330, y: 150 }, { steps: 10, stepDelay: 30 })
   await sleep(700)
-  await page.screenshot({ path: `${dir}${tag}-${scheme}-entry-edit.png`, mask: mask(page) })
+  await page.screenshot({ path: `${dir}${tag}-${scheme}-entry-edit.png` })
   await touchDrag(page, '.swipe-area', { x: 330, y: 150 }, { x: 40, y: 150 }, { steps: 10, stepDelay: 30 })
   await sleep(700)
   await page.locator('.entry-lower-live .tag-strip .extra-add').click()
   await sleep(500)
-  await page.screenshot({ path: `${dir}${tag}-${scheme}-tag-sheet.png`, mask: mask(page) })
+  await page.screenshot({ path: `${dir}${tag}-${scheme}-tag-sheet.png` })
   await page.locator('.tag-sheet .icon-button').click()
   await sleep(400)
   await page.locator('.main-categories button', { hasText: 'Ещё' }).click()
   await sleep(500)
-  await page.screenshot({ path: `${dir}${tag}-${scheme}-category-sheet.png`, mask: mask(page) })
+  await page.screenshot({ path: `${dir}${tag}-${scheme}-category-sheet.png` })
   await page.locator('.bottom-sheet .icon-button').click()
   await sleep(400)
   await goTab(page, 'История')
@@ -104,6 +110,7 @@ for (const scheme of ['light', 'dark']) {
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, colorScheme: scheme, serviceWorkers: 'block' })
   context.setDefaultTimeout(15000)
   context.setDefaultNavigationTimeout(20000)
+  await pinClock(context)
   const page = await context.newPage()
   await page.goto(BASE)
   await page.waitForSelector('.empty-state')
@@ -116,12 +123,10 @@ for (const scheme of ['light', 'dark']) {
 }
 await browser.close()
 {
-  const { browser, context, page } = await launch('webkit', { colorScheme: 'light', viewport: { width: 1280, height: 800 } })
-  await pinLocalState(context)
-  watchErrors(page, 'd1280-light')
+  const { browser, page } = await phoneContext('light', { width: 1280, height: 800 }, 'd1280')
   await openApp(page)
   await sleep(300)
-  await page.screenshot({ path: `${dir}d1280-light-entry.png`, mask: mask(page) })
+  await page.screenshot({ path: `${dir}d1280-light-entry.png` })
   await goTab(page, 'Настройки')
   await sleep(600)
   await logSettingsWidth(page, 'd1280-light')
@@ -158,6 +163,7 @@ const rowCenter = (page, index) => page.evaluate((index) => {
 // Аналитика ждёт ответа сервера, график и число в шапке доезжают за 250 мс — пауза с запасом, как у старых снимков.
 const ANALYTICS_SETTLE = 1600
 
+// После перезагрузки часы снова начинаются с 12:34: init-скрипт pinClock ставится в каждый новый документ.
 async function reloadApp(page) {
   await page.reload()
   await page.waitForSelector('.app-shell', { timeout: 20000 })
@@ -166,10 +172,8 @@ async function reloadApp(page) {
 
 // Полный набор новых состояний для 393×659 (светлая и тёмная тема); на других экранах — только прокрутка и жесты «Истории».
 async function extras(scheme, viewport, tag, { full }) {
-  const { browser, context, page } = await launch('webkit', { colorScheme: scheme, viewport })
-  await pinLocalState(context)
-  watchErrors(page, `${tag}-${scheme}`)
-  const shot = (name, options = {}) => page.screenshot({ path: `${dir}${tag}-${scheme}-${name}.png`, ...options })
+  const { browser, page } = await phoneContext(scheme, viewport, tag)
+  const shot = (name) => page.screenshot({ path: `${dir}${tag}-${scheme}-${name}.png` })
   await openApp(page)
   await sleep(300)
 
@@ -210,7 +214,7 @@ async function extras(scheme, viewport, tag, { full }) {
       await sleep(name === 'analytics' ? ANALYTICS_SETTLE : 300)
       await page.locator('.screen-edit-open').click()
       await sleep(1000)
-      await shot(`${name}-arrange`, name === 'entry' ? { mask: mask(page) } : {})
+      await shot(`${name}-arrange`)
       await page.locator('.screen-edit-done').click()
       await sleep(700)
     }
@@ -218,7 +222,7 @@ async function extras(scheme, viewport, tag, { full }) {
     // Все новые блоки «Расхода» и «Аналитики»; аналитика — вся лента шагами по 500 px.
     await patchSettings(page, ALL_BLOCKS)
     await reloadApp(page)
-    await shot('entry-allblocks', { mask: mask(page) })
+    await shot('entry-allblocks')
     await goTab(page, 'Аналитика')
     await sleep(ANALYTICS_SETTLE)
     const size = await page.evaluate(() => { const slot = document.querySelectorAll('.page-slot')[2]; return { height: slot.scrollHeight, view: slot.clientHeight } })
@@ -234,7 +238,7 @@ async function extras(scheme, viewport, tag, { full }) {
     // Крупный текст: «Расход», «История», «Аналитика».
     await patchSettings(page, { entryBlocks: null, analyticsBlocks: null, textSize: 'large' })
     await reloadApp(page)
-    await shot('entry-large', { mask: mask(page) })
+    await shot('entry-large')
     await goTab(page, 'История')
     await sleep(500)
     await shot('history-large')
