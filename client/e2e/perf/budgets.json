@@ -1,0 +1,10 @@
+{
+  "webkitWorstFrameMs": 60,
+  "swipeStallMs": 100,
+  "tabSwitch": { "commits": 3, "appRenders": 1, "chartRenders": 0, "hiddenScreenRenders": 0 },
+  "save": { "historyRowRenders": 1, "chartRenders": 20 },
+  "filter": { "chartRenders": 0 },
+  "chromiumX4SaveScriptMs": 300,
+  "historyNodesAfterOpen": 3500,
+  "documentWidthPx": 390
+}
