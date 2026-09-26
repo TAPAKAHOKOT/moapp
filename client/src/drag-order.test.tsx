@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { useRef } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { useDragOrder } from './ui'
+import { useDragOrder, useFlip } from './ui'
 
 // Раскладка без браузера: у каждого элемента со своим data-drag-id — выдуманная рамка по вертикали.
 const rects: Record<string, [number, number]> = { a: [0, 40], b: [50, 130], c: [140, 180], inner1: [60, 70], inner2: [80, 90] }
@@ -55,5 +56,36 @@ describe('dragging to reorder', () => {
     press('c', 150)
     lift('c')
     expect(reorder).not.toHaveBeenCalled()
+  })
+})
+
+// Блоки стоят столбиком по 50 px: место элемента — его номер среди соседей.
+function Column({ order }: { order: string[] }) {
+  const root = useRef<HTMLDivElement>(null)
+  useFlip(root, true)
+  return <div ref={root}>{order.map((id) => <div key={id} data-flip-id={id} data-testid={`block-${id}`}/>)}</div>
+}
+
+describe('smooth rearrangement', () => {
+  afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.useRealTimers() })
+
+  it('lets a block that moved glide from where it stood and end exactly in place', () => {
+    vi.useFakeTimers({ toFake: ['requestAnimationFrame', 'cancelAnimationFrame', 'performance'] })
+    vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+      const node = this as HTMLElement
+      const top = node.dataset.flipId ? [...node.parentElement!.children].indexOf(node) * 50 : 0
+      return { top, bottom: top + 40, left: 0, right: 300, width: 300, height: 40, x: 0, y: top, toJSON: () => ({}) } as DOMRect
+    })
+    const { rerender } = render(<Column order={['a', 'b', 'c']}/>)
+    rerender(<Column order={['b', 'c', 'a']}/>)
+    // Сразу после перестановки блоки стоят там, где были, и оттуда едут.
+    expect(screen.getByTestId('block-a').style.translate).toBe('0px -100px')
+    expect(screen.getByTestId('block-b').style.translate).toBe('0px 50px')
+    act(() => { vi.advanceTimersByTime(120) })
+    const halfway = Number.parseFloat(screen.getByTestId('block-a').style.translate.split(' ')[1]!)
+    expect(halfway).toBeGreaterThan(-100)
+    expect(halfway).toBeLessThan(0)
+    act(() => { vi.advanceTimersByTime(400) })
+    expect(['a', 'b', 'c'].map((id) => screen.getByTestId(`block-${id}`).style.translate)).toEqual(['', '', ''])
   })
 })

@@ -381,6 +381,96 @@ export function ListSheet({ title, onClose, dismissible = true, children }: { ti
   </section></div>
 }
 
+const FLIP_MS = 240
+const flipEasing = (t: number) => 1 - (1 - t) ** 3
+
+// Плавная перестановка в режиме «Настройка экрана». После каждой перерисовки каждый элемент с data-flip-id, который
+// оказался на новом месте, доезжает туда со старого за четверть секунды; рамка и заготовка одного блока носят один id,
+// поэтому убранный блок уезжает к пунктиру, а возвращённый приезжает от него. Анимация покадровая и через свойство
+// translate, а не transition: на iPhone ускоренный CSS-переход терял содержимое слоя на первом кадре, а transform
+// занят перетаскиванием. Вложенные элементы (плитки в блоке «Плитки») меряются от своего блока, чтобы не ехать дважды.
+// Пока что-то поднято пальцем, позиции только запоминаются: блок, брошенный пальцем, доезжает от места, где его отпустили.
+export const FLIP_SNAPSHOT = 'moapp:flip-snapshot'
+
+export function useFlip(rootRef: React.RefObject<HTMLElement | null>, enabled: boolean) {
+  type Point = { x: number; y: number }
+  const memory = useRef({ positions: new Map<string, Point>(), running: new Map<HTMLElement, { from: Point; started: number }>(), frame: 0 })
+  const measure = (root: HTMLElement) => {
+    const measured = new Map<string, Point>()
+    for (const node of root.querySelectorAll<HTMLElement>('[data-flip-id]')) {
+      const parent = node.parentElement?.closest<HTMLElement>('[data-flip-id]')
+      const base = (parent && root.contains(parent) ? parent : root).getBoundingClientRect()
+      const rect = node.getBoundingClientRect()
+      measured.set(node.dataset.flipId!, { x: rect.left - base.left, y: rect.top - base.top })
+    }
+    return measured
+  }
+  // Список перерисовывается во время перетаскивания сам, без экрана, и экран не знает, где элемент бросили. Перед тем
+  // как поставить новый порядок, список просит запомнить, где всё видно сейчас (FLIP_SNAPSHOT), — брошенный блок
+  // доезжает от пальца, а не прыгает к старому месту.
+  useEffect(() => {
+    const root = rootRef.current
+    if (!root || !enabled) return
+    const snapshot = () => {
+      const flip = memory.current
+      flip.positions = measure(root)
+      for (const node of flip.running.keys()) node.style.translate = ''
+      flip.running.clear()
+      cancelAnimationFrame(flip.frame)
+      flip.frame = 0
+    }
+    root.addEventListener(FLIP_SNAPSHOT, snapshot)
+    return () => root.removeEventListener(FLIP_SNAPSHOT, snapshot)
+  }, [rootRef, enabled])
+  useLayoutEffect(() => {
+    const root = rootRef.current
+    const flip = memory.current
+    const now = performance.now()
+    // Где элемент виден сейчас, с недоигранной анимацией, — от этого места он и поедет дальше.
+    const visual = new Map<string, Point>()
+    for (const [node, run] of flip.running) {
+      const rest = run.started ? 1 - flipEasing(Math.min(1, (now - run.started) / FLIP_MS)) : 1
+      visual.set(node.dataset.flipId!, { x: run.from.x * rest, y: run.from.y * rest })
+      node.style.translate = ''
+    }
+    flip.running.clear()
+    cancelAnimationFrame(flip.frame)
+    flip.frame = 0
+    if (!root || !enabled || prefersReducedMotion()) { flip.positions.clear(); return }
+    const nodes = Array.from(root.querySelectorAll<HTMLElement>('[data-flip-id]'))
+    const measured = measure(root)
+    const before = flip.positions
+    flip.positions = measured
+    if (root.querySelector('.lifted')) return
+    for (const node of nodes) {
+      const id = node.dataset.flipId!
+      const was = before.get(id)
+      if (!was) continue
+      const now = measured.get(id)!
+      const offset = visual.get(id) ?? { x: 0, y: 0 }
+      const from = { x: was.x + offset.x - now.x, y: was.y + offset.y - now.y }
+      if (Math.abs(from.x) < 0.5 && Math.abs(from.y) < 0.5) continue
+      node.style.translate = `${from.x}px ${from.y}px`
+      flip.running.set(node, { from, started: 0 })
+    }
+    if (!flip.running.size) return
+    // Часы идут с первого кадра, а не с перерисовки: тяжёлая перерисовка экрана (история на сотни строк) иначе съедала
+    // бы начало пути, и блок прыгал бы на треть дороги.
+    const step = (time: number) => {
+      for (const [node, run] of flip.running) {
+        if (!run.started) run.started = time
+        const progress = Math.min(1, (time - run.started) / FLIP_MS)
+        const rest = 1 - flipEasing(progress)
+        node.style.translate = progress < 1 ? `${run.from.x * rest}px ${run.from.y * rest}px` : ''
+        if (progress >= 1) flip.running.delete(node)
+      }
+      flip.frame = flip.running.size ? requestAnimationFrame(step) : 0
+    }
+    flip.frame = requestAnimationFrame(step)
+  })
+  useEffect(() => () => cancelAnimationFrame(memory.current.frame), [])
+}
+
 export type DragAxis = 'x' | 'y' | 'grid'
 
 type Slot = { id: string; rect: DOMRect }
@@ -499,6 +589,7 @@ export function useDragOrder<T extends { id: string }>({ items, axis = 'y', disa
     const index = target.current
     if (!grab) return
     const next = lifted && index !== null ? orderAt(grab.id, index) : null
+    if (commit && next) listRef.current?.dispatchEvent(new Event(FLIP_SNAPSHOT, { bubbles: true }))
     reset()
     if (commit && next && next.some((id, at) => id !== items[at]?.id)) onReorder(next)
   }
@@ -519,9 +610,9 @@ export function useDragOrder<T extends { id: string }>({ items, axis = 'y', disa
 }
 
 // Список с ручкой ≡ у каждой строки — вместо двух стрелок на строку.
-export function DragList<T extends { id: string }>({ items, disabled = false, className, onReorder, render }: { items: T[]; disabled?: boolean; className?: string; onReorder: (ids: string[]) => void; render: (item: T) => React.ReactNode }) {
+export function DragList<T extends { id: string }>({ items, disabled = false, className, flip = false, onReorder, render }: { items: T[]; disabled?: boolean; className?: string; flip?: boolean; onReorder: (ids: string[]) => void; render: (item: T) => React.ReactNode }) {
   const drag = useDragOrder({ items, disabled, onReorder })
-  return <div ref={drag.listRef} className={`drag-list${className ? ` ${className}` : ''}${drag.lifted ? ' dragging' : ''}`}>{drag.shown.map((item) => <div key={item.id} data-drag-id={item.id} className={`drag-row${drag.lifted === item.id ? ' lifted' : ''}`}>
+  return <div ref={drag.listRef} className={`drag-list${className ? ` ${className}` : ''}${drag.lifted ? ' dragging' : ''}`}>{drag.shown.map((item) => <div key={item.id} data-drag-id={item.id} data-flip-id={flip ? item.id : undefined} className={`drag-row${drag.lifted === item.id ? ' lifted' : ''}`}>
     {render(item)}
     {items.length > 1 && <span className="drag-handle" role="button" tabIndex={disabled ? -1 : 0} aria-label="Перетащить, чтобы изменить порядок" aria-disabled={disabled} {...drag.handle(item.id)} onKeyDown={(event) => drag.keyMove(event, item.id)}>≡</span>}
   </div>)}</div>
@@ -611,15 +702,18 @@ export const GripIcon = () => <svg viewBox="0 0 12 12" width="12" height="12" fi
 // Блок в режиме «Настройка экрана». Стоящий виден как есть: вокруг рамка, в левом углу «−» (если блок можно убрать),
 // в правом ≡ (если его можно переставить). Тело не нажимается — кроме блоков, которые раскладываются прямо здесь
 // (`live`: плитки и теги). Убранный остаётся пунктирной заготовкой «+ Название» — по ней он и возвращается.
-export function EditBlock({ name, hint, shown, onToggle = () => {}, removable = true, move, live = false, className, children }: {
-  name: string; hint?: string; shown: boolean; onToggle?: () => void; removable?: boolean; move?: DragHandle; live?: boolean; className?: string; children?: React.ReactNode
+export function EditBlock({ name, hint, shown, onToggle = () => {}, removable = true, move, live = false, flipId, className, children }: {
+  name: string; hint?: string; shown: boolean; onToggle?: () => void; removable?: boolean; move?: DragHandle; live?: boolean
+  /** Один и тот же у рамки и у заготовки: убранный блок плавно уезжает туда, где ждёт пунктиром (useFlip). */
+  flipId?: string
+  className?: string; children?: React.ReactNode
 }) {
   const classes = (base: string) => className ? `${base} ${className}` : base
-  if (!shown) return <button type="button" className={classes('edit-slot')} aria-label={`Вернуть «${name}»`} onClick={() => { tap(4); onToggle() }}>
+  if (!shown) return <button type="button" className={classes('edit-slot')} data-flip-id={flipId} aria-label={`Вернуть «${name}»`} onClick={() => { tap(4); onToggle() }}>
     <span className="edit-sign" aria-hidden="true"><SignIcon plus/></span>
     <span className="edit-slot-text"><b>{name}</b>{hint && <small>{hint}</small>}</span>
   </button>
-  return <div className={classes('edit-block')}>
+  return <div className={classes('edit-block')} data-flip-id={flipId}>
     <div className="edit-block-body" inert={!live}>{children}</div>
     {removable && <RemoveBadge name={name} onRemove={onToggle}/>}
     {move && <span className="edit-move" role="button" tabIndex={0} aria-label={`Переставить «${name}»`} {...move}><span aria-hidden="true"><GripIcon/></span></span>}

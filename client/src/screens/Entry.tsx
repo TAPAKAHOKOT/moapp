@@ -5,7 +5,7 @@ import { patchSettings } from '../settings'
 import type { SettingsPatch } from '../settings'
 import type { AccountSettings, BlockLayout, Category, Currency, Expense, ScreenOrder, Tag, WorkspaceSummary } from '../types'
 import { amountToMinor, applyKeypad, cachedNumberFormat, formatAmountInput, isoToLocalInput, localDateKey, localInputToIso, swipeDirection, workspaceCurrency } from '../utils'
-import { CategoryMark, ChevronIcon, CurrencySheet, EditBlock, GridIcon, KeypadIcon, MoreSheet, RemoveBadge, SignIcon, Toast, TrashIcon, prefersReducedMotion, tap, useConfirm, useDialog, useDragOrder, useHold, useToast } from '../ui'
+import { CategoryMark, ChevronIcon, CurrencySheet, EditBlock, GridIcon, KeypadIcon, MoreSheet, RemoveBadge, SignIcon, Toast, TrashIcon, prefersReducedMotion, tap, useConfirm, useDialog, useDragOrder, useFlip, useHold, useToast } from '../ui'
 import { amountSize, formatAnalyticsAmount, formatEntryDate, formatShortWeekday, inputFromExpense, money, pluralRu } from '../format'
 import { historyTotals } from '../history'
 import type { Bootstrap } from '../format'
@@ -262,6 +262,8 @@ export function EntryView({ userId, workspaceId, workspace, bootstrap, setBootst
   // Удержание плиток или ряда заметки и тегов открывает настройку экрана; клавиатура и карточка суммы — нет.
   const holdRef = useHold(editing ? undefined : () => onEditScreen('entry', 'hold'), (target) => Boolean(target.closest('.categories, .extras-row, .entry-today, .entry-usual')) && !target.closest('.entry-lower-preview'))
   const sectionRef = useCallback((node: HTMLElement | null) => { entryRef.current = node; holdRef(node) }, [holdRef])
+  // В настройке блоки, плитки и теги доезжают до новых мест плавно.
+  useFlip(entryRef, editing)
   const trackRef = useRef<HTMLDivElement>(null)
   const actionsRef = useRef<HTMLDivElement>(null)
   const lowerLiveRef = useRef<HTMLDivElement>(null)
@@ -749,7 +751,7 @@ export function EntryView({ userId, workspaceId, workspace, bootstrap, setBootst
     return()=>window.removeEventListener('keydown',handle)
   },[active,editing,physicalKey])
   const publishTag = (tag: Tag) => setBootstrap((data) => ({ ...data, tags: [tag, ...(data.tags ?? []).filter((item) => item.id !== tag.id)] }))
-  const saveRow = <div className="entry-save" inert={editing}><button type="button" className="primary" disabled={!save.canSave || saving} onClick={() => void submitExpense()}>{saving ? 'Сохраняем…' : save.label}</button>{current && <button type="button" className={`sheet-cancel${dirty && !saving ? '' : ' ghost'}`} disabled={!dirty || saving} aria-hidden={!dirty || saving} tabIndex={dirty && !saving ? undefined : -1} onClick={cancelEdit}>Отменить</button>}</div>
+  const saveRow = <div className="entry-save" inert={editing} data-flip-id="save"><button type="button" className="primary" disabled={!save.canSave || saving} onClick={() => void submitExpense()}>{saving ? 'Сохраняем…' : save.label}</button>{current && <button type="button" className={`sheet-cancel${dirty && !saving ? '' : ' ghost'}`} disabled={!dirty || saving} aria-hidden={!dirty || saving} tabIndex={dirty && !saving ? undefined : -1} onClick={cancelEdit}>Отменить</button>}</div>
   const usualItems = useMemo(() => usualExpenses(bootstrap.expenses, bootstrap.categories, bootstrap.tags ?? []), [bootstrap.expenses, bootstrap.categories, bootstrap.tags])
   const pickUsual = (item: UsualExpense) => {
     tap(6)
@@ -822,11 +824,11 @@ export function EntryArrange({ blocks, onBlocks, categories, categoryOrder, tags
     : id === 'note' ? <span className="tag-add extra-add">＋ Заметка</span>
     : fixedBody(id)
   return <div className="entry-arrange">
-    <div ref={drag.listRef} className="arrange-list">{drag.shown.map((block) => <div key={block.id} data-drag-id={block.id} className={`arrange-slot${drag.lifted === block.id ? ' lifted' : ''}`}>
+    <div ref={drag.listRef} className="arrange-list">{drag.shown.map((block) => <div key={block.id} data-drag-id={block.id} data-flip-id={block.id} className={`arrange-slot${drag.lifted === block.id ? ' lifted' : ''}`}>
       <EditBlock name={block.name} shown removable={!block.fixed} live={block.id === 'tiles' || block.id === 'tags'} className={`arrange-${block.id}`} onToggle={() => onBlocks(hideBlock(blocks, block.id))}
         move={blocks.shown.length > 1 ? { ...drag.handle(block.id), onKeyDown: (event) => drag.keyMove(event, block.id) } : undefined}>{body(block.id)}</EditBlock>
     </div>)}</div>
-    {blocks.hidden.map((block) => <EditBlock key={block.id} name={block.name} hint={block.hint} shown={false} onToggle={() => onBlocks(showBlock(blocks, block.id))}/>)}
+    {blocks.hidden.map((block) => <EditBlock key={block.id} name={block.name} hint={block.hint} shown={false} flipId={block.id} onToggle={() => onBlocks(showBlock(blocks, block.id))}/>)}
   </div>
 }
 
@@ -837,11 +839,11 @@ export function TilesArrange({ categories, order, onChange }: { categories: Cate
   const drag = useDragOrder({ items: layout.shown, axis: 'grid', onReorder: (ids) => onChange(toScreenOrder(reorderGroup(layout, 'shown', ids))) })
   return <div className="categories arranging">
     <div ref={drag.listRef} className="main-categories">
-      {drag.shown.map((category) => <div key={category.id} data-drag-id={category.id} className={`tile-slot${drag.lifted === category.id ? ' lifted' : ''}`}>
+      {drag.shown.map((category) => <div key={category.id} data-drag-id={category.id} data-flip-id={`tile:${category.id}`} className={`tile-slot${drag.lifted === category.id ? ' lifted' : ''}`}>
         <button type="button" className="tile-grab" aria-label={`Переставить плитку «${category.name}»`} {...drag.handle(category.id)} onKeyDown={(event) => drag.keyMove(event, category.id)}><CategoryMark category={category}/><span>{category.name}</span></button>
         <RemoveBadge name={category.name} label={`Убрать «${category.name}» за «Ещё»`} onRemove={() => onChange(toScreenOrder(moveToMore(layout, category.id)))}/>
       </div>)}
-      {layout.more.length > 0 && <button type="button" className="tile-more" onClick={() => { tap(4); setMore(true) }}><span className="edit-sign" aria-hidden="true"><SignIcon plus/></span><span>Ещё {layout.more.length}</span></button>}
+      {layout.more.length > 0 && <button type="button" className="tile-more" data-flip-id="tile:more" onClick={() => { tap(4); setMore(true) }}><span className="edit-sign" aria-hidden="true"><SignIcon plus/></span><span>Ещё {layout.more.length}</span></button>}
     </div>
     {more && <MoreSheet title="За плиткой «Ещё»" items={layout.more.map((category) => ({ id: category.id, name: category.name, mark: <CategoryMark category={category}/> }))} onAdd={(id) => onChange(toScreenOrder(moveToShown(layout, id)))} onClose={() => setMore(false)}/>}
   </div>
@@ -853,11 +855,11 @@ export function TagsArrange({ tags, order, onChange }: { tags: Tag[]; order?: Sc
   const [more, setMore] = useState(false)
   const drag = useDragOrder({ items: layout.shown, axis: 'grid', onReorder: (ids) => onChange(toScreenOrder(reorderGroup(layout, 'shown', ids))) })
   return <div ref={drag.listRef} className="tag-strip arranging">
-    {drag.shown.map((tag) => <span key={tag.id} data-drag-id={tag.id} className={`tag-slot${drag.lifted === tag.id ? ' lifted' : ''}`} style={tagStyle(tag)}>
+    {drag.shown.map((tag) => <span key={tag.id} data-drag-id={tag.id} data-flip-id={`tag:${tag.id}`} className={`tag-slot${drag.lifted === tag.id ? ' lifted' : ''}`} style={tagStyle(tag)}>
       <button type="button" className="tag-grab" aria-label={`Переставить тег «${tag.name}»`} {...drag.handle(tag.id)} onKeyDown={(event) => drag.keyMove(event, tag.id)}>{tag.name}</button>
       <button type="button" className="tag-remove" aria-label={`Убрать «${tag.name}» за «Ещё»`} onPointerDown={(event) => event.stopPropagation()} onClick={() => { tap(4); onChange(toScreenOrder(moveToMore(layout, tag.id))) }}><SignIcon/></button>
     </span>)}
-    {layout.more.length > 0 ? <button type="button" className="tag-add extra-add" onClick={() => { tap(4); setMore(true) }}>＋ Ещё {layout.more.length}</button>
+    {layout.more.length > 0 ? <button type="button" className="tag-add extra-add" data-flip-id="tag:more" onClick={() => { tap(4); setMore(true) }}>＋ Ещё {layout.more.length}</button>
       : !tags.length && <span className="tag-add extra-add">Тегов пока нет</span>}
     {more && <MoreSheet title="Теги за «Ещё»" items={layout.more.map((tag) => ({ id: tag.id, name: tag.name, mark: <i className="tag-dot" style={tagStyle(tag)}/> }))} onAdd={(id) => onChange(toScreenOrder(moveToShown(layout, id)))} onClose={() => setMore(false)}/>}
   </div>

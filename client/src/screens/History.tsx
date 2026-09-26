@@ -6,7 +6,7 @@ import type { AccountSettings, BlockLayout, Category, Currency, Expense, Tag } f
 import { appTimeZone, cachedDateTimeFormat, localDateKey, monthDateRange, shiftDateKey, weekdayFromDateKey, workspaceCurrency } from '../utils'
 import { HISTORY_PERIOD_LABELS, defaultHistoryPreferences, expenseTagNames, filterHistoryExpenses, historyTotals, parseHistoryPreferences } from '../history'
 import type { HistoryPeriod, HistoryPreferences } from '../history'
-import { CardMark, CategoryMark, ChevronIcon, EditBlock, HOLD_MS, LockIcon, MultiSelect, SearchIcon, Toast, TrashIcon, tap, useDialog, useDragOrder, useHold, useOverflowHint, useToast } from '../ui'
+import { CardMark, CategoryMark, ChevronIcon, EditBlock, HOLD_MS, LockIcon, MultiSelect, SearchIcon, Toast, TrashIcon, tap, useDialog, useDragOrder, useFlip, useHold, useOverflowHint, useToast } from '../ui'
 import { formatAnalyticsAmount, formatDateRange, formatHistoryDate, money, pluralRu } from '../format'
 import type { Bootstrap } from '../format'
 import { sortTags } from '../tags'
@@ -273,7 +273,7 @@ export const HistoryView = memo(function HistoryView({ userId, workspaceId, boot
   }, [editing])
   const editBlock = (id: string, withHint = false) => {
     const block = blockInfo('history', id)
-    return { name: block.name, hint: withHint ? block.hint : undefined, shown: isShown(historyBlocks, id), onToggle: () => onScreensChange({ historyBlocks: toBlockLayout(toggleBlock(historyBlocks, id)) }) }
+    return { name: block.name, hint: withHint ? block.hint : undefined, shown: isShown(historyBlocks, id), flipId: id, onToggle: () => onScreensChange({ historyBlocks: toBlockLayout(toggleBlock(historyBlocks, id)) }) }
   }
   // Всё производное от данных и фильтров считается один раз на их изменение: вкладка остаётся смонтированной,
   // пока открыто пространство, и без мемоизации каждый рендер приложения (например свайп по расходам на экране
@@ -329,6 +329,8 @@ export const HistoryView = memo(function HistoryView({ userId, workspaceId, boot
   // Удержание блоков над списком и даты дня открывает настройку; у самих записей удержание — выбор нескольких.
   const holdRef = useHold(!editing && activeExpenses.length > 0 ? () => onEditScreen('history', 'hold') : undefined, (target) => Boolean(target.closest('.history-toolbar, .history-date')))
   const sectionRef = useCallback((node: HTMLElement | null) => { pageRef.current = node; holdRef(node) }, [holdRef])
+  // В настройке блоки и всё, что под ними, доезжают до новых мест плавно.
+  useFlip(pageRef, editing)
   // Изменённые фильтры уходят в аккаунт; то, с чем экран открылся, заново не отправляется.
   const savedFilters = useRef(JSON.stringify({ ...filters, query: undefined }))
   useEffect(() => {
@@ -477,8 +479,8 @@ export const HistoryView = memo(function HistoryView({ userId, workspaceId, boot
   return <section ref={sectionRef} className={`page history-page${editing ? ' arranging' : ''}`}>
     {editing
       ? <div ref={toolbarDrag.listRef} className="history-toolbar">
-        {toolbarDrag.shown.map((block) => <div key={block.id} data-drag-id={block.id} className={`arrange-slot${toolbarDrag.lifted === block.id ? ' lifted' : ''}`}>
-          <EditBlock {...editBlock(block.id, true)} move={toolbarBlocks.length > 1 ? { ...toolbarDrag.handle(block.id), onKeyDown: (event) => toolbarDrag.keyMove(event, block.id) } : undefined}>{block.id === 'filters' ? <>{chips}{search}</> : totalLine}</EditBlock>
+        {toolbarDrag.shown.map((block) => <div key={block.id} data-drag-id={block.id} data-flip-id={block.id} className={`arrange-slot${toolbarDrag.lifted === block.id ? ' lifted' : ''}`}>
+          <EditBlock {...editBlock(block.id, true)} flipId={undefined} move={toolbarBlocks.length > 1 ? { ...toolbarDrag.handle(block.id), onKeyDown: (event) => toolbarDrag.keyMove(event, block.id) } : undefined}>{block.id === 'filters' ? <>{chips}{search}</> : totalLine}</EditBlock>
         </div>)}
         {historyBlocks.hidden.filter((block) => !block.pinned).map((block) => <EditBlock key={block.id} {...editBlock(block.id, true)}/>)}
       </div>
@@ -496,12 +498,12 @@ export const HistoryView = memo(function HistoryView({ userId, workspaceId, boot
         }}/>}
       </div>}
     {reminder && !selected.size && (reminder.compact
-      ? <div className="history-inbox history-reminder compact" inert={editing}><span className="reminder-mark"><LockIcon/></span><b>Сохраните ссылку доступа</b><button type="button" className="text-button reminder-save" onClick={reminder.onSave}>Сохранить</button><button type="button" className="text-button reminder-later" onClick={reminder.onLater}>Позже</button></div>
-      : <div className="history-inbox history-reminder" inert={editing}><span className="reminder-mark"><LockIcon/></span><span><b>Сохраните ссылку доступа</b><small>Иначе без этого телефона расходы не вернуть</small></span><span className="reminder-actions"><button type="button" className="reminder-action" onClick={reminder.onSave}>Сохранить</button><button type="button" className="text-button reminder-later" onClick={reminder.onLater}>Позже</button></span></div>)}
-    {inbox && inbox.count > 0 && !selected.size && <button type="button" className="history-inbox" inert={editing} onClick={inbox.onOpen}><CardMark/><span><b>{inbox.count} {pluralRu(inbox.count, ['операция с карты ждёт', 'операции с карты ждут', 'операций с карты ждут'])} разбора</b><small>Выбрать категории</small></span><ChevronIcon/></button>}
+      ? <div className="history-inbox history-reminder compact" inert={editing} data-flip-id="reminder"><span className="reminder-mark"><LockIcon/></span><b>Сохраните ссылку доступа</b><button type="button" className="text-button reminder-save" onClick={reminder.onSave}>Сохранить</button><button type="button" className="text-button reminder-later" onClick={reminder.onLater}>Позже</button></div>
+      : <div className="history-inbox history-reminder" inert={editing} data-flip-id="reminder"><span className="reminder-mark"><LockIcon/></span><span><b>Сохраните ссылку доступа</b><small>Иначе без этого телефона расходы не вернуть</small></span><span className="reminder-actions"><button type="button" className="reminder-action" onClick={reminder.onSave}>Сохранить</button><button type="button" className="text-button reminder-later" onClick={reminder.onLater}>Позже</button></span></div>)}
+    {inbox && inbox.count > 0 && !selected.size && <button type="button" className="history-inbox" inert={editing} data-flip-id="inbox" onClick={inbox.onOpen}><CardMark/><span><b>{inbox.count} {pluralRu(inbox.count, ['операция с карты ждёт', 'операции с карты ждут', 'операций с карты ждут'])} разбора</b><small>Выбрать категории</small></span><ChevronIcon/></button>}
     {/* Суммы по дням настраиваются у первого дня: в рамке с «−» или заготовкой на месте суммы. */}
-    <div className={`history-list${selected.size ? ' selecting' : ''}`}>{groups.map(({ date, items, total }, index) => <div key={date} className="history-day"><div className="history-date"><span>{formatHistoryDate(date)}</span>{editing && index === 0 ? <EditBlock {...editBlock('day-totals')} className="day-totals-block"><b>{total ?? '—'}</b></EditBlock> : showDayTotals && total && <b>{total}</b>}</div>{items.map((expense) => <HistoryRow key={expense.id} expense={expense} category={categoryMap.get(expense.categoryId)} tags={tags} currencies={bootstrap.currencies} checked={selected.has(expense.id)} selecting={selected.size > 0} open={openRow === expense.id} disabled={deleting} inert={editing} onOpen={setOpenRow} onToggle={toggle} onEdit={editRow} onDelete={deleteRow} onVoided={setVoided}/>)}</div>)}</div>
-    {older && (activeFilters.period === 'all' || activeFilters.period === 'range') && !selected.size && <div className="history-older" inert={editing}><span>{older.count === 1 ? 'Ещё одна запись' : `Ещё ${older.count} ${pluralRu(older.count, ['запись', 'записи', 'записей'])}`} до {formatMonthYear(older.since)}</span><button type="button" className="text-button" disabled={older.busy} onClick={older.load}>{older.busy ? 'Загружаем…' : 'Показать'}</button></div>}
+    <div className={`history-list${selected.size ? ' selecting' : ''}`} data-flip-id="list">{groups.map(({ date, items, total }, index) => <div key={date} className="history-day"><div className="history-date"><span>{formatHistoryDate(date)}</span>{editing && index === 0 ? <EditBlock {...editBlock('day-totals')} className="day-totals-block"><b>{total ?? '—'}</b></EditBlock> : showDayTotals && total && <b>{total}</b>}</div>{items.map((expense) => <HistoryRow key={expense.id} expense={expense} category={categoryMap.get(expense.categoryId)} tags={tags} currencies={bootstrap.currencies} checked={selected.has(expense.id)} selecting={selected.size > 0} open={openRow === expense.id} disabled={deleting} inert={editing} onOpen={setOpenRow} onToggle={toggle} onEdit={editRow} onDelete={deleteRow} onVoided={setVoided}/>)}</div>)}</div>
+    {older && (activeFilters.period === 'all' || activeFilters.period === 'range') && !selected.size && <div className="history-older" inert={editing} data-flip-id="older"><span>{older.count === 1 ? 'Ещё одна запись' : `Ещё ${older.count} ${pluralRu(older.count, ['запись', 'записи', 'записей'])}`} до {formatMonthYear(older.since)}</span><button type="button" className="text-button" disabled={older.busy} onClick={older.load}>{older.busy ? 'Загружаем…' : 'Показать'}</button></div>}
     {!groups.length && <div className="list-empty" role="status" inert={editing}><span>{filtersActive ? 'Ничего не найдено' : 'История пока пуста'}</span><p>{filtersActive ? 'Измените фильтры или сбросьте их.' : 'Добавьте первый расход — он сразу появится здесь.'}</p>{!filtersActive && <button type="button" className="primary history-empty-action" onClick={createNew}>Добавить первый расход</button>}</div>}
     {calendar && <CalendarSheet
       from={filters.period === 'range' ? filters.from : ''}

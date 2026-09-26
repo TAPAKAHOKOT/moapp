@@ -7,7 +7,7 @@ import { chartColors } from '../appearance'
 import { appTimeZone, cachedNumberFormat, convertExpense, countCalendarWeekdays, hasRate, localDateKey, monthDateRange, shiftDateKey, weekDateRange, weekdayFromDateKey, workspaceCurrency } from '../utils'
 import { expenseTagNames } from '../history'
 import { BREAKDOWN_REST, breakdownColors, categoryBreakdown, expenseGroupKeys } from '../breakdown'
-import { CategoryMark, ChevronIcon, CurrencySheet, DragList, EditBlock, RemoveBadge, prefersReducedMotion, tap, useHold } from '../ui'
+import { CategoryMark, ChevronIcon, CurrencySheet, DragList, EditBlock, RemoveBadge, prefersReducedMotion, tap, useFlip, useHold } from '../ui'
 import type { Theme } from '../ui'
 import { formatAnalyticsAmount, formatCompactNumber, formatWeekRange, money, pluralRu } from '../format'
 import type { Bootstrap } from '../format'
@@ -162,6 +162,8 @@ export function AnalyticsView({ userId, workspaceId, bootstrap, setBootstrap = (
   // Удержание любой карточки открывает настройку экрана.
   const holdRef=useHold(!editing&&anyExpenses?()=>onEditScreen('analytics','hold'):undefined,(target)=>Boolean(target.closest('.chart-card')))
   const sectionRef=useCallback((node:HTMLElement|null)=>{pageRef.current=node;holdRef(node)},[holdRef])
+  // В настройке плашки доезжают до новых мест плавно, убранная уезжает к пунктиру внизу.
+  useFlip(pageRef,editing)
   const emptyPeriod=anyExpenses?'В этом периоде ещё нет расходов':'Появится после первых трат: сколько за месяц и на что'
   const chartColor=chart.line
   const chartText=theme==='dark'?'#b3b3ae':'#73776f'
@@ -248,13 +250,13 @@ const BLOCK_ICONS:Record<string,React.ReactNode>={
 // пунктиром и возвращаются на своё место по касанию.
 export function AnalyticsBlocksEditor({blocks,onChange}:{blocks:Blocks;onChange:(next:Blocks)=>void}) {
   return <div className="edit-cards" role="group" aria-label="Карточки аналитики">
-    <DragList className="edit-card-list" items={blocks.shown} onReorder={(ids)=>onChange(reorderBlocks(blocks,ids))} render={(block)=><>
+    <DragList className="edit-card-list" flip items={blocks.shown} onReorder={(ids)=>onChange(reorderBlocks(blocks,ids))} render={(block)=><>
       <span className="block-icon" aria-hidden="true"><svg viewBox="0 0 20 20" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">{BLOCK_ICONS[block.id]}</svg></span>
       <span className="block-name"><b>{block.name}</b><small>{block.hint}</small></span>
       {block.resizable&&<button type="button" className={`size-toggle${isSmall(blocks,block.id)?' small':''}`} aria-label={`Размер «${block.name}»: ${isSmall(blocks,block.id)?'маленькая, сделать большой':'большая, сделать маленькой'}`} onPointerDown={(event)=>event.stopPropagation()} onClick={()=>{tap(4);onChange(toggleSize(blocks,block.id))}}>{isSmall(blocks,block.id)?'Маленькая':'Большая'}</button>}
       <RemoveBadge name={block.name} onRemove={()=>onChange(hideBlock(blocks,block.id))}/>
     </>}/>
-    {blocks.hidden.map((block)=><EditBlock key={block.id} name={block.name} hint={block.hint} shown={false} className="edit-card" onToggle={()=>onChange(showBlock(blocks,block.id))}/>)}
+    {blocks.hidden.map((block)=><EditBlock key={block.id} name={block.name} hint={block.hint} shown={false} flipId={block.id} className="edit-card" onToggle={()=>onChange(showBlock(blocks,block.id))}/>)}
   </div>
 }
 
