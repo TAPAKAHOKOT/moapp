@@ -61,6 +61,25 @@ const reachRest = () => act(() => {
 
 const rows = (container: HTMLElement) => container.querySelectorAll('.history-expense').length
 
+// Отступ под нарисованными строками оказался в `gap` пикселях выше нижнего края области наблюдения.
+const jumpRest = (gap: number) => act(() => {
+  for (const observer of [...FakeObserver.live]) {
+    const entries = [...observer.targets].map((target) => ({ target, isIntersecting: true, intersectionRatio: 1, boundingClientRect: { top: 1_000 }, intersectionRect: { top: 1_000 }, rootBounds: { bottom: 1_000 + gap }, time: 0 }))
+    observer.callback(entries as unknown as IntersectionObserverEntry[], observer as unknown as IntersectionObserver)
+  }
+})
+
+// jsdom ничего не раскладывает: каждая нарисованная строка — ROW_STRIDE пикселей, дни без заголовков.
+const ROW_STRIDE = 62
+function layRows() {
+  vi.spyOn(HTMLElement.prototype, 'offsetTop', 'get').mockImplementation(function (this: HTMLElement) {
+    return this.classList.contains('history-rest') ? (this.parentElement?.querySelectorAll('.history-expense').length ?? 0) * ROW_STRIDE : 0
+  })
+  vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockImplementation(function (this: HTMLElement) {
+    return this.classList.contains('history-day') ? this.querySelectorAll('.history-expense').length * ROW_STRIDE : 0
+  })
+}
+
 describe('history window', () => {
   it('draws the first rows, keeps room for the rest and adds more as the rest comes near', () => {
     stubObserver()
@@ -98,6 +117,34 @@ describe('history window', () => {
     fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'rsd' } })
     expect(rows(container)).toBe(HISTORY_FIRST_ROWS)
     expect(container.querySelector('.history-total-line')?.textContent).toContain('400 записей')
+  })
+
+  it('fills the whole gap at once when the rest is reached by a jump of the scroll bar', () => {
+    stubObserver()
+    layRows()
+    const { container } = render(<HistoryView {...props} bootstrap={bootstrapWith(1_000)}/>)
+    // До экрана 31 000 px пустоты — это 500 строк по 62 px, больше обычной порции.
+    jumpRest(500 * ROW_STRIDE)
+    expect(rows(container)).toBe(HISTORY_FIRST_ROWS + 500)
+    // Отступ рядом, но пустоты мало — дорисовывается обычная порция.
+    jumpRest(10 * ROW_STRIDE)
+    expect(rows(container)).toBe(HISTORY_FIRST_ROWS + 500 + HISTORY_MORE_ROWS)
+  })
+
+  it('goes back to the first rows on «Сбросить» and when the screen is being arranged', () => {
+    stubObserver()
+    const { container, rerender } = render(<HistoryView {...props} bootstrap={bootstrapWith(400)}/>)
+    fireEvent.click(screen.getByRole('button', { name: 'Поиск' }))
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'rsd' } })
+    reachRest()
+    expect(rows(container)).toBe(HISTORY_FIRST_ROWS + HISTORY_MORE_ROWS)
+    fireEvent.click(screen.getByRole('button', { name: 'Сбросить' }))
+    expect(rows(container)).toBe(HISTORY_FIRST_ROWS)
+
+    reachRest()
+    expect(rows(container)).toBe(HISTORY_FIRST_ROWS + HISTORY_MORE_ROWS)
+    rerender(<HistoryView {...props} bootstrap={bootstrapWith(400)} editing/>)
+    expect(rows(container)).toBe(HISTORY_FIRST_ROWS)
   })
 
   it('draws every row where IntersectionObserver is missing', () => {
@@ -138,6 +185,26 @@ describe('history window', () => {
     act(() => vi.advanceTimersByTime(2_000))
     expect(rows(container)).toBe(HISTORY_FIRST_ROWS)
   })
+
+  it('drops the extra rows when the tab is left within two screens of its top, not further', async () => {
+    stubObserver()
+    vi.useFakeTimers()
+    const { container } = render(<div className="pager"><div className="page-slot"><HistoryView {...props} bootstrap={bootstrapWith(400)}/></div></div>)
+    const slot = container.querySelector<HTMLElement>('.page-slot')!
+    Object.defineProperty(slot, 'clientHeight', { configurable: true, value: 659 })
+    reachRest()
+    const leaveAt = async (scrollTop: number) => {
+      Object.defineProperty(slot, 'scrollTop', { configurable: true, value: scrollTop })
+      await act(async () => { slot.setAttribute('inert', '') })
+      act(() => vi.advanceTimersByTime(2_000))
+      await act(async () => { slot.removeAttribute('inert') })
+    }
+    // Два экрана — 1 318 px: с 1 400 px строки остаются, с 1 000 px — снимаются.
+    await leaveAt(1_400)
+    expect(rows(container)).toBe(HISTORY_FIRST_ROWS + HISTORY_MORE_ROWS)
+    await leaveAt(1_000)
+    expect(rows(container)).toBe(HISTORY_FIRST_ROWS)
+  })
 })
 
 describe('history rows at rest', () => {
@@ -157,6 +224,7 @@ describe('history rows at rest', () => {
   const slidEnd = (row: Element) => fireEvent.transitionEnd(row.querySelector('.history-swipe')!, { propertyName: 'transform' })
   const deleteOf = (row: Element) => row.querySelector('.history-swipe-delete')
   const deletes = (container: HTMLElement) => container.querySelectorAll('.history-swipe-delete')
+  const is = (row: Element, name: string) => row.classList.contains(name)
 
   it('draws resting rows without the delete button and with their plain class', () => {
     const { container } = render(<HistoryView {...props} bootstrap={bootstrapWith(5)}/>)
@@ -176,14 +244,15 @@ describe('history rows at rest', () => {
     expect(deleteOf(row!)).not.toBeNull()
     fireEvent.pointerUp(row!, { pointerType: 'mouse', clientX: 220, clientY: 20 })
     fireEvent.click(row!.querySelector('.history-row')!)
-    expect(row!.className).toBe('history-expense open')
+    expect(is(row!, 'open')).toBe(true)
     expect(screen.getByRole('button', { name: 'Удалить' })).toBe(deleteOf(row!))
     // Строка доехала до открытого положения — это не конец закрытия, кнопка на месте.
     slidEnd(row!)
     expect(deleteOf(row!)).not.toBeNull()
 
     tapRow(row!)
-    expect(row!.className).toBe('history-expense closing')
+    expect(is(row!, 'closing')).toBe(true)
+    expect(is(row!, 'open')).toBe(false)
     expect(deleteOf(row!)).not.toBeNull()
     // Переходы потомков (фон строки, галочка) всплывают сюда же, но концом пути не считаются.
     fireEvent.transitionEnd(row!.querySelector('.history-row')!, { propertyName: 'background-color' })
@@ -200,11 +269,12 @@ describe('history rows at rest', () => {
     const { container } = render(<HistoryView {...props} bootstrap={bootstrapWith(5)}/>)
     const [row] = container.querySelectorAll('.history-expense')
     drag(row!, 300, 200)
-    expect(row!.className).toBe('history-expense open')
+    expect(is(row!, 'open')).toBe(true)
 
     // Протяжка открытой строки обратно дальше половины кнопки: строка доезжает до места сама.
     drag(row!, 180, 240)
-    expect(row!.className).toBe('history-expense closing')
+    expect(is(row!, 'closing')).toBe(true)
+    expect(is(row!, 'open')).toBe(false)
     const swipe = row!.querySelector<HTMLElement>('.history-swipe')!
     // Переход открытия кончился в тот же кадр, когда началось закрытие: строка ещё сдвинута, путь не пройден.
     swipe.style.transform = 'translateX(-40px)'
@@ -221,8 +291,9 @@ describe('history rows at rest', () => {
     const [first, second] = container.querySelectorAll('.history-expense')
     drag(first!, 300, 200)
     drag(second!, 300, 200)
-    expect(second!.className).toBe('history-expense open')
-    expect(first!.className).toBe('history-expense closing')
+    expect(is(second!, 'open')).toBe(true)
+    expect(is(first!, 'closing')).toBe(true)
+    expect(is(first!, 'open')).toBe(false)
     expect(deleteOf(first!)).not.toBeNull()
     slidEnd(first!)
     expect(deleteOf(first!)).toBeNull()
@@ -363,7 +434,7 @@ describe('history row press', () => {
     touch(row, 'touchmove', 220)
     expect(row.classList.contains('dragging')).toBe(true)
     touch(row, 'touchend', 220)
-    expect(row.className).toBe('history-expense open')
+    expect(row.classList.contains('open')).toBe(true)
   })
 
   it('leaves the mouse to CSS :active: a mouse press sets no class and listens to nothing outside the row', () => {
