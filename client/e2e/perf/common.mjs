@@ -6,8 +6,9 @@ import { dirname, resolve } from 'node:path'
 
 export const HERE = dirname(fileURLToPath(import.meta.url))
 export const REPO = resolve(HERE, '../../..')
-// PERF_WORK — общий каталог базы и сборок, когда стенд запускают из отдельного git worktree.
-export const WORK = process.env.PERF_WORK ? resolve(process.env.PERF_WORK) : resolve(HERE, '.work')
+// База, снимки кода и сборки лежат в корне репозитория, вне client/: иначе vitest находит тесты в снимках кода.
+// PERF_WORK — общий каталог, когда стенд запускают из отдельного git worktree.
+export const WORK = process.env.PERF_WORK ? resolve(process.env.PERF_WORK) : resolve(REPO, '.perf-work')
 export const RESULTS = resolve(HERE, '.results')
 export const DEFAULT_PORT = 4411
 export const sleep = (ms) => new Promise((done) => setTimeout(done, ms))

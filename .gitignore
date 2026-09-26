@@ -14,3 +14,4 @@ playwright-report/
 test-results/
 *.log
 *.tsbuildinfo
+.perf-work/
