@@ -526,6 +526,8 @@ export function useHold(onHold: (() => void) | undefined, accept: (target: Eleme
     const begin = (x: number, y: number, target: EventTarget | null) => {
       cancel()
       if (!latest.current.onHold || !(target instanceof Element) || !latest.current.accept(target)) return
+      // Листы выбора живут внутри своих блоков, а в поле ввода удержание — это выделение текста: ни то, ни другое не блок.
+      if (target.closest('.sheet-backdrop, input, textarea, select')) return
       start = { x, y }
       timer = setTimeout(() => {
         timer = undefined

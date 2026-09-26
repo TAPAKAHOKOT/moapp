@@ -1560,6 +1560,10 @@ describe('screens made of blocks', () => {
     expect(screen.getByRole('toolbar', { name: 'Выбранные расходы' })).not.toBeNull()
     fireEvent.click(screen.getByRole('button', { name: 'Отмена' }))
     // Удержание блока над списком открывает настройку, а клик, пришедший следом, не открывает выбор дат.
+    // Удержание в поле поиска — выделение текста, а не настройка.
+    hold(screen.getByRole('searchbox'))
+    release()
+    expect(edit).not.toHaveBeenCalled()
     hold(screen.getByRole('button', { name: 'Период истории' }))
     expect(edit).toHaveBeenCalledWith('history', 'hold')
     fireEvent.click(screen.getByRole('button', { name: 'Период истории' }))
