@@ -10,7 +10,7 @@ import {
   PointElement,
   Tooltip,
 } from 'chart.js'
-import type { ChartData, ChartOptions } from 'chart.js'
+import type { ChartData, ChartOptions, Plugin } from 'chart.js'
 import { memo, useId, useMemo } from 'react'
 import { Bar, Doughnut, Line } from 'react-chartjs-2'
 import { prefersReducedMotion } from './ui'
@@ -82,6 +82,33 @@ function formatCompactNumber(value: number) {
   return cachedNumberFormat('ru-RU', { notation: 'compact', maximumFractionDigits: 1 }).format(value)
 }
 
+// В типах Chart.js getMaxOverflow контроллера защищён, а _minPadding — поле, с которым update() разложил график, — не
+// объявлен. Это те же значения, которыми пользуется сам update().
+type OverflowController = { getMaxOverflow(): number | boolean }
+
+// Chart.js оставляет вокруг области линии поле в половину толщины линии или крайней точки. Считает он его в начале
+// update(), до того как перечитает настройки набора: в первом обновлении толщина линии ему ещё не известна (у «Месяца»
+// без точек поле 0 вместо 1 px), после смены периода берутся точки прежнего периода (у «Месяца» 6 px от точек «Недели»,
+// у «Недели» 1 px от «Месяца»). От поля зависят ширина области и шаг оси X — линия и подписи сдвигаются на доли пикселя,
+// у маленькой линии без осей — на целый. На main поле выправляло следующее, лишнее обновление от перерисовки экрана.
+// Здесь, если поле законченного обновления разошлось с настоящим, раскладка сразу повторяется — один раз, в том же
+// обновлении, до первого кадра.
+const settling = new WeakSet<object>()
+export const settledLinePadding: Plugin<'line'> = {
+  id: 'settledLinePadding',
+  afterUpdate(chart, { mode }) {
+    if (settling.has(chart) || !chart.options.layout?.autoPadding) return
+    let overflow = 0
+    for (let index = 0; index < chart.data.datasets.length; index++) {
+      overflow = Math.max(overflow, +(chart.getDatasetMeta(index).controller as unknown as OverflowController).getMaxOverflow())
+    }
+    if (overflow === (chart as unknown as { _minPadding: number })._minPadding) return
+    settling.add(chart)
+    try { chart.update(mode) } finally { settling.delete(chart) }
+  },
+}
+const linePlugins = [settledLinePadding]
+
 function chartAccessibility(props: AnalyticsChartProps): ChartAccessibility {
   if (props.kind === 'doughnut') {
     const total = props.values.reduce((sum, value) => sum + value, 0)
@@ -146,10 +173,6 @@ function LineChart({ labels, values, color, fillColor, pointRadius, target, text
     responsive: true,
     maintainAspectRatio: false,
     animation: chartAnimation(reduced),
-    // У маленькой линии нет осей, и её единственный отступ — половина толщины линии. Chart.js добавляет его только со
-    // второго обновления: в первом толщина ему ещё не известна. Раньше второе обновление приходило от лишних
-    // перерисовок экрана, теперь отступ задан сразу — линия стоит там же, где стояла.
-    ...(compact ? { layout: { padding: 1 } } : {}),
     plugins: {
       legend: { display: false },
       tooltip: { callbacks: { label: (context) => exactAmount(context.parsed.y ?? 0, target) } },
@@ -164,7 +187,7 @@ function LineChart({ labels, values, color, fillColor, pointRadius, target, text
       },
     },
   }), [reduced, target, compact, maxTicksLimit, textColor, gridColor])
-  return <Line data={data} options={options} {...canvas}/>
+  return <Line data={data} options={options} plugins={linePlugins} {...canvas}/>
 }
 
 function DoughnutChart({ labels, values, colors, target, canvas, reduced }: DoughnutChartProps & ChartSetup) {
