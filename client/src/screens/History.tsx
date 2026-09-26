@@ -1,4 +1,4 @@
-import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { WorkspaceApiError as ApiError, includeExpense, saveMemberSettings, submitExpenseOperation, submitExpenseOperations } from '../workspace-api'
 import { patchSettings } from '../settings'
 import type { SettingsPatch } from '../settings'
@@ -83,8 +83,8 @@ export const ROW_DRAG_START = 8
 // Заголовок — всегда категория; второй строкой — то, что человек написал сам, и теги текстом: «Maxi · #вдвоём».
 // На сенсорных экранах жест ведут touch-события с preventDefault: Safari обрывает pointer-события, как только
 // решает, что палец листает список, и свайп по строке до него не доходил. Мышь остаётся на pointer-событиях.
-// Строк в истории сотни, и все они живут в дереве постоянно. Мемоизация с колбэками, принимающими запись,
-// даёт перерисовку только тех строк, чьё состояние (выбор, открытый свайп) действительно изменилось.
+// Нарисованных строк сотни, и они остаются в дереве, пока открыто пространство. Мемоизация с колбэками,
+// принимающими запись, даёт перерисовку только тех строк, чьё состояние (выбор, открытый свайп) действительно изменилось.
 type RowGesture = { x: number; y: number; touchId: number | null; dragging: boolean; longPress: ReturnType<typeof setTimeout> | undefined }
 
 const usesNativeTouch = () => typeof window !== 'undefined' && 'ontouchstart' in window
@@ -218,6 +218,28 @@ export type HistoryReminder = { onSave: () => void; onLater: () => void; compact
 /** Записи старше окна первичной загрузки: сколько их, с какого дня начинается окно и как их подгрузить. */
 export type HistoryOlder = { count: number; since: string; busy: boolean; load: () => void }
 
+// Год записей — это десятки тысяч элементов, и Safari платит за них при любой перестройке ленты вкладок. Поэтому
+// строки рисуются порциями: сначала столько, сколько хватит на несколько экранов, остальные — когда до конца
+// нарисованного останется пара экранов. Итоги, поиск и фильтры по-прежнему считаются по всем записям.
+export const HISTORY_FIRST_ROWS = 120
+export const HISTORY_MORE_ROWS = 200
+
+type HistoryDay = { date: string; items: Expense[]; total: string | null }
+
+// Первые `limit` строк по дням (последний день может войти не целиком) и сколько строк и дней осталось за окном.
+function firstRows(days: HistoryDay[], total: number, limit: number) {
+  if (limit >= total) return { days, restRows: 0, restDays: 0 }
+  const shown: HistoryDay[] = []
+  let count = 0
+  for (const day of days) {
+    if (count >= limit) break
+    const room = limit - count
+    shown.push(day.items.length > room ? { ...day, items: day.items.slice(0, room) } : day)
+    count += Math.min(room, day.items.length)
+  }
+  return { days: shown, restRows: total - count, restDays: days.length - shown.length }
+}
+
 // Вкладка не размонтируется, пока открыто пространство, поэтому она не должна перерисовываться от чужих
 // изменений состояния приложения — только от своих данных и колбэков (все они стабильны у родителя).
 export const HistoryView = memo(function HistoryView({ userId, workspaceId, bootstrap, setBootstrap, edit, createNew, refreshPending, inbox = null, reminder = null, timeZone = appTimeZone(), older = null, blocks, editing = false, onEditScreen = () => {}, onScreensChange = () => {} }: {
@@ -251,8 +273,11 @@ export const HistoryView = memo(function HistoryView({ userId, workspaceId, boot
   const [showParts, setShowParts] = useState(false)
   const [voided, setVoided] = useState<Expense | null>(null)
   const [including, setIncluding] = useState(false)
+  const [rowLimit, setRowLimit] = useState(HISTORY_FIRST_ROWS)
   const { toast, notify, dismiss } = useToast()
   const pageRef = useRef<HTMLElement | null>(null)
+  const listRef = useRef<HTMLDivElement>(null)
+  const restRef = useRef<HTMLDivElement>(null)
   // Блоки «Истории» у каждого свои. Без блока фильтров фильтры не действуют: иначе убранный блок молча прятал бы
   // расходы. Сами фильтры не теряются и вернутся вместе с блоком.
   const historyBlocks = useMemo(() => screenBlocks('history', blocks), [blocks])
@@ -263,11 +288,12 @@ export const HistoryView = memo(function HistoryView({ userId, workspaceId, boot
   const toolbarBlocks = historyBlocks.shown.filter((block) => !block.pinned)
   const toolbarDrag = useDragOrder({ items: toolbarBlocks, onReorder: (ids) => onScreensChange({ historyBlocks: toBlockLayout(reorderBlocks(historyBlocks, ids)) }) })
   const activeFilters = useMemo(() => showFilters ? filters : defaultHistoryPreferences(localDateKey(new Date())), [showFilters, filters])
-  // Настройка экрана начинается сверху, где стоят блоки; выбор записей и открытый свайп ей не нужны.
+  // Настройка экрана начинается сверху, где стоят блоки; выбор записей, открытый свайп и дальние строки ей не нужны.
   useEffect(() => {
     if (!editing) return
     setSelected(new Set())
     setOpenRow(null)
+    setRowLimit(HISTORY_FIRST_ROWS)
     const slot = pageRef.current?.closest<HTMLElement>('.page-slot')
     if (slot) slot.scrollTop = 0
   }, [editing])
@@ -327,6 +353,77 @@ export const HistoryView = memo(function HistoryView({ userId, workspaceId, boot
     return { categoryMap, activeExpenses, tagOptions, categoryOptions, currencyOptions, normalizedQuery, expenses, groups, totals, totalLabel, totalParts }
   }, [bootstrap, activeFilters, timeZone, tags])
   const { categoryMap, activeExpenses, tagOptions, categoryOptions, currencyOptions, normalizedQuery, expenses, groups, totals, totalLabel, totalParts } = derived
+  // Без IntersectionObserver (старые браузеры, тесты) рисуется весь список, как раньше.
+  const windowed = typeof IntersectionObserver === 'function'
+  const shown = useMemo(() => firstRows(groups, expenses.length, windowed ? rowLimit : Infinity), [groups, expenses.length, windowed, rowLimit])
+  const hasRest = shown.restRows > 0
+  // Ниже нарисованного — пустой отступ под остальные строки и дни по средней высоте уже нарисованных: длина прокрутки,
+  // полоса прокрутки и дальность флика прежние, а новые строки встают над отступом, и видимое не сдвигается.
+  const rest = useRef({ rows: 0, days: 0, stride: 0 })
+  const fitRest = useCallback(() => {
+    const list = listRef.current
+    const spacer = restRef.current
+    if (!list || !spacer) return
+    let rows = 0
+    let rowsHeight = 0
+    for (const day of Array.from(list.children) as HTMLElement[]) {
+      rows += day.childElementCount - 1
+      rowsHeight += day.offsetHeight - ((day.firstElementChild as HTMLElement | null)?.offsetHeight ?? 0)
+    }
+    if (!rows) return
+    const drawn = spacer.offsetTop - list.offsetTop
+    const perDay = (drawn - rowsHeight) / list.childElementCount
+    rest.current.stride = drawn / rows
+    spacer.style.height = `${Math.max(0, Math.round(rest.current.rows * rowsHeight / rows + rest.current.days * perDay))}px`
+  }, [])
+  useLayoutEffect(() => {
+    rest.current.rows = shown.restRows
+    rest.current.days = shown.restDays
+    fitRest()
+  }, [shown, fitRest])
+  // Крупный текст или поворот телефона меняют высоту строк — отступ пересчитывается следом.
+  useEffect(() => {
+    const list = listRef.current
+    if (!hasRest || !list || typeof ResizeObserver !== 'function') return
+    const observer = new ResizeObserver(() => fitRest())
+    observer.observe(list)
+    return () => observer.disconnect()
+  }, [hasRest, fitRest])
+  // Отступ ближе двух экранов — дорисовывается следующая порция. После каждой порции наблюдатель ставится заново: если
+  // отступ всё ещё рядом, первый же ответ попросит ещё. Если к нему прыгнули полосой прокрутки, порция сразу закрывает
+  // всю пустоту до экрана.
+  useEffect(() => {
+    const spacer = restRef.current
+    if (!spacer || typeof IntersectionObserver !== 'function') return
+    const observer = new IntersectionObserver((entries) => {
+      const entry = entries[entries.length - 1]
+      if (!entry?.isIntersecting) return
+      const gap = entry.rootBounds ? entry.rootBounds.bottom - entry.boundingClientRect.top : 0
+      const stride = rest.current.stride
+      setRowLimit((limit) => limit + Math.max(HISTORY_MORE_ROWS, stride > 0 ? Math.ceil(gap / stride) : 0))
+    }, { root: spacer.closest('.page-slot'), rootMargin: '100% 0px 200% 0px' })
+    observer.observe(spacer)
+    return () => observer.disconnect()
+  }, [shown])
+  // С «Истории» ушли у самого начала — лишние строки снимаются, пока её не видно: при возвращении на вкладку стили
+  // страницы пересчитываются целиком, и сто двадцать строк обходятся в разы дешевле года. Лента вкладок в этот момент
+  // ещё может ехать, поэтому строки снимаются, когда она постоит.
+  useEffect(() => {
+    const slot = pageRef.current?.closest<HTMLElement>('.page-slot')
+    if (!slot || typeof IntersectionObserver !== 'function') return
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const trim = () => {
+      timer = undefined
+      if (slot.hasAttribute('inert') && slot.scrollTop <= slot.clientHeight * 2) setRowLimit(HISTORY_FIRST_ROWS)
+    }
+    const schedule = () => { clearTimeout(timer); timer = slot.hasAttribute('inert') ? setTimeout(trim, 600) : undefined }
+    const postpone = () => { if (timer !== undefined) schedule() }
+    const watcher = new MutationObserver(schedule)
+    watcher.observe(slot, { attributes: true, attributeFilter: ['inert'] })
+    const pager = slot.parentElement
+    pager?.addEventListener('scroll', postpone, { passive: true })
+    return () => { clearTimeout(timer); watcher.disconnect(); pager?.removeEventListener('scroll', postpone) }
+  }, [])
   // Удержание блоков над списком и даты дня открывает настройку; у самих записей удержание — выбор нескольких.
   const holdRef = useHold(!editing && activeExpenses.length > 0 ? () => onEditScreen('history', 'hold') : undefined, (target) => Boolean(target.closest('.history-toolbar, .history-date')))
   const sectionRef = useCallback((node: HTMLElement | null) => { pageRef.current = node; holdRef(node) }, [holdRef])
@@ -345,6 +442,7 @@ export const HistoryView = memo(function HistoryView({ userId, workspaceId, boot
   const updateFilters = (patch: Partial<HistoryPreferences>) => {
     setFilters((current) => ({ ...current, ...patch }))
     setSelected(new Set())
+    setRowLimit(HISTORY_FIRST_ROWS)
   }
   const toggle = useCallback((id: string) => setSelected((current) => {
     const next = new Set(current)
@@ -362,6 +460,7 @@ export const HistoryView = memo(function HistoryView({ userId, workspaceId, boot
     setFilters(defaultHistoryPreferences(localDateKey(new Date())))
     setSelected(new Set())
     setSearchOpen(false)
+    setRowLimit(HISTORY_FIRST_ROWS)
   }
   // «Учитывать всё равно»: снимает пометку провайдера. Только онлайн, как и остальные действия по карте.
   const includeOne = async (expense: Expense) => {
@@ -503,7 +602,8 @@ export const HistoryView = memo(function HistoryView({ userId, workspaceId, boot
       : <div className="history-inbox history-reminder" inert={editing} data-flip-id="reminder"><span className="reminder-mark"><LockIcon/></span><span><b>Сохраните ссылку доступа</b><small>Иначе без этого телефона расходы не вернуть</small></span><span className="reminder-actions"><button type="button" className="reminder-action" onClick={reminder.onSave}>Сохранить</button><button type="button" className="text-button reminder-later" onClick={reminder.onLater}>Позже</button></span></div>)}
     {inbox && inbox.count > 0 && !selected.size && <button type="button" className="history-inbox" inert={editing} data-flip-id="inbox" onClick={inbox.onOpen}><CardMark/><span><b>{inbox.count} {pluralRu(inbox.count, ['операция с карты ждёт', 'операции с карты ждут', 'операций с карты ждут'])} разбора</b><small>Выбрать категории</small></span><ChevronIcon/></button>}
     {/* Суммы по дням настраиваются у первого дня: в рамке с «−» или заготовкой на месте суммы. */}
-    <div className={`history-list${selected.size ? ' selecting' : ''}`} data-flip-id="list">{groups.map(({ date, items, total }, index) => <div key={date} className="history-day"><div className="history-date"><span>{formatHistoryDate(date)}</span>{editing && index === 0 ? <EditBlock {...editBlock('day-totals')} className="day-totals-block"><b>{total ?? '—'}</b></EditBlock> : showDayTotals && total && <b>{total}</b>}</div>{items.map((expense) => <HistoryRow key={expense.id} expense={expense} category={categoryMap.get(expense.categoryId)} tags={tags} currencies={bootstrap.currencies} checked={selected.has(expense.id)} selecting={selected.size > 0} open={openRow === expense.id} disabled={deleting} inert={editing} onOpen={setOpenRow} onToggle={toggle} onEdit={editRow} onDelete={deleteRow} onVoided={setVoided}/>)}</div>)}</div>
+    <div ref={listRef} className={`history-list${selected.size ? ' selecting' : ''}`} data-flip-id="list">{shown.days.map(({ date, items, total }, index) => <div key={date} className="history-day"><div className="history-date"><span>{formatHistoryDate(date)}</span>{editing && index === 0 ? <EditBlock {...editBlock('day-totals')} className="day-totals-block"><b>{total ?? '—'}</b></EditBlock> : showDayTotals && total && <b>{total}</b>}</div>{items.map((expense) => <HistoryRow key={expense.id} expense={expense} category={categoryMap.get(expense.categoryId)} tags={tags} currencies={bootstrap.currencies} checked={selected.has(expense.id)} selecting={selected.size > 0} open={openRow === expense.id} disabled={deleting} inert={editing} onOpen={setOpenRow} onToggle={toggle} onEdit={editRow} onDelete={deleteRow} onVoided={setVoided}/>)}</div>)}</div>
+    {hasRest && <div ref={restRef} className="history-rest" aria-hidden="true"/>}
     {older && (activeFilters.period === 'all' || activeFilters.period === 'range') && !selected.size && <div className="history-older" inert={editing} data-flip-id="older"><span>{older.count === 1 ? 'Ещё одна запись' : `Ещё ${older.count} ${pluralRu(older.count, ['запись', 'записи', 'записей'])}`} до {formatMonthYear(older.since)}</span><button type="button" className="text-button" disabled={older.busy} onClick={older.load}>{older.busy ? 'Загружаем…' : 'Показать'}</button></div>}
     {!groups.length && <div className="list-empty" role="status" inert={editing}><span>{filtersActive ? 'Ничего не найдено' : 'История пока пуста'}</span><p>{filtersActive ? 'Измените фильтры или сбросьте их.' : 'Добавьте первый расход — он сразу появится здесь.'}</p>{!filtersActive && <button type="button" className="primary history-empty-action" onClick={createNew}>Добавить первый расход</button>}</div>}
     {calendar && <CalendarSheet
