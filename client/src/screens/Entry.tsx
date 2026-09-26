@@ -3,15 +3,15 @@ import { WorkspaceApiError as ApiError, saveMemberSettings, submitExpenseOperati
 import { getWorkspacePreference, setWorkspacePreference } from '../app-state'
 import { patchSettings } from '../settings'
 import type { SettingsPatch } from '../settings'
-import type { AccountSettings, BlockLayout, Category, Currency, Expense, ScreenOrder, Tag, WorkspaceSummary } from '../types'
-import { amountToMinor, applyKeypad, cachedNumberFormat, formatAmountInput, isoToLocalInput, localDateKey, localInputToIso, swipeDirection, workspaceCurrency } from '../utils'
+import type { AccountSettings, BlockLayout, Category, Currency, Expense, RateSnapshot, ScreenOrder, Tag, WorkspaceSummary } from '../types'
+import { amountToMinor, appTimeZone, applyKeypad, cachedNumberFormat, formatAmountInput, isoToLocalInput, localDateKey, localInputToIso, swipeDirection, workspaceCurrency } from '../utils'
 import { CategoryMark, ChevronIcon, CurrencySheet, EditBlock, GridIcon, KeypadIcon, MoreSheet, RemoveBadge, SignIcon, Toast, TrashIcon, prefersReducedMotion, tap, useConfirm, useDialog, useDragOrder, useFlip, useHold, useToast } from '../ui'
 import { amountSize, formatAnalyticsAmount, formatEntryDate, formatShortWeekday, inputFromExpense, money, pluralRu } from '../format'
 import { historyTotals } from '../history'
 import type { Bootstrap } from '../format'
 import { ExtrasRow, NoteSheet, TAG_COLORS, createTagOrReuse, tagStyle } from '../tags'
 import { categoryLayout, moveToMore, moveToShown, reorderGroup, tagLayout, toScreenOrder } from '../screen-order'
-import { hideBlock, reorderBlocks, screenBlocks, showBlock, toBlockLayout } from '../screen-blocks'
+import { hideBlock, isShown, reorderBlocks, screenBlocks, showBlock, toBlockLayout } from '../screen-blocks'
 import type { BlockScreen, Blocks } from '../screen-blocks'
 
 export const EMPTY_FORM = { amount: '', currency: 'RSD', note: '', occurredAt: '', tagIds: [] as string[], categoryId: '' }
@@ -173,21 +173,28 @@ export function entryUnits(ids: string[]): { head: EntryUnit[]; tail: EntryUnit[
   return first < 0 ? { head: units, tail: [] } : { head: units.slice(0, first), tail: units.slice(first) }
 }
 
-// «Сегодня» — сколько потрачено за сегодня, в валюте итогов, как в истории.
-export function TodayLine({ bootstrap }: { bootstrap: Bootstrap }) {
-  const today = localDateKey(new Date())
-  const items = bootstrap.expenses.filter((expense) => !expense.deletedAt && !expense.voidedAt && localDateKey(expense.occurredAt) === today)
-  const target = bootstrap.settings?.analyticsCurrency || workspaceCurrency(bootstrap)
-  const totals = historyTotals(items, bootstrap.currencies, bootstrap.rates, target)
-  const amount = totals.byCurrency.length === 1 ? money(totals.byCurrency[0]!.amountMinor, totals.byCurrency[0]!.currency, bootstrap.currencies)
+// «Сегодня» — сколько потрачено за сегодня, в валюте итогов, как в истории. Считает экран — один раз на изменение
+// данных или дня, — а строка только показывает: она стоит и в живой части, и в превью свайпа.
+export type TodayTotal = { count: number; amount: string }
+
+export function todayTotal(expenses: Expense[], today: string, timeZone: string, currencies: Currency[], rates: RateSnapshot, target: string): TodayTotal {
+  const items = expenses.filter((expense) => !expense.deletedAt && !expense.voidedAt && localDateKey(expense.occurredAt, timeZone) === today)
+  const totals = historyTotals(items, currencies, rates, target)
+  const amount = totals.byCurrency.length === 1 ? money(totals.byCurrency[0]!.amountMinor, totals.byCurrency[0]!.currency, currencies)
     : totals.converted !== null ? `≈ ${formatAnalyticsAmount(totals.converted, target)}`
-    : totals.byCurrency.map((part) => money(part.amountMinor, part.currency, bootstrap.currencies)).join(' + ')
-  return <div className="entry-today">{items.length
-    ? <><span>Сегодня</span><b>{amount}</b><small>{items.length} {pluralRu(items.length, ['трата', 'траты', 'трат'])}</small></>
+    : totals.byCurrency.map((part) => money(part.amountMinor, part.currency, currencies)).join(' + ')
+  return { count: items.length, amount }
+}
+
+export function TodayLine({ total }: { total: TodayTotal }) {
+  return <div className="entry-today">{total.count
+    ? <><span>Сегодня</span><b>{total.amount}</b><small>{total.count} {pluralRu(total.count, ['трата', 'траты', 'трат'])}</small></>
     : <span>Сегодня трат ещё нет</span>}</div>
 }
 
 export type UsualExpense = { key: string; categoryId: string; amountMinor: number; currency: string; tagIds: string[]; count: number; last: string }
+
+const NO_USUAL: UsualExpense[] = []
 
 // «Как обычно»: траты, которые за последние три месяца повторились хотя бы трижды, — та же категория, сумма, валюта
 // и теги. Самые частые первыми, не больше четырёх. Скрытую категорию подставить нельзя (сервер такой расход не
@@ -752,14 +759,23 @@ export function EntryView({ userId, workspaceId, workspace, bootstrap, setBootst
   },[active,editing,physicalKey])
   const publishTag = (tag: Tag) => setBootstrap((data) => ({ ...data, tags: [tag, ...(data.tags ?? []).filter((item) => item.id !== tag.id)] }))
   const saveRow = <div className="entry-save" inert={editing} data-flip-id="save"><button type="button" className="primary" disabled={!save.canSave || saving} onClick={() => void submitExpense()}>{saving ? 'Сохраняем…' : save.label}</button>{current && <button type="button" className={`sheet-cancel${dirty && !saving ? '' : ' ghost'}`} disabled={!dirty || saving} aria-hidden={!dirty || saving} tabIndex={dirty && !saving ? undefined : -1} onClick={cancelEdit}>Отменить</button>}</div>
-  const usualItems = useMemo(() => usualExpenses(bootstrap.expenses, bootstrap.categories, bootstrap.tags ?? []), [bootstrap.expenses, bootstrap.categories, bootstrap.tags])
+  // «Сегодня» и «Как обычно» считаются при изменении данных, а не на каждую цифру и шаг свайпа, и только пока блок
+  // стоит на экране. «Сегодня» следует за ключом дня и поясом: после полуночи первая же перерисовка покажет новый день.
+  const timeZone = appTimeZone()
+  const todayKey = localDateKey(new Date(), timeZone)
+  const totalsCurrency = bootstrap.settings?.analyticsCurrency || usual
+  const showsToday = isShown(entryBlocks, 'today')
+  const today = useMemo(() => showsToday ? todayTotal(bootstrap.expenses, todayKey, timeZone, bootstrap.currencies, bootstrap.rates, totalsCurrency) : null,
+    [showsToday, bootstrap.expenses, todayKey, timeZone, bootstrap.currencies, bootstrap.rates, totalsCurrency])
+  const showsUsual = isShown(entryBlocks, 'usual')
+  const usualItems = useMemo(() => showsUsual ? usualExpenses(bootstrap.expenses, bootstrap.categories, bootstrap.tags ?? []) : NO_USUAL, [showsUsual, bootstrap.expenses, bootstrap.categories, bootstrap.tags])
   const pickUsual = (item: UsualExpense) => {
     tap(6)
     const decimals = bootstrap.currencies.find((currency) => currency.code === item.currency)?.decimals ?? 2
     setForm((value) => ({ ...value, amount: String(item.amountMinor / 10 ** decimals), currency: item.currency, categoryId: item.categoryId, tagIds: item.tagIds }))
   }
   // «Сегодня» и «Как обычно» одинаковы у любой записи: при свайпе они не меняются, а в превью — неживые копии.
-  const fixedBlock = (id: string, live = true) => id === 'today' ? <TodayLine bootstrap={bootstrap}/>
+  const fixedBlock = (id: string, live = true) => id === 'today' ? today && <TodayLine total={today}/>
     : id === 'usual' ? <UsualChips items={usualItems} categories={bootstrap.categories} tags={bootstrap.tags ?? []} currencies={bootstrap.currencies} usualCurrency={defaultCurrency()} disabled={saving} inert={!live} onPick={live ? pickUsual : undefined}/>
     : null
   const liveUnit = (unit: EntryUnit) => unit.key === 'keypad' ? <Keypad key="keypad" onKey={key} disabled={saving}/>
