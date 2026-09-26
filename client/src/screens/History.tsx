@@ -6,7 +6,8 @@ import type { AccountSettings, BlockLayout, Category, Currency, Expense, Tag } f
 import { appTimeZone, cachedDateTimeFormat, localDateKey, monthDateRange, shiftDateKey, weekdayFromDateKey, workspaceCurrency } from '../utils'
 import { HISTORY_PERIOD_LABELS, defaultHistoryPreferences, expenseTagNames, filterHistoryExpenses, historyTotals, parseHistoryPreferences } from '../history'
 import type { HistoryPeriod, HistoryPreferences } from '../history'
-import { CardMark, CategoryMark, ChevronIcon, EditBlock, HOLD_MS, LockIcon, MultiSelect, SearchIcon, Toast, TrashIcon, tap, useDialog, useDragOrder, useFlip, useHold, useOverflowHint, useToast } from '../ui'
+import { CardMark, CategoryMark, ChevronIcon, EditBlock, HOLD_MS, LockIcon, MultiSelect, SearchIcon, Toast, TrashIcon, prefersReducedMotion, tap, useDialog, useDragOrder, useFlip, useHold, useOverflowHint, useToast } from '../ui'
+import { trackEasing } from './Entry'
 import { formatAnalyticsAmount, formatDateRange, formatHistoryDate, money, pluralRu } from '../format'
 import type { Bootstrap } from '../format'
 import { sortTags } from '../tags'
@@ -290,6 +291,67 @@ export const HistoryRow = memo(function HistoryRow({ expense, category, tags, cu
     {(held || closing) && <button type="button" className="history-swipe-delete" tabIndex={open ? 0 : -1} aria-hidden={!open} disabled={disabled} onClick={() => onDelete(expense)}><TrashIcon/><span>Удалить</span></button>}
   </div>
 })
+
+/** Карточка над списком раскрывается и сворачивается за столько миллисекунд. */
+export const CARD_MOTION_MS = 200
+
+// Карточка над списком («Сохраните ссылку доступа», «N операций с карты ждут разбора») на показанном экране появляется,
+// раскрываясь по высоте от нуля, и уходит, сворачиваясь, — список под ней едет, а не прыгает. Высота меняется покадрово,
+// как у блоков в настройке экрана: путь считается от первого кадра, а не от перерисовки, и CSS-переходов нет. Обёртка —
+// отдельный блочный контекст, поэтому отступ карточки сверху живёт внутри неё и сворачивается вместе с ней; положение
+// карточки и списка в покое то же, что без обёртки. Уходящая карточка досматривается с последними данными и не
+// нажимается; вернувшаяся едет обратно с той высоты, где её застали. При первом рендере, на вкладке, которую не видно,
+// и при «уменьшении движения» карточка сразу в конечном виде.
+function CardSlot({ show, children }: { show: boolean; children: React.ReactNode }) {
+  const kept = useRef(children)
+  if (show) kept.current = children
+  const [present, setPresent] = useState(show)
+  if (show && !present) setPresent(true)
+  const slot = useRef<HTMLDivElement>(null)
+  const motion = useRef({ shown: show, frame: 0 })
+  useLayoutEffect(() => {
+    const run = motion.current
+    if (run.shown === show) return
+    run.shown = show
+    const moving = run.frame !== 0
+    cancelAnimationFrame(run.frame)
+    run.frame = 0
+    const node = slot.current
+    if (!node) return
+    if (prefersReducedMotion() || document.hidden || node.closest('.page-slot')?.hasAttribute('inert')) {
+      node.style.height = ''
+      node.style.overflow = ''
+      if (!show) setPresent(false)
+      return
+    }
+    const current = node.getBoundingClientRect().height
+    node.style.height = ''
+    const natural = node.getBoundingClientRect().height
+    const from = moving ? current : show ? 0 : natural
+    const to = show ? natural : 0
+    node.style.overflow = 'hidden'
+    node.style.height = `${from}px`
+    let started = 0
+    const step = (time: number) => {
+      started ||= time
+      const progress = Math.min(1, (time - started) / CARD_MOTION_MS)
+      if (progress < 1) {
+        node.style.height = `${from + (to - from) * trackEasing(progress)}px`
+        run.frame = requestAnimationFrame(step)
+        return
+      }
+      run.frame = 0
+      // Свёрнутая остаётся нулевой высоты, пока React её не уберёт: иначе на кадр вернулась бы во весь рост.
+      if (!show) { node.style.height = '0px'; setPresent(false); return }
+      node.style.height = ''
+      node.style.overflow = ''
+    }
+    run.frame = requestAnimationFrame(step)
+  }, [show])
+  useEffect(() => () => cancelAnimationFrame(motion.current.frame), [])
+  if (!present) return null
+  return <div ref={slot} className="history-card" inert={!show}>{show ? children : kept.current}</div>
+}
 
 export type HistoryInbox = { count: number; onOpen: () => void }
 
@@ -677,10 +739,10 @@ export const HistoryView = memo(function HistoryView({ userId, workspaceId, boot
           if (period !== filters.period) updateFilters({ period })
         }}/>}
       </div>}
-    {reminder && !selected.size && (reminder.compact
+    <CardSlot show={Boolean(reminder) && !selected.size}>{reminder && (reminder.compact
       ? <div className="history-inbox history-reminder compact" inert={editing} data-flip-id="reminder"><span className="reminder-mark"><LockIcon/></span><b>Сохраните ссылку доступа</b><button type="button" className="text-button reminder-save" onClick={reminder.onSave}>Сохранить</button><button type="button" className="text-button reminder-later" onClick={reminder.onLater}>Позже</button></div>
-      : <div className="history-inbox history-reminder" inert={editing} data-flip-id="reminder"><span className="reminder-mark"><LockIcon/></span><span><b>Сохраните ссылку доступа</b><small>Иначе без этого телефона расходы не вернуть</small></span><span className="reminder-actions"><button type="button" className="reminder-action" onClick={reminder.onSave}>Сохранить</button><button type="button" className="text-button reminder-later" onClick={reminder.onLater}>Позже</button></span></div>)}
-    {inbox && inbox.count > 0 && !selected.size && <button type="button" className="history-inbox" inert={editing} data-flip-id="inbox" onClick={inbox.onOpen}><CardMark/><span><b>{inbox.count} {pluralRu(inbox.count, ['операция с карты ждёт', 'операции с карты ждут', 'операций с карты ждут'])} разбора</b><small>Выбрать категории</small></span><ChevronIcon/></button>}
+      : <div className="history-inbox history-reminder" inert={editing} data-flip-id="reminder"><span className="reminder-mark"><LockIcon/></span><span><b>Сохраните ссылку доступа</b><small>Иначе без этого телефона расходы не вернуть</small></span><span className="reminder-actions"><button type="button" className="reminder-action" onClick={reminder.onSave}>Сохранить</button><button type="button" className="text-button reminder-later" onClick={reminder.onLater}>Позже</button></span></div>)}</CardSlot>
+    <CardSlot show={Boolean(inbox && inbox.count > 0) && !selected.size}>{inbox && <button type="button" className="history-inbox" inert={editing} data-flip-id="inbox" onClick={inbox.onOpen}><CardMark/><span><b>{inbox.count} {pluralRu(inbox.count, ['операция с карты ждёт', 'операции с карты ждут', 'операций с карты ждут'])} разбора</b><small>Выбрать категории</small></span><ChevronIcon/></button>}</CardSlot>
     {/* Суммы по дням настраиваются у первого дня: в рамке с «−» или заготовкой на месте суммы. */}
     <div ref={listRef} className={`history-list${selected.size ? ' selecting' : ''}`} data-flip-id="list">{shown.days.map(({ date, items, total }, index) => <div key={date} className="history-day"><div className="history-date"><span>{formatHistoryDate(date)}</span>{editing && index === 0 ? <EditBlock {...editBlock('day-totals')} className="day-totals-block"><b>{total ?? '—'}</b></EditBlock> : showDayTotals && total && <b>{total}</b>}</div>{items.map((expense) => <HistoryRow key={expense.id} expense={expense} category={categoryMap.get(expense.categoryId)} tags={tags} currencies={bootstrap.currencies} checked={selected.has(expense.id)} selecting={selected.size > 0} open={openRow === expense.id} disabled={deleting} inert={editing} onOpen={setOpenRow} onToggle={toggle} onEdit={editRow} onDelete={deleteRow} onVoided={setVoided}/>)}</div>)}</div>
     {hasRest && <div ref={restRef} className="history-rest" aria-hidden="true"/>}

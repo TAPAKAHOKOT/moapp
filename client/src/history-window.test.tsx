@@ -382,3 +382,118 @@ describe('history row press', () => {
   })
 })
 
+describe('history cards above the list', () => {
+  // jsdom ничего не раскладывает: обёртка карточки в покое высотой 76 px, а в движении — какую ей поставили.
+  const CARD_HEIGHT = 76
+  const measureCards = () => vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+    const height = this.classList.contains('history-card') ? (this.style.height ? parseFloat(this.style.height) : CARD_HEIGHT) : 0
+    return { x: 0, y: 0, top: 0, left: 0, right: 0, bottom: height, width: 0, height, toJSON: () => ({}) } as DOMRect
+  })
+  const inbox = { count: 3, onOpen: vi.fn() }
+  const reminder = { onSave: vi.fn(), onLater: vi.fn(), compact: false }
+  const slots = (container: HTMLElement) => [...container.querySelectorAll<HTMLElement>('.history-card')]
+  const height = (slot: HTMLElement) => slot.style.height === '' ? null : parseFloat(slot.style.height)
+  const frames = (ms: number) => act(() => vi.advanceTimersByTime(ms))
+  const view = (cards: { inbox?: typeof inbox | null; reminder?: typeof reminder | null }) => <HistoryView {...props} bootstrap={bootstrapWith(5)} {...cards}/>
+
+  it('shows the cards that are ready with the screen at once, in their final layout', () => {
+    measureCards()
+    vi.useFakeTimers()
+    const { container } = render(view({ inbox, reminder }))
+    const [first, second] = slots(container)
+    expect(first!.querySelector('.history-reminder')).not.toBeNull()
+    expect(second!.querySelector('.history-inbox:not(.history-reminder)')?.textContent).toContain('3 операции с карты ждут разбора')
+    for (const slot of [first!, second!]) {
+      expect(slot.getAttribute('style')).toBeNull()
+      expect(slot.hasAttribute('inert')).toBe(false)
+    }
+    // Карточки стоят между панелью фильтров и списком, как и раньше.
+    const order = [...container.querySelector('.history-page')!.children].map((node) => node.className)
+    expect(order.slice(0, 4)).toEqual(['history-toolbar', 'history-card', 'history-card', 'history-list'])
+  })
+
+  it('unfolds a card that comes to a shown screen and folds one that goes away', () => {
+    measureCards()
+    vi.useFakeTimers()
+    const { container, rerender } = render(view({ inbox: null }))
+    expect(slots(container)).toHaveLength(0)
+
+    rerender(view({ inbox }))
+    const [slot] = slots(container)
+    // До первого кадра карточка уже в DOM, но закрыта: высота 0, содержимое обрезано.
+    expect(height(slot!)).toBe(0)
+    expect(slot!.style.overflow).toBe('hidden')
+    frames(100)
+    expect(height(slot!)).toBeGreaterThan(CARD_HEIGHT / 2)
+    expect(height(slot!)).toBeLessThan(CARD_HEIGHT)
+    frames(150)
+    expect(slot!.getAttribute('style')).toBe('')
+    expect(slot!.textContent).toContain('3 операции с карты ждут разбора')
+
+    rerender(view({ inbox: null }))
+    // Уходящая карточка ещё видна и сворачивается, но уже не нажимается.
+    expect(slots(container)).toEqual([slot])
+    expect(slot!.hasAttribute('inert')).toBe(true)
+    expect(slot!.textContent).toContain('3 операции с карты ждут разбора')
+    expect(height(slot!)).toBe(CARD_HEIGHT)
+    frames(100)
+    expect(height(slot!)).toBeGreaterThan(0)
+    expect(height(slot!)).toBeLessThan(CARD_HEIGHT / 2)
+    frames(150)
+    expect(slots(container)).toHaveLength(0)
+  })
+
+  it('turns a folding card back from where it is when it returns', () => {
+    measureCards()
+    vi.useFakeTimers()
+    const { container, rerender } = render(view({ reminder }))
+    rerender(view({ reminder: null }))
+    frames(100)
+    const [slot] = slots(container)
+    const folded = height(slot!)!
+    rerender(view({ reminder }))
+    expect(slots(container)).toEqual([slot])
+    expect(slot!.hasAttribute('inert')).toBe(false)
+    expect(height(slot!)).toBe(folded)
+    frames(250)
+    expect(slot!.getAttribute('style')).toBe('')
+  })
+
+  it('folds the cards away while records are selected', () => {
+    measureCards()
+    vi.useFakeTimers()
+    const { container } = render(view({ inbox, reminder }))
+    expect(slots(container)).toHaveLength(2)
+    const row = container.querySelector('.history-expense')!
+    fireEvent.pointerDown(row, { pointerType: 'mouse', button: 0, clientX: 150, clientY: 20 })
+    frames(LONG_PRESS_MS)
+    fireEvent.pointerUp(row, { pointerType: 'mouse', clientX: 150, clientY: 20 })
+    expect(slots(container).every((slot) => slot.hasAttribute('inert'))).toBe(true)
+    frames(250)
+    expect(slots(container)).toHaveLength(0)
+  })
+
+  it('shows and hides cards at once when motion is reduced', () => {
+    measureCards()
+    vi.stubGlobal('matchMedia', (query: string) => ({ matches: query.includes('reduce'), media: query, addEventListener() {}, removeEventListener() {} }))
+    vi.useFakeTimers()
+    const { container, rerender } = render(view({ inbox: null }))
+    rerender(view({ inbox }))
+    expect(slots(container)).toHaveLength(1)
+    expect(slots(container)[0]!.getAttribute('style')).toBeNull()
+    rerender(view({ inbox: null }))
+    expect(slots(container)).toHaveLength(0)
+  })
+
+  it('shows and hides cards at once on a tab that is out of sight', () => {
+    measureCards()
+    vi.useFakeTimers()
+    const hidden = (cards: Parameters<typeof view>[0]) => <div className="page-slot" inert><HistoryView {...props} bootstrap={bootstrapWith(5)} {...cards}/></div>
+    const { container, rerender } = render(hidden({ reminder: null }))
+    rerender(hidden({ reminder }))
+    expect(slots(container)[0]!.getAttribute('style')).toBeNull()
+    rerender(hidden({ reminder: null }))
+    expect(slots(container)).toHaveLength(0)
+  })
+})
+
