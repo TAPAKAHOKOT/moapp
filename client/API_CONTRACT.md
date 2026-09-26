@@ -127,7 +127,8 @@ Legacy v2 cache/outbox data remains quarantined until a completed legacy claim s
 
 Settings are personal and live in the account: only their owner reads or changes them, and they follow the profile to
 every device and through logout. Account settings (`AccountSettings`: `theme` — `'system' | 'light' | 'dark'`, `accent` —
-`'sage' | 'terracotta' | 'sand' | 'blue' | 'lilac' | 'graphite'`, `textSize` — `'normal' | 'large'`) arrive with `GET /api/session`; settings in one workspace (`MemberSettings`: `lastCurrency`, `analyticsCurrency`,
+`'sage' | 'terracotta' | 'sand' | 'blue' | 'lilac' | 'graphite'`, `textSize` — `'normal' | 'large'`, `analyticsPeriod` —
+`'week' | 'month'`, and `entryBlocks`, `historyBlocks`, `analyticsBlocks`) arrive with `GET /api/session`; settings in one workspace (`MemberSettings`: `lastCurrency`, `analyticsCurrency`,
 `historyFilters` without the search text, `categoryOrder`, `tagOrder`) arrive with that workspace's bootstrap and never include another member's.
 
 `categoryOrder` and `tagOrder` are what the member sees on «Расход»: `{shown: string[], more: string[]}` — the category
@@ -154,6 +155,23 @@ workspace's queue. On the first known answer after the update, values this phone
 `moapp:theme`, `moapp:accent` and `moapp:text-size` stay as a copy of the account appearance for the first frame and are
 removed on logout. The accent is applied as `data-accent` on the root (tokens in `workspace-layout.css`, chart colours in
 `appearance.ts`), the text size as `data-text-size="large"`, which multiplies UI font sizes of 11–18px by 1.2.
+
+### Screens made of blocks
+
+`entryBlocks`, `historyBlocks` and `analyticsBlocks` are `{shown: string[], hidden: string[]}`: the blocks on the screen in
+order, and the blocks the person removed (at most 12 each, lowercase ids with dashes, never in both lists). The catalog lives
+in the client (`screen-blocks.ts`), so the server accepts any well-formed id and an id unknown to the client is skipped;
+a block in neither list — added to the app later — stands on the screen at the end. The layout is one for all workspaces.
+
+| Screen | Blocks (default order) | Always there |
+|---|---|---|
+| «Расход» | `note`, `tags` | amount, keypad, tiles, «Сохранить» |
+| «История» | `filters`, `total`, `day-totals` | the list, reminders, card review |
+| «Аналитика» (reorderable) | `trend`, `categories`, `tags`, `weekdays` (month only) | the total and the period switch |
+
+Without the `filters` block the saved history filters do not apply (they return with the block). Without the `categories` or
+`tags` card the analytics focus on a category or tag does not apply. Settings → «Мои экраны» edits all three screens;
+«Настроить экран» at the bottom of «История» and «Аналитика» edits that screen.
 
 ## Expense routes and synchronization
 

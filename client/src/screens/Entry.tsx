@@ -2,13 +2,14 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { WorkspaceApiError as ApiError, saveMemberSettings, submitExpenseOperation } from '../workspace-api'
 import { getWorkspacePreference, setWorkspacePreference } from '../app-state'
 import { patchSettings } from '../settings'
-import type { Category, Currency, Expense, ScreenOrder, Tag, WorkspaceSummary } from '../types'
+import type { BlockLayout, Category, Currency, Expense, ScreenOrder, Tag, WorkspaceSummary } from '../types'
 import { amountToMinor, applyKeypad, cachedNumberFormat, formatAmountInput, isoToLocalInput, localInputToIso, swipeDirection, workspaceCurrency } from '../utils'
 import { CategoryMark, ChevronIcon, CurrencySheet, GridIcon, Toast, TrashIcon, prefersReducedMotion, tap, useConfirm, useDialog, useToast } from '../ui'
 import { amountSize, formatEntryDate, formatShortWeekday, inputFromExpense } from '../format'
 import type { Bootstrap } from '../format'
 import { ExtrasRow, NoteSheet, TAG_COLORS, createTagOrReuse } from '../tags'
 import { categoryLayout } from '../screen-order'
+import { isShown, screenBlocks } from '../screen-blocks'
 
 export const EMPTY_FORM = { amount: '', currency: 'RSD', note: '', occurredAt: '', tagIds: [] as string[], categoryId: '' }
 
@@ -145,21 +146,23 @@ export function CategoryTiles({ main, additional, selectedId, disabled = false, 
   </div></div>
 }
 
-export function EntryLowerPreview({ main, additional, tags, tagOrder, state }: { main: Category[]; additional: Category[]; tags: Tag[]; tagOrder?: ScreenOrder; state: LowerPreviewState }) {
+export function EntryLowerPreview({ main, additional, tags, tagOrder, showNote = true, showTags = true, state }: { main: Category[]; additional: Category[]; tags: Tag[]; tagOrder?: ScreenOrder; showNote?: boolean; showTags?: boolean; state: LowerPreviewState }) {
   return <>
     <CategoryTiles main={main} additional={additional} selectedId={state.categoryId} inert/>
-    <ExtrasRow tags={tags} order={tagOrder} selected={state.tagIds} note={state.note} inert onChange={() => {}} onNote={() => {}}/>
+    <ExtrasRow tags={tags} order={tagOrder} showNote={showNote} showTags={showTags} selected={state.tagIds} note={state.note} inert onChange={() => {}} onNote={() => {}}/>
     <div className="entry-save"><button type="button" className="primary" tabIndex={-1} disabled={!state.canSave}>{state.saveLabel}</button>{state.key !== 'blank' && <button type="button" className="sheet-cancel ghost" tabIndex={-1} disabled aria-hidden>Отменить</button>}</div>
   </>
 }
 
-export function EntryView({ userId, workspaceId, workspace, bootstrap, setBootstrap, currentId, setCurrentId, refreshPending, onDraftDirtyChange, active, newExpenseRequest = 0 }: {
+export function EntryView({ userId, workspaceId, workspace, bootstrap, setBootstrap, currentId, setCurrentId, refreshPending, onDraftDirtyChange, active, newExpenseRequest = 0, blocks }: {
   userId: string
   workspaceId: string
   workspace: WorkspaceSummary
   bootstrap: Bootstrap; setBootstrap: React.Dispatch<React.SetStateAction<Bootstrap>>; currentId: string | null; setCurrentId: (id: string | null) => void; refreshPending: () => void; onDraftDirtyChange: (dirty: boolean) => void; active: boolean
   /** Счётчик просьб «к новому расходу» извне (повторный тап по вкладке «Расход»): каждое увеличение — один переезд к пустой карточке. */
   newExpenseRequest?: number
+  /** Какие блоки «Расхода» человек оставил на экране («Мои экраны»). */
+  blocks?: BlockLayout
 }) {
   const activeExpenses = useMemo(() => bootstrap.expenses.filter((item) => !item.deletedAt).sort((a, b) => b.occurredAt.localeCompare(a.occurredAt)), [bootstrap.expenses])
   const currentIndex = currentId ? activeExpenses.findIndex((item) => item.id === currentId) : -1
@@ -613,6 +616,10 @@ export function EntryView({ userId, workspaceId, workspace, bootstrap, setBootst
   // Плитки и теги у каждого свои (настройки → «Категории» и «Теги»); кто их не трогал, видит общую стартовую раскладку.
   const { shown: main, more: additional } = categoryLayout(bootstrap.categories, bootstrap.settings?.categoryOrder)
   const tagOrder = bootstrap.settings?.tagOrder
+  // Заметку и теги можно убрать с экрана. Уже записанные у расхода заметка и теги от этого не теряются.
+  const entryBlocks = screenBlocks('entry', blocks)
+  const showNote = isShown(entryBlocks, 'note')
+  const showTags = isShown(entryBlocks, 'tags')
   const selectedCategoryId = form.categoryId || null
   const dirty = current ? JSON.stringify(form) !== JSON.stringify(inputFromExpense(current, bootstrap.currencies)) : formHasContent(form)
   const save = saveButtonLabel({ amount: form.amount, currency: form.currency, categoryId: selectedCategoryId, editing: Boolean(current), dirty, currencies: bootstrap.currencies })
@@ -666,10 +673,10 @@ export function EntryView({ userId, workspaceId, workspace, bootstrap, setBootst
     <div className="entry-lower">
     <div ref={lowerLiveRef} className="entry-lower-live">
     <CategoryTiles main={main} additional={additional} selectedId={selectedCategoryId} disabled={saving} onPick={chooseCategory} onMore={() => setCategorySheet(true)}/>
-    <ExtrasRow tags={bootstrap.tags ?? []} order={tagOrder} selected={form.tagIds} note={form.note} disabled={saving} online={navigator.onLine} onChange={(tagIds) => setForm((value) => ({ ...value, tagIds }))} onNote={() => setNoteSheet(true)} onCreate={(name) => createTagOrReuse(workspaceId, name, TAG_COLORS[(bootstrap.tags ?? []).length % TAG_COLORS.length] ?? null, publishTag)}/>
+    <ExtrasRow tags={bootstrap.tags ?? []} order={tagOrder} showNote={showNote} showTags={showTags} selected={form.tagIds} note={form.note} disabled={saving} online={navigator.onLine} onChange={(tagIds) => setForm((value) => ({ ...value, tagIds }))} onNote={() => setNoteSheet(true)} onCreate={(name) => createTagOrReuse(workspaceId, name, TAG_COLORS[(bootstrap.tags ?? []).length % TAG_COLORS.length] ?? null, publishTag)}/>
     <div className="entry-save"><button type="button" className="primary" disabled={!save.canSave || saving} onClick={() => void submitExpense()}>{saving ? 'Сохраняем…' : save.label}</button>{current && <button type="button" className={`sheet-cancel${dirty && !saving ? '' : ' ghost'}`} disabled={!dirty || saving} aria-hidden={!dirty || saving} tabIndex={dirty && !saving ? undefined : -1} onClick={cancelEdit}>Отменить</button>}</div>
     </div>
-    {swipePreview && <div ref={lowerPreviewRef} className="entry-lower-preview" aria-hidden="true" inert><EntryLowerPreview main={main} additional={additional} tags={bootstrap.tags ?? []} tagOrder={tagOrder} state={swipePreview}/></div>}
+    {swipePreview && <div ref={lowerPreviewRef} className="entry-lower-preview" aria-hidden="true" inert><EntryLowerPreview main={main} additional={additional} tags={bootstrap.tags ?? []} tagOrder={tagOrder} showNote={showNote} showTags={showTags} state={swipePreview}/></div>}
     </div>
     {dateSheet && <DateSheet value={form.occurredAt} onClose={() => setDateSheet(false)} onPick={(value) => { setForm({ ...form, occurredAt: value }); setDateSheet(false) }}/>}
     {categorySheet && <CategorySheet categories={additional} selectedId={selectedCategoryId ?? undefined} onClose={() => setCategorySheet(false)} onPick={chooseCategory}/>}

@@ -26,9 +26,10 @@ export function tagStyle(tag: Pick<Tag, 'color'>) {
   return tag.color ? { '--tag': tag.color } as React.CSSProperties : undefined
 }
 
-// Ряд под категориями: заметка первой и всегда на месте, дальше теги как категории — те, что человек держит
-// в ряду, по его порядку, остальные за «Ещё N». Полный список с поиском и созданием — в шите.
-export function ExtrasRow({ tags, order, selected, note, onChange, onNote, onCreate, disabled = false, online = true, inert = false }: { tags: Tag[]; order?: ScreenOrder; selected: string[]; note: string; onChange: (ids: string[]) => void; onNote: () => void; onCreate?: (name: string) => Promise<Tag | null>; disabled?: boolean; online?: boolean; inert?: boolean }) {
+// Ряд под категориями: заметка первой, дальше теги как категории — те, что человек держит в ряду, по его порядку,
+// остальные за «Ещё N». Полный список с поиском и созданием — в шите. Заметку и теги можно убрать с экрана
+// («Мои экраны»): тогда их нет и в ряду, а без обоих нет и самого ряда.
+export function ExtrasRow({ tags, order, selected, note, onChange, onNote, onCreate, disabled = false, online = true, inert = false, showNote = true, showTags = true }: { tags: Tag[]; order?: ScreenOrder; selected: string[]; note: string; onChange: (ids: string[]) => void; onNote: () => void; onCreate?: (name: string) => Promise<Tag | null>; disabled?: boolean; online?: boolean; inert?: boolean; showNote?: boolean; showTags?: boolean }) {
   const [open, setOpen] = useState(false)
   const stripRef = useRef<HTMLDivElement>(null)
   const layout = tagLayout(tags, order)
@@ -54,15 +55,16 @@ export function ExtrasRow({ tags, order, selected, note, onChange, onNote, onCre
     if (selected.includes(id)) onChange(selected.filter((item) => item !== id))
     else if (selected.length < MAX_EXPENSE_TAGS) onChange([...selected, id])
   }
+  if (!showNote && !showTags) return null
   // Шторка рендерится рядом с рядом, а не внутри него: iOS Safari удерживает position:fixed внутри прокручиваемого
   // контейнера, и подложка оказывалась обрезанной полосой и под футером.
   return <>
-    <div className={`extras-row${more ? ' more' : ''}`} role="group" aria-label="Заметка и теги">
-      <button type="button" className={`tag-add extra-add extra-note${note ? ' filled' : ''}`} disabled={disabled} tabIndex={tabIndex} onClick={onNote} aria-label={note ? `Заметка: ${note}` : 'Добавить заметку'}>{note ? `✎ ${note}` : '＋ Заметка'}</button>
-      <div className="tag-strip" ref={stripRef} role="group" aria-label="Теги">
+    <div className={`extras-row${more ? ' more' : ''}`} role="group" aria-label={showNote && showTags ? 'Заметка и теги' : showNote ? 'Заметка' : 'Теги'}>
+      {showNote && <button type="button" className={`tag-add extra-add extra-note${note ? ' filled' : ''}`} disabled={disabled} tabIndex={tabIndex} onClick={onNote} aria-label={note ? `Заметка: ${note}` : 'Добавить заметку'}>{note ? `✎ ${note}` : '＋ Заметка'}</button>}
+      {showTags && <div className="tag-strip" ref={stripRef} role="group" aria-label="Теги">
         {shown.map((tag) => <TagChip key={tag.id} name={tag.name} color={tag.color} selected={selected.includes(tag.id)} disabled={disabled} inert={inert} onToggle={() => toggle(tag.id)}/>)}
         <button type="button" className="tag-add extra-add" disabled={disabled} tabIndex={tabIndex} onClick={() => setOpen(true)} aria-label={hidden ? `Ещё ${hidden} ${pluralRu(hidden, ['тег', 'тега', 'тегов'])}, все теги` : tags.length ? 'Все теги' : 'Добавить тег'}>{hidden ? `Ещё ${hidden}` : '＋ Тег'}</button>
-      </div>
+      </div>}
     </div>
     {open && <TagSheet tags={tags} order={order} selected={selected} online={online} onClose={() => setOpen(false)} onChange={onChange} onCreate={onCreate}/>}
   </>

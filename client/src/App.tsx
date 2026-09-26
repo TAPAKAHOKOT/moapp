@@ -3,6 +3,7 @@ import { appTimeZone, localInputToIso, workspaceCurrency } from './utils'
 import { WorkspaceApiError as ApiError, allowWorkspaceMutations, blockWorkspaceMutations, discardOutboxIssues, flushSettings, getBootstrap, getCardQueueStatus, getSession, listExpenses, listMods, logoutExpected, prepareInitialOrManualRecovery, probeServer, retryOutboxIssue, saveAccountSettings, setSessionContext, syncAllWorkspaces } from './workspace-api'
 import { cacheBootstrap, cacheProfile, migrateLegacyOfflineData, outboxStats, readCachedProfile, waitForWorkspaceOfflineWrites } from './workspace-offline'
 import { patchSettings } from './settings'
+import type { SettingsPatch } from './settings'
 import { DEFAULT_APPEARANCE, appearanceOf, applyAppearance, readAppearanceMirror, writeAppearanceMirror } from './appearance'
 import type { Appearance } from './appearance'
 import { REMINDER_COMPACT_AFTER, applyMembershipLoss, beginLogout, chooseCachedWorkspace, closeCapability, createAppState, createIdentityCoordinator, createLoggedOutState, forgetKnownProfile, hydrateAppState, openLegacyClaim, readReminderMemory, reminderSnoozed, setActiveWorkspace, settlePendingLogout, snoozeReminder, updateWorkspace, writeReminderMemory } from './app-state'
@@ -10,7 +11,7 @@ import type { AppState, ReminderMemory } from './app-state'
 import { createIdentityWithProbe, createWorkspaceWithProbe } from './access-flow'
 import { completeRotationSafely } from './recovery-flow'
 import { monitorServiceWorkerUpdates } from './service-worker-update'
-import type { BybitCardStatus, CapabilityIntent, Expense, RecoveryPrepareResponse, SessionState, ThemePreference, WorkspaceMod } from './types'
+import type { AccountSettings, BybitCardStatus, CapabilityIntent, Expense, RecoveryPrepareResponse, SessionState, ThemePreference, WorkspaceMod } from './types'
 import { ChevronIcon, Toast, prefersReducedMotion, tap, useConfirm, useInputModality, useOnlineStatus, useToast } from './ui'
 import type { Theme } from './ui'
 import { pluralRu } from './format'
@@ -319,8 +320,9 @@ export default function App({ capability = null }: { capability?: CapabilityInte
     writeAppearanceMirror(appearance)
     setAppearanceMirror((current)=>current.theme===appearance.theme&&current.accent===appearance.accent&&current.textSize===appearance.textSize?current:appearance)
   },[Boolean(accountSettings),appearance.theme,appearance.accent,appearance.textSize]) // eslint-disable-line react-hooks/exhaustive-deps
-  // Внешний вид меняется в аккаунте: сразу на экране, в кэше профиля для запуска без сети и в очереди на сервер.
-  const changeAppearance=useCallback((patch:Partial<Appearance>)=>{
+  // Внешний вид и устройство экранов меняются в аккаунте: сразу на экране, в кэше профиля для запуска без сети
+  // и в очереди на сервер.
+  const changeAccountSettings=useCallback((patch:SettingsPatch<AccountSettings>)=>{
     const current=stateRef.current.session
     if(!current?.authenticated)return
     const sameSession=(value:SessionState|null)=>value?.authenticated&&value.user.id===current.user.id&&value.currentSessionId===current.currentSessionId
@@ -718,10 +720,10 @@ if(Math.abs(node.scrollLeft-pagerTarget.current)>1)node.scrollLeft=pagerTarget.c
   return <div className="app-shell" key={workspaceId}>
     <header className="workspace-header"><button type="button" className="workspace-name-button" onClick={()=>setSwitchOpen(true)}><span>{workspace.name}</span><ChevronIcon/></button><div className="workspace-header-actions">{updateWaiting&&<button type="button" className="update-button" onClick={activateUpdate}>Обновить</button>}{syncPill}</div></header>
     <main className="pager" ref={pager} onScroll={onPagerScroll} onPointerDown={()=>{stopPagerAnimation();pagerTarget.current=null}} onTouchStart={()=>{stopPagerAnimation();pagerTarget.current=null}}>
-      <div className="page-slot" inert={tab!=='entry'} aria-hidden={tab!=='entry'}>{mountedTabs.includes('entry')&&<EntryView userId={auth.user.id} workspaceId={workspaceId} workspace={workspace} bootstrap={bootstrap} setBootstrap={setWorkspaceData} currentId={currentId} setCurrentId={setCurrentId} refreshPending={refreshPending} onDraftDirtyChange={setDraftDirty} active={tab==='entry'} newExpenseRequest={newExpenseRequest}/>}</div>
-      <div className="page-slot" inert={tab!=='history'} aria-hidden={tab!=='history'}>{mountedTabs.includes('history')&&<HistoryView userId={auth.user.id} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} edit={editExpense} createNew={createNewExpense} refreshPending={refreshPending} inbox={historyInbox} reminder={historyReminder} timeZone={timeZone} older={historyOlder}/>}</div>
-      <div className="page-slot" inert={tab!=='analytics'} aria-hidden={tab!=='analytics'}>{mountedTabs.includes('analytics')&&<AnalyticsView userId={auth.user.id} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} theme={theme} accent={appearance.accent} online={serverAvailable} timeZone={timeZone}/>}</div>
-      <div className="page-slot" inert={tab!=='settings'} aria-hidden={tab!=='settings'}>{mountedTabs.includes('settings')&&<SettingsView user={auth} workspace={workspace} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} pendingCount={stats.total} refreshPending={refreshPending} onLogout={()=>void logoutCurrent()} appearance={appearance} onAppearanceChange={changeAppearance} onSession={(next)=>hydrate(next,false,settingsIdentityEpoch)} online={serverAvailable} mods={mods} onOpenMods={()=>setModsOpen(true)} loadOlderExpenses={loadOlderExpenses}/>}</div>
+      <div className="page-slot" inert={tab!=='entry'} aria-hidden={tab!=='entry'}>{mountedTabs.includes('entry')&&<EntryView userId={auth.user.id} workspaceId={workspaceId} workspace={workspace} bootstrap={bootstrap} setBootstrap={setWorkspaceData} currentId={currentId} setCurrentId={setCurrentId} refreshPending={refreshPending} onDraftDirtyChange={setDraftDirty} active={tab==='entry'} newExpenseRequest={newExpenseRequest} blocks={auth.settings?.entryBlocks}/>}</div>
+      <div className="page-slot" inert={tab!=='history'} aria-hidden={tab!=='history'}>{mountedTabs.includes('history')&&<HistoryView userId={auth.user.id} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} edit={editExpense} createNew={createNewExpense} refreshPending={refreshPending} inbox={historyInbox} reminder={historyReminder} timeZone={timeZone} older={historyOlder} blocks={auth.settings?.historyBlocks} onScreensChange={changeAccountSettings}/>}</div>
+      <div className="page-slot" inert={tab!=='analytics'} aria-hidden={tab!=='analytics'}>{mountedTabs.includes('analytics')&&<AnalyticsView userId={auth.user.id} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} theme={theme} accent={appearance.accent} online={serverAvailable} timeZone={timeZone} blocks={auth.settings?.analyticsBlocks} period={auth.settings?.analyticsPeriod} onScreensChange={changeAccountSettings}/>}</div>
+      <div className="page-slot" inert={tab!=='settings'} aria-hidden={tab!=='settings'}>{mountedTabs.includes('settings')&&<SettingsView user={auth} workspace={workspace} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} pendingCount={stats.total} refreshPending={refreshPending} onLogout={()=>void logoutCurrent()} appearance={appearance} onAppearanceChange={changeAccountSettings} onAccountSettingsChange={changeAccountSettings} onSession={(next)=>hydrate(next,false,settingsIdentityEpoch)} online={serverAvailable} mods={mods} onOpenMods={()=>setModsOpen(true)} loadOlderExpenses={loadOlderExpenses}/>}</div>
     </main>
     <nav className="bottom-nav" aria-label="Основная навигация">{navigationTabs.map((item)=><button type="button" key={item.id} aria-current={tab===item.id?'page':undefined} aria-label={item.id==='history'&&reviewCount?`История: ${reviewCount} операций с карты ждут разбора`:item.label} className={tab===item.id?'active':''} onClick={()=>{if(tab!==item.id)tap(4);else if(item.id==='entry'&&currentId)setNewExpenseRequest((value)=>value+1);setTab(item.id)}}><span><NavIcon tab={item.id}/>{item.id==='history'&&reviewCount>0&&<b className="nav-badge">{reviewCount>99?'99+':reviewCount}</b>}</span><small>{item.label}</small></button>)}</nav>
     {modsOpen&&<ModsOverlay onClose={()=>setModsOpen(false)}><ModsView workspaceId={workspaceId} mods={mods} online={serverAvailable} onMods={updateMods} onBybitStatus={updateBybitStatus} onBybitSynced={reloadWorkspaceData} onStatementImported={(pendingCount)=>{updateQueueCount(pendingCount);reloadWorkspaceData()}} onOpenReview={openReview}/></ModsOverlay>}

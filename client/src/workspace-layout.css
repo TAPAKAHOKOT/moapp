@@ -2586,3 +2586,52 @@ button.settings-row:disabled .settings-row-value {
   color: var(--muted);
   font-size: calc(14px * var(--text-scale));
 }
+
+/* «Мои экраны»: строки блоков с «−» или «+», названием и подсказкой; убранные блоки приглушены и идут после стоящих. */
+.blocks-list .drag-row {
+  grid-template-columns: 32px minmax(0, 1fr) 44px;
+}
+
+.block-name {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  padding: 8px 0;
+}
+
+.block-name b {
+  color: var(--ink);
+  font-size: calc(13px * var(--text-scale));
+  font-weight: 600;
+}
+
+.block-name small {
+  color: var(--muted);
+  font-size: calc(11px * var(--text-scale));
+  line-height: 1.35;
+}
+
+.drag-row.off .block-name b {
+  color: var(--muted);
+}
+
+.blocks-fixed {
+  margin: 6px 4px 12px;
+  color: var(--text-tertiary);
+  font-size: calc(11px * var(--text-scale));
+  line-height: 1.4;
+}
+
+/* Вход в «Мои экраны» с самого экрана — тихая строка в конце, чтобы не спорить с содержимым. */
+.screen-setup {
+  display: block;
+  min-height: 44px;
+  margin: 14px auto 6px;
+  padding: 0 16px;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font-size: calc(12px * var(--text-scale));
+  font-weight: 600;
+}

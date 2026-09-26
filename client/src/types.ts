@@ -186,11 +186,24 @@ export type ThemePreference = 'system' | 'light' | 'dark'
 export type Accent = 'sage' | 'terracotta' | 'sand' | 'blue' | 'lilac' | 'graphite'
 export type TextSize = 'normal' | 'large'
 
+export type AnalyticsPeriod = 'week' | 'month'
+
+/**
+ * Блоки экрана: `shown` — что стоит на экране, по порядку, `hidden` — что человек убрал. Блок, которого нет ни в одном
+ * списке (появился в приложении позже), стоит на экране. Каталог блоков — screen-blocks.ts.
+ */
+export type BlockLayout = { shown: string[]; hidden: string[] }
+
 /** Личные настройки, общие для всех пространств человека. Хранятся в аккаунте, видит их только он сам. */
 export type AccountSettings = {
   theme?: ThemePreference
   accent?: Accent
   textSize?: TextSize
+  /** Неделя или месяц в аналитике — что человек смотрел последним. */
+  analyticsPeriod?: AnalyticsPeriod
+  entryBlocks?: BlockLayout
+  historyBlocks?: BlockLayout
+  analyticsBlocks?: BlockLayout
 }
 
 /**

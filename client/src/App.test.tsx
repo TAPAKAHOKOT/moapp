@@ -11,6 +11,10 @@ import * as workspaceOffline from './workspace-offline'
 import { queuedMemberSettings } from './settings'
 import type { AccountSettings, AuthenticatedSession, Category, WorkspaceBootstrap, WorkspaceMod } from './types'
 
+// Графики проверяет AnalyticsCharts.test.tsx. Здесь они только мешают: chart.js в jsdom падает, когда график
+// перестраивается при смене недели на месяц, — а экраны проверяются по карточкам и числам.
+vi.mock('./AnalyticsCharts', () => ({ default: () => null }))
+
 // Фильтры истории выбирают несколько значений: шит остаётся открытым до «Готово».
 function chooseOption(label: string, ...options: string[]) {
   fireEvent.click(screen.getByLabelText(label))
@@ -1463,6 +1467,78 @@ describe('personal «Расход»', () => {
   })
 })
 
+describe('screens made of blocks', () => {
+  const spent = (id: string, categoryId: string, occurredAt: string, tagIds: string[] = []) => ({ id, amountMinor: 1_000, currency: 'RSD', categoryId, note: null, tagIds, occurredAt, createdAt: occurredAt, updatedAt: occurredAt, version: 1, deletedAt: null })
+  const titles = (container: HTMLElement) => [...container.querySelectorAll('.chart-card h2')].map((node) => node.textContent)
+
+  it('leaves out the history blocks a person removed, and saved filters wait while their block is away', () => {
+    const at = '2026-09-20T10:00:00.000Z'
+    const bootstrap = expenseBootstrap({
+      categories: personalCategories, expenses: [spent('a', 'products', at), spent('b', 'home', at)],
+      settings: { historyFilters: { period: 'all', from: '', to: '', categoryIds: ['products'], tagIds: [], currencies: [] } },
+    })
+    const view = (blocks: { shown: string[]; hidden: string[] }) => <HistoryView userId="user-a" workspaceId="workspace-a" bootstrap={bootstrap} setBootstrap={vi.fn()} edit={vi.fn()} createNew={vi.fn()} refreshPending={vi.fn()} blocks={blocks}/>
+    const { container, rerender } = render(view({ shown: ['day-totals'], hidden: ['filters', 'total'] }))
+
+    expect(container.querySelector('.history-chips')).toBeNull()
+    expect(container.querySelector('.history-total-line')).toBeNull()
+    expect(container.querySelectorAll('.history-row')).toHaveLength(2)
+    expect(container.querySelector('.history-date b')).not.toBeNull()
+    expect(screen.getByRole('button', { name: 'Настроить экран' })).not.toBeNull()
+
+    // Фильтры вернулись вместе с блоком. Без «Итога» строка говорит только, сколько показано, и как сбросить.
+    rerender(view({ shown: ['filters'], hidden: ['total', 'day-totals'] }))
+    expect(container.querySelectorAll('.history-row')).toHaveLength(1)
+    expect(container.querySelector('.history-total-line')?.textContent).toBe('1 из 2 записейСбросить')
+    expect(container.querySelector('.history-date b')).toBeNull()
+  })
+
+  it('puts analytics cards in the order the person chose and opens on the period left last time', () => {
+    const now = new Date().toISOString()
+    const change = vi.fn()
+    const bootstrap = expenseBootstrap({ categories: personalCategories, tags: personalTags, expenses: [spent('a', 'products', now, ['tag-0'])] })
+    const { container } = render(<AnalyticsView userId="user-a" workspaceId="workspace-a" bootstrap={bootstrap} theme="light" online={false} blocks={{ shown: ['weekdays', 'categories'], hidden: ['trend'] }} period="month" onScreensChange={change}/>)
+
+    // «Теги» раскладка ещё не знала — блок стоит в конце. «По дням недели» бывает только за месяц.
+    expect(titles(container)).toEqual(['По дням недели', 'Категории', 'Теги'])
+    expect(screen.getByRole('button', { name: 'Месяц' }).getAttribute('aria-pressed')).toBe('true')
+    fireEvent.click(screen.getByRole('button', { name: 'Неделя' }))
+    expect(change).toHaveBeenCalledWith({ analyticsPeriod: 'week' })
+    expect(titles(container)).toEqual(['Категории', 'Теги'])
+  })
+
+  it('drops the note, the tags or the whole row under the tiles on «Расход»', () => {
+    const bootstrap = expenseBootstrap({ tags: personalTags })
+    const view = (blocks: { shown: string[]; hidden: string[] }) => <EntryView userId="user-a" workspaceId="workspace-a" workspace={bootstrap.workspace} bootstrap={bootstrap} setBootstrap={vi.fn()} currentId={null} setCurrentId={vi.fn()} refreshPending={vi.fn()} onDraftDirtyChange={vi.fn()} active blocks={blocks}/>
+    const { container, rerender } = render(view({ shown: ['tags'], hidden: ['note'] }))
+    expect(screen.queryByRole('button', { name: 'Добавить заметку' })).toBeNull()
+    expect(container.querySelector('.entry-lower-live .tag-strip')).not.toBeNull()
+    rerender(view({ shown: [], hidden: ['note', 'tags'] }))
+    expect(container.querySelector('.entry-lower-live .extras-row')).toBeNull()
+  })
+
+  it('removes and returns blocks in «Мои экраны», and only analytics cards change places', () => {
+    vi.spyOn(workspaceApi, 'listMembers').mockResolvedValue({ members: [] })
+    vi.spyOn(workspaceApi, 'listSessions').mockResolvedValue({ sessions: [] })
+    vi.spyOn(workspaceApi, 'listInvitations').mockResolvedValue({ invitations: [] })
+    const change = vi.fn()
+    const workspace = expenseBootstrap().workspace
+    const user: AuthenticatedSession = { ...authSession(true, { historyBlocks: { shown: ['filters', 'day-totals'], hidden: ['total'] } }), workspaces: [workspace] }
+    render(<SettingsView user={user} workspace={workspace} workspaceId={workspace.id} bootstrap={expenseBootstrap()} setBootstrap={vi.fn()} pendingCount={0} refreshPending={vi.fn()} onLogout={vi.fn()} onSession={vi.fn()} online onAccountSettingsChange={change}/>)
+
+    expect(screen.getByRole('button', { name: /^Мои экраны/ }).textContent).toBe('Мои экраныубрано 1')
+    fireEvent.click(screen.getByRole('button', { name: /^Мои экраны/ }))
+    const sheet = screen.getByRole('dialog', { name: 'Мои экраны' })
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Вернуть «Итог» на экран «История»' }))
+    expect(change).toHaveBeenLastCalledWith({ historyBlocks: { shown: ['filters', 'day-totals', 'total'], hidden: [] } })
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Убрать «Заметка» с экрана «Расход»' }))
+    expect(change).toHaveBeenLastCalledWith({ entryBlocks: { shown: ['tags'], hidden: ['note'] } })
+    expect(within(within(sheet).getByRole('region', { name: 'Экран «Аналитика»' })).getAllByRole('button', { name: /Перетащить/ })).toHaveLength(4)
+    expect(within(within(sheet).getByRole('region', { name: 'Экран «История»' })).queryByRole('button', { name: /Перетащить/ })).toBeNull()
+    expect(sheet.textContent).toContain('Видно только вам')
+  })
+})
+
 describe('workspace onboarding controls', () => {
   it('shows Russian inline validation without invoking native browser messages', () => {
     const create = vi.fn().mockResolvedValue(undefined)
@@ -1896,6 +1972,24 @@ describe('appearance in the account', () => {
     expect(await screen.findByRole('button', { name: 'Создать пространство' })).not.toBeNull()
     expect([localStorage.getItem('moapp:theme'), localStorage.getItem('moapp:accent'), localStorage.getItem('moapp:text-size')]).toEqual([null, null, null])
     expect([root.dataset.accent, root.dataset.textSize]).toEqual([undefined, undefined])
+  })
+
+  it('takes a block off a screen from «Мои экраны» at once and keeps the change in the account', async () => {
+    const { fetchMock } = await renderSignedInApp()
+    fireEvent.click(await screen.findByRole('button', { name: 'Настройки' }))
+    const row = () => within(screen.getByRole('group', { name: 'Профиль' })).getByRole('button', { name: /^Мои экраны/ })
+    expect(row().textContent).toBe('Мои экранывсё на месте')
+    fireEvent.click(row())
+    const sheet = screen.getByRole('dialog', { name: 'Мои экраны' })
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Убрать «Динамика» с экрана «Аналитика»' }))
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Готово' }))
+    await waitFor(() => expect(fetchMock.mock.calls.some(([url, init]) => url === '/api/me/settings' && init?.method === 'PATCH'
+      && init.body === JSON.stringify({ settings: { analyticsBlocks: { shown: ['categories', 'tags', 'weekdays'], hidden: ['trend'] } } }))).toBe(true))
+    expect(row().textContent).toBe('Мои экраныубрано 1')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Аналитика' }))
+    expect(await screen.findByRole('heading', { name: 'Категории' })).not.toBeNull()
+    expect(screen.queryByRole('heading', { name: 'Динамика' })).toBeNull()
   })
 })
 
