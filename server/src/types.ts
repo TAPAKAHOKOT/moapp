@@ -184,6 +184,7 @@ export type CategoryRow = {
   placement: "main" | "additional";
   sort_order: number;
   color: string | null;
+  emoji: string | null;
   version: number;
   created_at: string;
   updated_at: string;

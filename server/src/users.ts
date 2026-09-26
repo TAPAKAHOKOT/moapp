@@ -10,14 +10,13 @@ import type {
   WorkspaceSummary
 } from "./types.js";
 import { readUserSettings } from "./settings.js";
-
-const FORBIDDEN_NAME_CHARACTERS = /[\p{Cc}\p{Cf}]/u;
+import { hasHiddenCharacters } from "./validation.js";
 
 export function normalizeDisplayName(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const normalized = value.normalize("NFKC").trim();
   const length = Array.from(normalized).length;
-  if (length < 1 || length > 60 || FORBIDDEN_NAME_CHARACTERS.test(normalized)) return undefined;
+  if (length < 1 || length > 60 || hasHiddenCharacters(normalized)) return undefined;
   return normalized;
 }
 

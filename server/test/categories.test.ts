@@ -51,7 +51,7 @@ test("a hidden category comes back instead of a second one with the same name", 
   assert.equal(again.json().name, "для дома");
   assert.equal(again.json().placement, "main");
   assert.equal(again.json().color, "#7cb98b");
-  assert.equal(app.db.prepare("SELECT count(*) FROM categories WHERE workspace_id=?").pluck().get(workspaceId), 7);
+  assert.equal(app.db.prepare("SELECT count(*) FROM categories WHERE workspace_id=?").pluck().get(workspaceId), 6);
   const kept = await api("GET", "/expenses?categoryId=home");
   assert.deepEqual(kept.json().expenses.map((item: { id: string }) => item.id), [expenseId], "старый расход остался у вернувшейся категории");
 });
@@ -66,13 +66,13 @@ test("the name of an active category is taken, in Cyrillic case too", async () =
   const lowercased = await api("POST", "/categories", { id: randomUUID(), name: "продукты", placement: "additional", sortOrder: 9, color: "#7cb98b" });
   assert.equal(lowercased.statusCode, 409, lowercased.body);
   assert.equal(lowercased.json().error.details.current.id, "products");
-  assert.equal(app.db.prepare("SELECT count(*) FROM categories WHERE workspace_id=?").pluck().get(workspaceId), 7);
+  assert.equal(app.db.prepare("SELECT count(*) FROM categories WHERE workspace_id=?").pluck().get(workspaceId), 6);
 
-  const renamed = await api("PATCH", "/categories/waffle", { name: "ПРОДУКТЫ", version: 1 });
+  const renamed = await api("PATCH", "/categories/subscriptions", { name: "ПРОДУКТЫ", version: 1 });
   assert.equal(renamed.statusCode, 409, renamed.body);
   assert.equal(renamed.json().error.code, "DUPLICATE");
   assert.equal(renamed.json().error.details.current.id, "products");
-  assert.equal(category("waffle")!.name, "Вафля");
+  assert.equal(category("subscriptions")!.name, "Подписки");
 });
 
 test("a hidden category is restored by clearing archivedAt", async () => {
@@ -87,4 +87,33 @@ test("a hidden category is restored by clearing archivedAt", async () => {
   assert.equal(restored.json().name, "Развлечения");
   const again = await api("GET", "/categories");
   assert.ok(again.json().categories.some((item: { id: string }) => item.id === "entertainment"));
+});
+
+test("a category carries one emoji for everybody, and a joined emoji fits into its name", async () => {
+  const body = { id: randomUUID(), name: "🧑‍🍳 Готовим дома", placement: "additional", sortOrder: 9, color: "#7cb98b", emoji: "🧑‍🍳" };
+  const created = await api("POST", "/categories", body);
+  assert.equal(created.statusCode, 201, created.body);
+  assert.equal(created.json().name, "🧑‍🍳 Готовим дома");
+  assert.equal(created.json().emoji, "🧑‍🍳");
+  assert.equal((await api("POST", "/categories", body)).statusCode, 200, "a retry of the same creation is not a conflict");
+  assert.equal((await api("POST", "/categories", { ...body, emoji: "🍳" })).json().error.code, "IDEMPOTENCY_CONFLICT");
+
+  const heart = await api("PATCH", `/categories/${body.id}`, { emoji: "❤", version: 1 });
+  assert.equal(heart.json().emoji, "❤️", "a text heart from a Mac keyboard becomes a picture");
+  const renamed = await api("PATCH", `/categories/${body.id}`, { name: "Готовим дома", version: 2 });
+  assert.equal(renamed.json().emoji, "❤️", "a change without the field keeps the emoji");
+  const cleared = await api("PATCH", `/categories/${body.id}`, { emoji: null, version: 3 });
+  assert.equal(cleared.json().emoji, null);
+
+  for (const emoji of ["ab", "🍕🍔", "К", 5, "\u200d"]) {
+    const refused = await api("PATCH", "/categories/products", { emoji, version: 1 });
+    assert.equal(refused.statusCode, 400, JSON.stringify(emoji));
+  }
+  // Невидимые символы вне эмодзи по-прежнему не проходят: ими прячут текст.
+  for (const name of ["Кафе\u200dтест", "Скрыто\u200b", "\u202eреклама"]) {
+    const refused = await api("POST", "/categories", { id: randomUUID(), name, placement: "additional", sortOrder: 9 });
+    assert.equal(refused.statusCode, 400, JSON.stringify(name));
+  }
+  const products = (await api("GET", "/categories")).json().categories.find((item: { id: string }) => item.id === "products");
+  assert.equal(products.emoji, null, "a category nobody gave an emoji keeps its colour square");
 });

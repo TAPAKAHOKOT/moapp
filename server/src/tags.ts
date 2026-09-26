@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { hasWorkspaceMembership, noStore, rejectsWorkspaceId, requireMutationOrigin, sendWorkspaceNotFound, workspaceContext } from "./tenant-domain-guard.js";
-import { isUuid, jsonError } from "./validation.js";
+import { hasHiddenCharacters, isUuid, jsonError } from "./validation.js";
 
 export type TagRow = {
   workspace_id: string;
@@ -18,7 +18,6 @@ export type TagRow = {
 export const MAX_TAG_NAME_LENGTH = 30;
 // SQLite NOCASE складывает только латиницу, поэтому ключ уникальности считаем в JS: «Еда» и «еда» — один тег.
 export const tagNameKey = (name: string) => name.toLowerCase();
-const FORBIDDEN_NAME_CHARACTERS = /[\p{Cc}\p{Cf}]/u;
 const COLOR = /^#[0-9a-f]{6}$/i;
 
 // Тег — короткая плашка, поэтому имя ограничено 30 символами и схлопывает внутренние пробелы.
@@ -26,7 +25,7 @@ export function normalizeTagName(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const normalized = value.normalize("NFKC").trim().replace(/\s+/g, " ");
   const length = Array.from(normalized).length;
-  return length >= 1 && length <= MAX_TAG_NAME_LENGTH && !FORBIDDEN_NAME_CHARACTERS.test(normalized) ? normalized : undefined;
+  return length >= 1 && length <= MAX_TAG_NAME_LENGTH && !hasHiddenCharacters(normalized) ? normalized : undefined;
 }
 
 // undefined — поле не передано; null — цвет снят; строка — валидный #RRGGBB; false — ошибка.

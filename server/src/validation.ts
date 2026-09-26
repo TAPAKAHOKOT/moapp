@@ -38,6 +38,28 @@ export function minorDigits(currency: string): number {
   return new Intl.NumberFormat("en", { style: "currency", currency }).resolvedOptions().maximumFractionDigits ?? 2;
 }
 
+/*
+ * Невидимые и управляющие символы в именах запрещены: ими прячут текст и подделывают одинаковые на вид имена.
+ * Исключение — внутри эмодзи: соединитель U+200D склеивает 🧑‍🍳 из двух картинок, а теговые символы собирают флаги
+ * вроде 🏴󠁧󠁢󠁳󠁣󠁴󠁿. Поэтому эмодзи из списка Unicode (RGI) сначала вырезаются, а проверяется остаток.
+ * Флаг `v` задан строкой: литерал с ним TypeScript пропускает только для ES2024.
+ */
+const RGI_EMOJI = new RegExp("\\p{RGI_Emoji}", "gv");
+const SINGLE_EMOJI = new RegExp("^\\p{RGI_Emoji}$", "v");
+const HIDDEN_CHARACTERS = /[\p{Cc}\p{Cf}]/u;
+
+export function hasHiddenCharacters(name: string): boolean {
+  return HIDDEN_CHARACTERS.test(name.replace(RGI_EMOJI, ""));
+}
+
+/** Значок — ровно один эмодзи. Сердце с клавиатуры Mac приходит без U+FE0F и без него рисуется буквой: дописываем. */
+export function normalizeEmoji(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const emoji = value.trim();
+  if (SINGLE_EMOJI.test(emoji)) return emoji;
+  return SINGLE_EMOJI.test(`${emoji}️`) ? `${emoji}️` : undefined;
+}
+
 export function jsonError(code: string, message: string, details?: unknown) {
   return { error: { code, message, ...(details === undefined ? {} : { details }) } };
 }

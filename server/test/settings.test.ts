@@ -140,6 +140,31 @@ test("history filters keep their shape and never carry the search text", async (
   assert.deepEqual(saved.json().settings.historyFilters.categoryIds, ["a", "b"]);
 });
 
+test("tiles and tags on «Расход» are a member's own, and a stale reference does not break them", async () => {
+  const owner = person("Ваня");
+  const member = person("Уля");
+  const workspaceId = workspaceOf(owner, member);
+  const categoryOrder = { shown: ["eating-out", "products", "gone"], more: ["home", "other"] };
+  const saved = await saveMember(owner, workspaceId, { categoryOrder, tagOrder: { shown: [], more: ["t1", "t1", "t2"] } });
+  assert.equal(saved.statusCode, 200, saved.body);
+  assert.deepEqual(saved.json().settings, { categoryOrder, tagOrder: { shown: [], more: ["t1", "t2"] } }, "an id of a removed category may stay");
+  assert.deepEqual((await bootstrap(member, workspaceId)).json().settings, {}, "another member keeps the shared layout");
+
+  for (const order of [
+    { shown: ["products"], more: ["products"] },
+    { shown: ["products"] },
+    { shown: ["products"], more: [], hidden: [] },
+    { shown: Array.from({ length: 21 }, (_, index) => `c${index}`), more: [] },
+    { shown: [""], more: [] },
+    ["products"]
+  ]) {
+    const refused = await saveMember(owner, workspaceId, { categoryOrder: order });
+    assert.equal(refused.statusCode, 400, JSON.stringify(order));
+    assert.equal(refused.json().error.details.key, "categoryOrder");
+  }
+  assert.equal((await saveMember(owner, workspaceId, { categoryOrder: null })).json().settings.categoryOrder, undefined, "null returns the shared layout");
+});
+
 test("leaving a workspace forgets the settings there, and nobody outside can write them", async () => {
   const owner = person("Ваня");
   const member = person("Уля");

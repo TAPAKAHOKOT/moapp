@@ -61,17 +61,17 @@ const migrations = [
   `
 ];
 
+// Стартовые категории нового пространства: понятные любому человеку, без личных.
 const seeds = [
   ["products", "Продукты", "main", 0, "#7CB98B"],
   ["eating-out", "Кафе и рестораны", "main", 1, "#E9A76F"],
   ["home", "Для дома", "additional", 0, "#79A9D1"],
-  ["waffle", "Вафля", "additional", 1, "#D7A0BF"],
-  ["entertainment", "Развлечения", "additional", 2, "#A493D1"],
-  ["subscriptions", "Подписки", "additional", 3, "#8DB8B0"],
-  ["other", "Прочее", "additional", 4, "#A8A8A8"]
+  ["entertainment", "Развлечения", "additional", 1, "#A493D1"],
+  ["subscriptions", "Подписки", "additional", 2, "#8DB8B0"],
+  ["other", "Прочее", "additional", 3, "#A8A8A8"]
 ] as const;
 
-const LATEST_SCHEMA_VERSION = 16;
+const LATEST_SCHEMA_VERSION = 17;
 
 type TableCount = {
   categories: number;
@@ -698,6 +698,8 @@ export function openDatabase(path: string): Database.Database {
             FOREIGN KEY(workspace_id, user_id) REFERENCES memberships(workspace_id, user_id) ON DELETE CASCADE
           );
         `);
+        // Значок-эмодзи категории: общий для пространства, как имя и цвет. У существующих категорий его нет.
+        else if (version === 17) db.exec("ALTER TABLE categories ADD COLUMN emoji TEXT");
         db.prepare("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)").run(version, appliedAt);
       }
     });

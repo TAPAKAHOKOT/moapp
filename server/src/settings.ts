@@ -6,7 +6,7 @@ import { isCalendarDate, jsonError, normalizeCurrencyCode } from "./validation.j
 /*
  * Личные настройки: как выглядит приложение у человека и что оно за ним запоминает. Видит и меняет их только
  * он сам. Живут они в аккаунте, поэтому переезжают на новый телефон и переживают выход. Настройки бывают
- * общими для всех пространств человека (тема) и своими в каждом пространстве (валюты, фильтры истории);
+ * общими для всех пространств человека (тема) и своими в каждом пространстве (валюты, фильтры истории, плитки);
  * вторые исчезают вместе с участием в пространстве. Какие ключи бывают и что в них можно положить — в каталогах
  * ниже. Незнакомый ключ — ошибка, `null` — возврат к значению по умолчанию.
  */
@@ -27,11 +27,13 @@ const ACCOUNT_SETTINGS: Readonly<Record<string, Normalize>> = {
   textSize: oneOf("normal", "large")
 };
 
-function idList(value: unknown, valid: (item: string) => boolean): string[] | undefined {
-  if (!Array.isArray(value) || value.length > 50) return undefined;
+function idList(value: unknown, valid: (item: string) => boolean, max = 50): string[] | undefined {
+  if (!Array.isArray(value) || value.length > max) return undefined;
   if (!value.every((item) => typeof item === "string" && valid(item))) return undefined;
   return [...new Set(value as string[])];
 }
+
+const isId = (item: string) => item.length >= 1 && item.length <= 100;
 
 /* Фильтры истории — без строки поиска: поиск разовый, его незачем помнить на другом телефоне. */
 function historyFilters(value: unknown) {
@@ -42,18 +44,34 @@ function historyFilters(value: unknown) {
   if (typeof input.period !== "string" || !HISTORY_PERIODS.includes(input.period)) return undefined;
   const date = (item: unknown) => item === "" || isCalendarDate(item);
   if (!date(input.from) || !date(input.to)) return undefined;
-  const id = (item: string) => item.length >= 1 && item.length <= 100;
-  const categoryIds = idList(input.categoryIds, id);
-  const tagIds = idList(input.tagIds, id);
+  const categoryIds = idList(input.categoryIds, isId);
+  const tagIds = idList(input.tagIds, isId);
   const currencies = idList(input.currencies, (item) => normalizeCurrencyCode(item) === item);
   if (!categoryIds || !tagIds || !currencies) return undefined;
   return { period: input.period, from: input.from, to: input.to, categoryIds, tagIds, currencies };
 }
 
+/*
+ * Что человек видит на экране «Расход»: `shown` — плитки категорий или теги в ряду, по порядку, `more` — остальное
+ * за «Ещё», тоже по порядку. Категории и теги общие, поэтому ссылка на удалённую не ошибка: клиент её пропускает,
+ * а то, чего нет ни в одном списке (например, созданное другим участником), ставит в конец «Ещё».
+ */
+function screenOrder(value: unknown) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const input = value as Record<string, unknown>;
+  if (Object.keys(input).some((key) => key !== "shown" && key !== "more")) return undefined;
+  const shown = idList(input.shown, isId, 20);
+  const more = idList(input.more, isId, 100);
+  if (!shown || !more || shown.some((id) => more.includes(id))) return undefined;
+  return { shown, more };
+}
+
 const MEMBER_SETTINGS: Readonly<Record<string, Normalize>> = {
   lastCurrency: normalizeCurrencyCode,
   analyticsCurrency: normalizeCurrencyCode,
-  historyFilters
+  historyFilters,
+  categoryOrder: screenOrder,
+  tagOrder: screenOrder
 };
 
 type SettingRow = { key: string; value_json: string };

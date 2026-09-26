@@ -149,7 +149,7 @@ test("a clean file reaches the latest schema without hidden identity, workspace,
   const fixture = temporaryDatabase();
   try {
     let db = openDatabase(fixture.path);
-    assert.equal((db.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number }).version, 16);
+    assert.equal((db.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number }).version, 17);
     for (const table of ["users", "workspaces", "memberships", "categories", "legacy_claims", "oauth_clients", "oauth_authorization_codes", "oauth_tokens", "bybit_card_connections", "card_transactions", "workspace_mods", "user_settings", "member_settings"] as const) {
       assert.equal((db.prepare(`SELECT count(*) AS count FROM ${table}`).get() as { count: number }).count, 0);
     }
@@ -157,7 +157,7 @@ test("a clean file reaches the latest schema without hidden identity, workspace,
     const sizeAfterFirstStart = statSync(fixture.path).size;
 
     db = openDatabase(fixture.path);
-    assert.equal((db.prepare("SELECT count(*) AS count FROM schema_migrations").get() as { count: number }).count, 16);
+    assert.equal((db.prepare("SELECT count(*) AS count FROM schema_migrations").get() as { count: number }).count, 17);
     assert.equal((db.prepare("SELECT count(*) AS count FROM users").get() as { count: number }).count, 0);
     assert.equal(statSync(fixture.path).size, sizeAfterFirstStart);
     db.close();
@@ -194,7 +194,7 @@ for (const version of [1, 2] as const) {
 
       const category = db.prepare("SELECT * FROM categories WHERE workspace_id=? AND id=?")
         .get(workspace.id, LEGACY_CATEGORY.id) as Record<string, unknown>;
-      assert.deepEqual(category, { workspace_id: workspace.id, ...LEGACY_CATEGORY });
+      assert.deepEqual(category, { workspace_id: workspace.id, ...LEGACY_CATEGORY, emoji: null });
       assert.equal((db.prepare("SELECT version FROM categories WHERE workspace_id=? AND id='products'")
         .get(workspace.id) as { version: number }).version, 2);
       const activeExpense = db.prepare("SELECT * FROM expenses WHERE workspace_id=? AND id='active-expense'")
@@ -424,7 +424,7 @@ test("an existing v3 database receives the singleton hardening migration", () =>
     db.close();
 
     db = openDatabase(fixture.path);
-    assert.equal((db.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number }).version, 16);
+    assert.equal((db.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number }).version, 17);
     assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type='index' AND name='legacy_claims_singleton_idx'").get());
     db.close();
   } finally {
@@ -449,7 +449,7 @@ test("a copy failure rolls v3 back and leaves a retryable v2 database", () => {
     db.close();
 
     db = openDatabase(fixture.path);
-    assert.equal((db.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number }).version, 16);
+    assert.equal((db.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number }).version, 17);
     assert.equal((db.prepare("SELECT count(*) AS count FROM expenses").get() as { count: number }).count, 2);
     assert.deepEqual(db.pragma("foreign_key_check"), []);
     db.close();
@@ -540,7 +540,7 @@ test("schemas 14 and 15 move Bybit operations, split parts included, into the sh
     db.close();
 
     db = openDatabase(fixture.path);
-    assert.equal((db.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number }).version, 16);
+    assert.equal((db.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number }).version, 17);
     assert.equal(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='bybit_card_transactions'").get(), undefined);
     assert.deepEqual(db.prepare("SELECT id,source,connection_id,external_key,review_status,split_of_id,split_index FROM card_transactions ORDER BY id").all(), [
       { id: "parent", source: "bybit-card", connection_id: "connection", external_key: "1:parent", review_status: "split", split_of_id: null, split_index: 0 },
@@ -614,7 +614,7 @@ test("schema 15 adds the mods a workspace already uses and forgets the key of so
     db.close();
 
     db = openDatabase(fixture.path);
-    assert.equal((db.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number }).version, 16);
+    assert.equal((db.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number }).version, 17);
     const mods = db.prepare("SELECT workspace_id,mod_id,added_by_user_id,added_at FROM workspace_mods").all() as Array<Record<string, string | null>>;
     const modsOf = (workspaceId: string) => mods.filter((mod) => mod.workspace_id === workspaceId).map(({ workspace_id: _, ...mod }) => mod);
     assert.deepEqual(modsOf(withCard), [{ mod_id: "bybit-card", added_by_user_id: bybitOwner, added_at: now }]);
@@ -636,6 +636,38 @@ test("schema 15 adds the mods a workspace already uses and forgets the key of so
     db.prepare("DELETE FROM memberships WHERE user_id=?").run(departed);
     db.prepare("DELETE FROM users WHERE id=?").run(departed);
     assert.equal(db.prepare("SELECT added_by_user_id FROM workspace_mods WHERE workspace_id=?").pluck().get(withDepartedKey), null);
+    db.close();
+  } finally {
+    rmSync(fixture.directory, { recursive: true, force: true });
+  }
+});
+
+test("schema 17 gives categories a place for an emoji and leaves every existing category as it was", () => {
+  const fixture = temporaryDatabase();
+  try {
+    let db = openDatabase(fixture.path);
+    const [ownerId, workspaceId] = [randomUUID(), randomUUID()];
+    createWorkspace(db, workspaceId, ownerId, "Дом");
+    seedWorkspaceCategories(db, workspaceId);
+    /* Схема 16 как есть: у категорий ещё нет значка, а стартовый список прежних пространств содержал «Вафлю». */
+    db.exec("ALTER TABLE categories DROP COLUMN emoji; DELETE FROM schema_migrations WHERE version=17;");
+    const now = "2026-09-20T10:00:00.000Z";
+    db.prepare(`INSERT INTO categories(workspace_id,id,name,placement,sort_order,color,version,created_at,updated_at)
+      VALUES (?,'waffle','Вафля','additional',1,'#D7A0BF',1,?,?)`).run(workspaceId, now, now);
+    const before = db.prepare("SELECT * FROM categories WHERE workspace_id=? ORDER BY id").all(workspaceId);
+    db.close();
+
+    db = openDatabase(fixture.path);
+    assert.equal((db.prepare("SELECT max(version) AS version FROM schema_migrations").get() as { version: number }).version, 17);
+    const after = db.prepare("SELECT * FROM categories WHERE workspace_id=? ORDER BY id").all(workspaceId) as Array<Record<string, unknown>>;
+    assert.deepEqual(after.map(({ emoji: _, ...row }) => row), before, "names, colours and «Вафля» of an existing workspace stay");
+    assert.ok(after.every((row) => row.emoji === null));
+
+    const fresh = randomUUID();
+    createWorkspace(db, fresh, ownerId, "Поездка");
+    seedWorkspaceCategories(db, fresh);
+    assert.deepEqual(db.prepare("SELECT name FROM categories WHERE workspace_id=? ORDER BY placement DESC,sort_order").pluck().all(fresh),
+      ["Продукты", "Кафе и рестораны", "Для дома", "Развлечения", "Подписки", "Прочее"], "a new workspace starts without «Вафля»");
     db.close();
   } finally {
     rmSync(fixture.directory, { recursive: true, force: true });

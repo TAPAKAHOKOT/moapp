@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { hasWorkspaceMembership, noStore, rejectsWorkspaceId, requireMutationOrigin, sendWorkspaceNotFound, workspaceContext } from "./tenant-domain-guard.js";
-import { isUuid, jsonError } from "./validation.js";
+import { hasHiddenCharacters, isUuid, jsonError, normalizeEmoji } from "./validation.js";
 
 export type CategoryRow = {
   workspace_id: string;
@@ -10,13 +10,12 @@ export type CategoryRow = {
   placement: "main" | "additional";
   sort_order: number;
   color: string | null;
+  emoji: string | null;
   version: number;
   created_at: string;
   updated_at: string;
   archived_at: string | null;
 };
-
-const FORBIDDEN_NAME_CHARACTERS = /[\p{Cc}\p{Cf}]/u;
 
 // SQLite NOCASE складывает только латиницу, поэтому имена сравниваем в JS: «Для дома» и «для дома» — одно имя.
 const categoryNameKey = (name: string) => name.toLowerCase();
@@ -25,7 +24,7 @@ function normalizeCategoryName(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const normalized = value.normalize("NFKC").trim();
   const length = Array.from(normalized).length;
-  return length >= 1 && length <= 80 && !FORBIDDEN_NAME_CHARACTERS.test(normalized) ? normalized : undefined;
+  return length >= 1 && length <= 80 && !hasHiddenCharacters(normalized) ? normalized : undefined;
 }
 
 export function categoryJson(row: CategoryRow) {
@@ -35,11 +34,20 @@ export function categoryJson(row: CategoryRow) {
     placement: row.placement,
     sortOrder: row.sort_order,
     color: row.color,
+    emoji: row.emoji,
     version: row.version,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     archivedAt: row.archived_at
   };
+}
+
+// Значок категории — один эмодзи, общий для пространства, как имя и цвет. undefined — поле не передано,
+// null — значка нет, false — прислали не эмодзи.
+function parseEmoji(value: unknown): string | null | undefined | false {
+  if (value === undefined) return undefined;
+  if (value === null || value === "") return null;
+  return normalizeEmoji(value) ?? false;
 }
 
 function duplicateError(error: unknown): boolean {
@@ -86,6 +94,9 @@ export async function registerCategoryRoutes(app: FastifyInstance): Promise<void
     if (color !== null && !/^#[0-9a-f]{6}$/i.test(color)) {
       return reply.code(400).send(jsonError("VALIDATION", "color must be #RRGGBB"));
     }
+    const parsedEmoji = parseEmoji(body.emoji);
+    if (parsedEmoji === false) return reply.code(400).send(jsonError("VALIDATION", "emoji must be a single emoji"));
+    const emoji = parsedEmoji ?? null;
     try {
       const outcome = app.db.transaction(() => {
         if (!hasWorkspaceMembership(app, workspaceId, userId)) return { member: false as const };
@@ -94,24 +105,25 @@ export async function registerCategoryRoutes(app: FastifyInstance): Promise<void
           const compatible = existing.name === name
             && existing.placement === body.placement
             && existing.sort_order === sortOrder
-            && existing.color === color;
+            && existing.color === color
+            && existing.emoji === emoji;
           return { member: true as const, existing, compatible };
         }
         const sameName = byName(workspaceId, name);
         const now = new Date().toISOString();
         // Скрытая категория держит имя навсегда, поэтому второй такой же не будет: возвращаем старую вместе с её
-        // расходами, а цвет и размещение берём из только что заполненной формы.
+        // расходами, а цвет, значок и размещение берём из только что заполненной формы.
         if (sameName?.archived_at) {
-          app.db.prepare(`UPDATE categories SET name=?,placement=?,sort_order=?,color=?,archived_at=NULL,
+          app.db.prepare(`UPDATE categories SET name=?,placement=?,sort_order=?,color=?,emoji=?,archived_at=NULL,
             version=version+1,updated_at=? WHERE workspace_id=? AND id=?`)
-            .run(name, body.placement, sortOrder, color, now, workspaceId, sameName.id);
+            .run(name, body.placement, sortOrder, color, emoji, now, workspaceId, sameName.id);
           return { member: true as const, restored: byId(workspaceId, sameName.id)! };
         }
         if (sameName) return { member: true as const, duplicate: sameName };
         app.db.prepare(`INSERT INTO categories
-          (workspace_id,id,name,placement,sort_order,color,version,created_at,updated_at)
-          VALUES (?,?,?,?,?,?,1,?,?)`)
-          .run(workspaceId, id, name, body.placement, sortOrder, color, now, now);
+          (workspace_id,id,name,placement,sort_order,color,emoji,version,created_at,updated_at)
+          VALUES (?,?,?,?,?,?,?,1,?,?)`)
+          .run(workspaceId, id, name, body.placement, sortOrder, color, emoji, now, now);
         return { member: true as const, created: byId(workspaceId, id)! };
       })();
       if (!outcome.member) return sendWorkspaceNotFound(reply);
@@ -179,6 +191,8 @@ export async function registerCategoryRoutes(app: FastifyInstance): Promise<void
     if (typeof body.version !== "number" || !Number.isInteger(body.version)) {
       return reply.code(400).send(jsonError("VALIDATION", "version is required"));
     }
+    const emoji = parseEmoji(body.emoji);
+    if (emoji === false) return reply.code(400).send(jsonError("VALIDATION", "emoji must be a single emoji"));
     try {
       const outcome = app.db.transaction(() => {
         if (!hasWorkspaceMembership(app, workspaceId, userId)) return { member: false as const };
@@ -204,9 +218,9 @@ export async function registerCategoryRoutes(app: FastifyInstance): Promise<void
         const archivedAt = body.archivedAt !== undefined
           ? body.archivedAt === null ? null : new Date(body.archivedAt as string).toISOString()
           : body.archived === undefined ? current.archived_at : body.archived ? new Date().toISOString() : null;
-        app.db.prepare(`UPDATE categories SET name=?,placement=?,sort_order=?,color=?,archived_at=?,
+        app.db.prepare(`UPDATE categories SET name=?,placement=?,sort_order=?,color=?,emoji=?,archived_at=?,
           version=version+1,updated_at=? WHERE workspace_id=? AND id=? AND version=?`)
-          .run(name, placement, sortOrder, color, archivedAt, new Date().toISOString(), workspaceId, id, body.version);
+          .run(name, placement, sortOrder, color, emoji === undefined ? current.emoji : emoji, archivedAt, new Date().toISOString(), workspaceId, id, body.version);
         return { member: true as const, row: byId(workspaceId, id)! };
       })();
       if (!outcome.member) return sendWorkspaceNotFound(reply);

@@ -91,7 +91,7 @@ test("workspace creation is idempotent and owner mutations use versions", async 
   assert.equal(created.statusCode, 201, created.body);
   assert.equal(created.json().workspace.role, "owner");
   assert.equal(created.json().workspace.currency, "RSD", "without a choice the server default applies");
-  assert.equal(app.db.prepare("SELECT count(*) FROM categories WHERE workspace_id=?").pluck().get(id), 7);
+  assert.equal(app.db.prepare("SELECT count(*) FROM categories WHERE workspace_id=?").pluck().get(id), 6);
 
   const replay = await app.inject({ method: "POST", url: "/api/workspaces", headers, payload: { id, name: "Дом" } });
   assert.equal(replay.statusCode, 200);

@@ -1,14 +1,13 @@
 import type { Database } from "better-sqlite3";
 import { seedWorkspaceCategories } from "./db.js";
 import type { Participant, WorkspaceRow, WorkspaceSummary } from "./types.js";
-
-const FORBIDDEN_NAME_CHARACTERS = /[\p{Cc}\p{Cf}]/u;
+import { hasHiddenCharacters } from "./validation.js";
 
 export function normalizeWorkspaceName(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const normalized = value.normalize("NFKC").trim();
   const length = Array.from(normalized).length;
-  if (length < 1 || length > 80 || FORBIDDEN_NAME_CHARACTERS.test(normalized)) return undefined;
+  if (length < 1 || length > 80 || hasHiddenCharacters(normalized)) return undefined;
   return normalized;
 }
 

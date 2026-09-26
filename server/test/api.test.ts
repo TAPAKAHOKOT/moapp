@@ -94,7 +94,7 @@ test("guest session and identity-to-scoped-workspace flow are wired in buildApp"
   assert.equal(bootstrap.json().workspace.id, workspaceId);
   assert.equal(bootstrap.json().workspace.currency, "RSD");
   assert.equal(bootstrap.json().defaultAnalyticsCurrency, "RSD", "totals default to the workspace currency");
-  assert.equal(bootstrap.json().categories.length, 7);
+  assert.equal(bootstrap.json().categories.length, 6);
   assert.deepEqual(bootstrap.json().expenses, []);
   assert.equal(bootstrap.headers["cache-control"], "private, no-store");
   assertSecurityHeaders(bootstrap.headers);

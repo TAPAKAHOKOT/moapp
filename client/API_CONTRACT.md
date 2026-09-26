@@ -128,7 +128,13 @@ Legacy v2 cache/outbox data remains quarantined until a completed legacy claim s
 Settings are personal and live in the account: only their owner reads or changes them, and they follow the profile to
 every device and through logout. Account settings (`AccountSettings`: `theme` — `'system' | 'light' | 'dark'`, `accent` —
 `'sage' | 'terracotta' | 'sand' | 'blue' | 'lilac' | 'graphite'`, `textSize` — `'normal' | 'large'`) arrive with `GET /api/session`; settings in one workspace (`MemberSettings`: `lastCurrency`, `analyticsCurrency`,
-`historyFilters` without the search text) arrive with that workspace's bootstrap and never include another member's.
+`historyFilters` without the search text, `categoryOrder`, `tagOrder`) arrive with that workspace's bootstrap and never include another member's.
+
+`categoryOrder` and `tagOrder` are what the member sees on «Расход»: `{shown: string[], more: string[]}` — the category
+tiles or the tag chips in order (at most 20), then everything behind «Ещё» in order (at most 100). An id may not appear
+in both lists. Ids of removed categories and tags are allowed and skipped by the client; anything in neither list
+(created later, possibly by another member) goes to the end of «Ещё». Without the key the member sees the shared starting
+layout: categories with `placement: 'main'` as tiles in `sortOrder`, and the first five tags in `sortOrder`.
 
 - `PATCH /api/me/settings` with `{settings: {key: value | null}}` → `{settings: AccountSettings}`.
 - `PATCH /api/workspaces/:workspaceId/me/settings` with the same body → `{settings: MemberSettings}`.
@@ -219,6 +225,7 @@ type Category = {
   id: string
   name: string
   color: string | null
+  emoji: string | null
   placement: 'main' | 'additional'
   sortOrder: number
   archivedAt: string | null
@@ -229,9 +236,14 @@ type Category = {
 ```
 
 The client model matches this response shape. UI-created categories start with a color, while older or imported categories may legitimately have `color: null`.
+`emoji` is one emoji shared by the workspace, like the name and colour; a text-style heart without U+FE0F gets it added.
+`placement` and `sortOrder` are the starting layout of «Расход» for members without their own `categoryOrder`.
+
+Names of categories, tags, workspaces and profiles are NFKC-normalized. They may contain any emoji from the Unicode list,
+joined ones such as 🧑‍🍳 and tag flags included; invisible and control characters outside an emoji are refused.
 
 - `GET /api/workspaces/:workspaceId/categories?includeArchived=false` → `{categories}`.
-- `POST /api/workspaces/:workspaceId/categories` with `{id?,name,placement,sortOrder?,color?}` → `201 Category`, or `200 Category` for a compatible UUID retry.
+- `POST /api/workspaces/:workspaceId/categories` with `{id?,name,placement,sortOrder?,color?,emoji?}` → `201 Category`, or `200 Category` for a compatible UUID retry.
 - `PATCH /api/workspaces/:workspaceId/categories/:categoryId` with changed fields plus `version` → `Category`; `archived` or an ISO/null `archivedAt` archives or restores it.
 - `DELETE /api/workspaces/:workspaceId/categories/:categoryId` with `{version}` → `204` and archives it.
 - `PUT /api/workspaces/:workspaceId/categories/order` with `{ids}` → `{categories}`.

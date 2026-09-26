@@ -52,6 +52,10 @@ test("tags are created, renamed, deduplicated by name and listed in the bootstra
   assert.equal(duplicate.json().error.details.current.id, created.json().id);
   const tooLong = await api("POST", "/tags", { name: "x".repeat(31) });
   assert.equal(tooLong.statusCode, 400, tooLong.body);
+  const joined = await api("POST", "/tags", { name: "👨‍👩‍👧 Семья" });
+  assert.equal(joined.statusCode, 201, joined.body);
+  assert.equal(joined.json().name, "👨‍👩‍👧 Семья", "an emoji joined from several pictures is a valid part of a name");
+  await api("DELETE", `/tags/${joined.json().id}`, { version: 1 });
 
   assert.equal(created.json().color, null);
   assert.equal(created.json().sortOrder, 0);
