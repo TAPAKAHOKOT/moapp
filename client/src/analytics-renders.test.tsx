@@ -65,6 +65,14 @@ const historyFilters = { categoryIds: ['home'], tagIds: [], currencies: [], peri
 // Колбэки у приложения стабильны — так же и здесь: иначе экран перерисовывался бы от новых функций.
 const props = { userId: 'user-a', workspaceId: 'workspace-a', setBootstrap: () => {}, theme: 'light' as const, online: false, onEditScreen: () => {}, onScreensChange: () => {} }
 
+// Экран читает список расходов на каждом своём рендере: по числу чтений видно, рисовался ли он.
+function watched(data: WorkspaceBootstrap) {
+  const reads = { count: 0 }
+  const { expenses, ...rest } = data
+  const bootstrap = Object.defineProperty(rest, 'expenses', { enumerable: true, get() { reads.count += 1; return expenses } }) as WorkspaceBootstrap
+  return { bootstrap, reads }
+}
+
 // Кадры анимации идут только по команде теста: так видно, что рисуется на каждом из них.
 const frames = new Map<number, FrameRequestCallback>()
 let lastFrame = 0
@@ -150,5 +158,18 @@ describe('chart redraws', () => {
     forget()
     rerender(<AnalyticsView {...props} bootstrap={{ ...more, settings: { analyticsCurrency: 'EUR' } }} theme="dark" accent="blue"/>)
     expect(drawn.updates.sort()).toEqual(['Динамика расходов в валюте EUR', 'Расходы по категориям в валюте EUR', 'Расходы по категориям в валюте EUR'])
+  })
+})
+
+describe('analytics screen redraws', () => {
+  // Вкладка смонтирована всё время, пока открыто пространство, а приложение перерисовывается от каждого касания.
+  it('does not render again when the app renders with the same props', () => {
+    const { bootstrap, reads } = watched(workspace([spent('a', 100_000)]))
+    const { rerender } = render(<AnalyticsView {...props} bootstrap={bootstrap}/>)
+    reads.count = 0
+    rerender(<AnalyticsView {...props} bootstrap={bootstrap}/>)
+    expect(reads.count).toBe(0)
+    rerender(<AnalyticsView {...props} bootstrap={bootstrap} theme="dark"/>)
+    expect(reads.count).toBeGreaterThan(0)
   })
 })

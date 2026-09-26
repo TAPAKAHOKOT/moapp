@@ -1,4 +1,4 @@
-import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Suspense, lazy, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { WorkspaceApiError as ApiError, getAnalytics, saveMemberSettings } from '../workspace-api'
 import { patchSettings } from '../settings'
 import type { SettingsPatch } from '../settings'
@@ -18,7 +18,9 @@ export const AnalyticsChart = lazy(() => import('../AnalyticsCharts'))
 
 export type { AnalyticsPeriod }
 
-export function AnalyticsView({ userId, workspaceId, bootstrap, setBootstrap = () => {}, theme, accent = 'sage', online, timeZone = appTimeZone(), blocks, period: savedPeriod, editing = false, onEditScreen = () => {}, onScreensChange = () => {} }: { userId: string; workspaceId: string; bootstrap: Bootstrap; setBootstrap?: React.Dispatch<React.SetStateAction<Bootstrap>>; theme: Theme; accent?: Accent; online: boolean; timeZone?: string
+// Вкладка не размонтируется, пока открыто пространство, поэтому она не должна перерисовываться от чужих изменений
+// состояния приложения — только от своих данных и колбэков (все они стабильны у родителя).
+export const AnalyticsView = memo(function AnalyticsView({ userId, workspaceId, bootstrap, setBootstrap = () => {}, theme, accent = 'sage', online, timeZone = appTimeZone(), blocks, period: savedPeriod, editing = false, onEditScreen = () => {}, onScreensChange = () => {} }: { userId: string; workspaceId: string; bootstrap: Bootstrap; setBootstrap?: React.Dispatch<React.SetStateAction<Bootstrap>>; theme: Theme; accent?: Accent; online: boolean; timeZone?: string
   /** Какие карточки человек оставил и в каком порядке, неделя или месяц — всё это помнит аккаунт. Карточки он
    *  убирает, возвращает и переставляет сам, в режиме «Настройка экрана» (`editing`). */
   blocks?: BlockLayout; period?: AnalyticsPeriod; editing?: boolean; onEditScreen?: (screen: BlockScreen, how?: 'hold' | 'tap') => void; onScreensChange?: (patch: SettingsPatch<AccountSettings>) => void }) {
@@ -230,7 +232,7 @@ export function AnalyticsView({ userId, workspaceId, bootstrap, setBootstrap = (
       :null)}</div>}
     {currencySheet && <CurrencySheet currencies={bootstrap.currencies} used={[...new Set(bootstrap.expenses.filter((item)=>!item.deletedAt).map((item)=>item.currency))]} selected={target} onClose={()=>setCurrencySheet(false)} onSelect={(code)=>{setBootstrap((data)=>({...data,settings:patchSettings(data.settings,{analyticsCurrency:code})}));saveMemberSettings(userId,workspaceId,{analyticsCurrency:code});setCurrencySheet(false)}}/>}
   </section>
-}
+})
 
 export const LEGEND_DETAIL_LIMIT=8
 
