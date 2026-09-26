@@ -2157,8 +2157,10 @@ button.tag-chip:disabled {
   background: var(--soft);
 }
 
-/* Нажатие на строку истории подсвечивает её той же скруглённой плашкой, что и выбор, без масштабирования. Класс ставит
-   строка сама вместо :active: касанием — когда палец постоял на месте, чтобы плашка не мигала под листающим пальцем. */
+/* Нажатие на строку истории подсвечивает её той же скруглённой плашкой, что и выбор, без масштабирования. Касание
+   зажигает её классом .pressed, когда палец постоял на месте: :active под листающим пальцем мигал на каждой строке.
+   Мышь — через :active, как всегда, но только там, где указатель — мышь: на телефоне :active строки не действует.
+   Оформление у обоих одно: правила под @media повторяют правила .pressed слово в слово. */
 .history-expense.pressed:not(.open):not(.dragging) {
   border-bottom-color: transparent;
 }
@@ -2170,6 +2172,21 @@ button.tag-chip:disabled {
 
 .history-expense.pressed:not(.open):not(.dragging) .history-swipe-delete {
   visibility: hidden;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .history-expense:active:not(.open):not(.dragging) {
+    border-bottom-color: transparent;
+  }
+
+  .history-expense:active:not(.open):not(.dragging) .history-swipe {
+    background: var(--soft);
+    border-radius: 14px;
+  }
+
+  .history-expense:active:not(.open):not(.dragging) .history-swipe-delete {
+    visibility: hidden;
+  }
 }
 
 .primary:active:not(:disabled) {

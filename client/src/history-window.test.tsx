@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import { HISTORY_FIRST_ROWS, HISTORY_MORE_ROWS, HistoryView, LONG_PRESS_MS, ROW_PRESS_DELAY_MS, ROW_SETTLE_LIMIT_MS } from './screens/History'
 import * as workspaceApi from './workspace-api'
 import type { Expense, WorkspaceBootstrap } from './types'
@@ -366,18 +366,53 @@ describe('history row press', () => {
     expect(row.className).toBe('history-expense open')
   })
 
-  it('lights the row at once under a mouse button and keeps it until the button is released anywhere', () => {
+  it('leaves the mouse to CSS :active: a mouse press sets no class and listens to nothing outside the row', () => {
+    const listen = vi.spyOn(window, 'addEventListener')
+    vi.useFakeTimers()
     const { container } = render(<HistoryView {...props} bootstrap={bootstrapWith(5)}/>)
     const row = container.querySelector('.history-expense')!
+    listen.mockClear()
     fireEvent.pointerDown(row, { pointerType: 'mouse', button: 0, clientX: 150, clientY: 20 })
+    later(ROW_PRESS_DELAY_MS)
+    expect(pressed(row)).toBe(false)
+    expect(listen.mock.calls.map(([type]) => type)).not.toContain('pointerup')
+    fireEvent.pointerUp(row, { pointerType: 'mouse', clientX: 150, clientY: 20 })
+    expect(pressed(row)).toBe(false)
+  })
+
+  // Браузер без touch-событий (jsdom их объявляет): касание приходит только pointer-событиями.
+  const withoutTouchEvents = () => {
+    let owner: object | null = window
+    while (owner && !Object.prototype.hasOwnProperty.call(owner, 'ontouchstart')) owner = Object.getPrototypeOf(owner)
+    if (!owner) return
+    const descriptor = Object.getOwnPropertyDescriptor(owner, 'ontouchstart')!
+    delete (owner as { ontouchstart?: unknown }).ontouchstart
+    onTestFinished(() => { Object.defineProperty(owner, 'ontouchstart', descriptor) })
+  }
+
+  it('lights a row touched through pointer events alone the same way as through touch events', () => {
+    withoutTouchEvents()
+    expect('ontouchstart' in window).toBe(false)
+    vi.useFakeTimers()
+    const { container } = render(<HistoryView {...props} bootstrap={bootstrapWith(5)}/>)
+    const row = container.querySelector('.history-expense')!
+    const finger = { pointerType: 'touch', button: 0, clientX: 150, clientY: 20 }
+    fireEvent.pointerDown(row, finger)
+    later(ROW_PRESS_DELAY_MS - 1)
+    expect(pressed(row)).toBe(false)
+    later(1)
     expect(pressed(row)).toBe(true)
-    // Как у :active: курсор ушёл со строки, кнопка ещё нажата — плашка остаётся.
-    fireEvent.pointerMove(row, { pointerType: 'mouse', clientX: 150, clientY: 200 })
-    expect(pressed(row)).toBe(true)
-    fireEvent.pointerUp(document.body, { pointerType: 'mouse', clientX: 150, clientY: 200 })
+    fireEvent.pointerUp(row, finger)
     expect(pressed(row)).toBe(false)
 
-    fireEvent.pointerDown(row, { pointerType: 'mouse', button: 2, clientX: 150, clientY: 20 })
+    // Браузер забрал палец листать список — pointercancel гасит плашку; сдвиг дальше порога — тоже.
+    fireEvent.pointerDown(row, finger)
+    later(ROW_PRESS_DELAY_MS)
+    fireEvent.pointerCancel(row, finger)
+    expect(pressed(row)).toBe(false)
+    fireEvent.pointerDown(row, finger)
+    later(ROW_PRESS_DELAY_MS)
+    fireEvent.pointerMove(row, { ...finger, clientY: 32 })
     expect(pressed(row)).toBe(false)
   })
 })

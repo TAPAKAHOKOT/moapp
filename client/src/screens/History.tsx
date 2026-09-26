@@ -100,7 +100,7 @@ const atRest = (node: Element) => {
 // принимающими запись, даёт перерисовку только тех строк, чьё состояние (выбор, открытый свайп) действительно изменилось.
 type RowGesture = { x: number; y: number; touchId: number | null; dragging: boolean; longPress: ReturnType<typeof setTimeout> | undefined }
 
-type RowPress = { x: number; y: number; touchId: number | null; timer: ReturnType<typeof setTimeout> | undefined; stop: () => void }
+type RowPress = { x: number; y: number; touchId: number | null; timer: ReturnType<typeof setTimeout> | undefined }
 
 const usesNativeTouch = () => typeof window !== 'undefined' && 'ontouchstart' in window
 
@@ -141,9 +141,9 @@ export const HistoryRow = memo(function HistoryRow({ expense, category, tags, cu
     if (event.target === event.currentTarget && event.propertyName === 'transform' && atRest(event.currentTarget)) setClosing(false)
   }
   useEffect(() => () => clearTimeout(gesture.current?.longPress), [])
-  // Плашка нажатия — класс, а не :active: под пальцем, листающим список, :active мигал на каждой строке. Касание зажигает
-  // её, только когда палец постоял на месте ROW_PRESS_DELAY_MS, а гасит сдвиг дальше порога, подъём пальца или отмена
-  // касания. Мышь, как и :active, зажигает её сразу и гасит, когда кнопку отпустили где угодно.
+  // Плашка нажатия. Под пальцем, листающим список, CSS :active мигал на каждой строке, поэтому касание зажигает её классом,
+  // только когда палец постоял на месте ROW_PRESS_DELAY_MS, а гасит сдвиг дальше порога, подъём пальца или отмена касания.
+  // Мышь и клавиатуру, как и раньше, ведёт :active — в CSS он оставлен только устройствам с мышью.
   const [pressed, setPressed] = useState(false)
   const press = useRef<RowPress | null>(null)
   const unpress = () => {
@@ -151,28 +151,21 @@ export const HistoryRow = memo(function HistoryRow({ expense, category, tags, cu
     if (!state) return
     press.current = null
     clearTimeout(state.timer)
-    state.stop()
     setPressed(false)
   }
-  // Касание (touchId) ведут и гасят свои touch-события; указатель отпускают и за пределами строки — его ловит окно.
-  const pressAt = (x: number, y: number, touchId: number | null, delayed: boolean) => {
+  // Касание touch-событиями узнаётся по touchId; касание одними pointer-событиями (touchId null) до конца жеста
+  // принадлежит строке, и его подъём и отмена приходят сюда же.
+  const pressAt = (x: number, y: number, touchId: number | null) => {
     unpress()
-    const state: RowPress = { x, y, touchId, timer: undefined, stop: () => {} }
+    const state: RowPress = { x, y, touchId, timer: undefined }
     press.current = state
-    if (touchId === null) {
-      const up = () => unpress()
-      window.addEventListener('pointerup', up, true)
-      window.addEventListener('pointercancel', up, true)
-      state.stop = () => { window.removeEventListener('pointerup', up, true); window.removeEventListener('pointercancel', up, true) }
-    }
-    if (delayed) state.timer = setTimeout(() => { if (press.current === state) setPressed(true) }, ROW_PRESS_DELAY_MS)
-    else setPressed(true)
+    state.timer = setTimeout(() => { if (press.current === state) setPressed(true) }, ROW_PRESS_DELAY_MS)
   }
   const pressMove = (x: number, y: number) => {
     const state = press.current
     if (state && Math.max(Math.abs(x - state.x), Math.abs(y - state.y)) > ROW_DRAG_START) unpress()
   }
-  useEffect(() => () => { const state = press.current; press.current = null; clearTimeout(state?.timer); state?.stop() }, [])
+  useEffect(() => () => { clearTimeout(press.current?.timer); press.current = null }, [])
   const begin = (x: number, y: number, touchId: number | null) => {
     if (disabled) return
     clearTimeout(gesture.current?.longPress)
@@ -218,7 +211,7 @@ export const HistoryRow = memo(function HistoryRow({ expense, category, tags, cu
   const pointerDown = (event: React.PointerEvent) => {
     if (event.pointerType === 'touch' && usesNativeTouch()) return
     if (event.button !== 0) return
-    pressAt(event.clientX, event.clientY, null, event.pointerType === 'touch')
+    if (event.pointerType === 'touch') pressAt(event.clientX, event.clientY, null)
     begin(event.clientX, event.clientY, null)
   }
   const pointerMove = (event: React.PointerEvent) => {
@@ -229,6 +222,7 @@ export const HistoryRow = memo(function HistoryRow({ expense, category, tags, cu
   }
   const pointerEnd = (event: React.PointerEvent) => {
     if (event.pointerType === 'touch' && usesNativeTouch()) return
+    if (event.pointerType === 'touch') unpress()
     finish(event.type === 'pointerup', event.clientX)
   }
   // Touch-слушатели ставятся один раз на строку; актуальные замыкания берутся из рефа.
@@ -243,7 +237,7 @@ export const HistoryRow = memo(function HistoryRow({ expense, category, tags, cu
       if (event.touches.length !== 1) { clearTimeout(gesture.current?.longPress); gesture.current = null; touch.current.unpress(); return }
       const point = event.touches[0]
       if (!point) return
-      touch.current.pressAt(point.clientX, point.clientY, point.identifier, true)
+      touch.current.pressAt(point.clientX, point.clientY, point.identifier)
       touch.current.begin(point.clientX, point.clientY, point.identifier)
     }
     const touchMove = (event: TouchEvent) => {
