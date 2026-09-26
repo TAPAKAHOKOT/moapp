@@ -2861,9 +2861,61 @@ button.settings-row:disabled .settings-row-value {
   border-radius: 11px;
 }
 
-/* «Расход»: сумма, клавиатура, плитки и «Сохранить» приглушены; заметка и теги — блоки в ряду под плитками. */
-.entry-view.arranging :is(.swipe-area, .keypad, .categories, .entry-save) {
+/* Если выше клавиатуры стоят плитки или ряд тегов, клавиатура оказывается под слоем превью свайпа — и растёт там так же,
+   как на своём обычном месте. */
+.entry-lower.with-keypad {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.entry-lower.with-keypad > .entry-lower-live {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* Ручка ≡ в правом углу рамки — зеркало «−»: за неё блок переставляют. */
+.edit-move {
+  position: absolute;
+  z-index: 3;
+  top: -26px;
+  right: -22px;
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  color: var(--ink);
+  cursor: grab;
+  touch-action: none;
+}
+
+.edit-move span {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--card);
+  box-shadow: 0 0 0 1px var(--control-line), 0 1px 4px rgb(0 0 0 / 14%);
+}
+
+:root[data-theme="dark"] .edit-move span {
+  background: #2d2e2e;
+}
+
+/* «Расход» в настройке: сумма и «Сохранить» приглушены, блоки стоят в рамках по порядку, клавиатура свёрнута в плашку.
+   Рамкам нужно место, поэтому экран в настройке прокручивается. */
+.entry-view.arranging {
+  height: auto;
+  min-height: 100%;
+  overflow: visible;
+}
+
+.entry-view.arranging :is(.swipe-area, .entry-save) {
   opacity: .38;
+}
+
+.entry-view.arranging .swipe-area {
+  flex: 0 0 auto;
 }
 
 /* У кнопок над суммой прозрачность уже задана в style — приглушаем фильтром поверх неё. */
@@ -2871,40 +2923,176 @@ button.settings-row:disabled .settings-row-value {
   filter: opacity(.38);
 }
 
-.extras-row.editing {
-  gap: 16px;
-  padding: 24px 8px 2px;
-}
-
-.extras-row.editing .edit-block {
-  border-radius: 999px;
-}
-
-.extras-row.editing .note-block {
-  flex: 0 0 auto;
-  max-width: 46%;
-}
-
-.extras-row.editing .tags-block {
-  flex: 1 1 0;
-  min-width: 0;
-}
-
-.extras-row.editing .edit-block-body {
+.entry-arrange {
   display: flex;
-  overflow: hidden;
+  flex-direction: column;
+  gap: 14px;
+  padding: 26px 22px 18px;
+}
+
+.arrange-list {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 30px;
+}
+
+.arrange-slot.lifted {
+  position: relative;
+  z-index: 4;
+}
+
+.arrange-slot.lifted .edit-block {
+  background: var(--paper);
+  box-shadow: 0 10px 26px rgb(0 0 0 / 18%);
+}
+
+.keypad-plate {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 46px;
+  padding: 0 12px;
+  border-radius: 12px;
+  background: var(--card);
+  color: var(--ink);
+  font-size: calc(13px * var(--text-scale));
+  font-weight: 650;
+}
+
+.keypad-plate svg {
+  color: var(--sage);
+}
+
+.arrange-note .tag-add {
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  padding: 0 11px;
   border-radius: 999px;
+  font-size: calc(11px * var(--text-scale));
 }
 
-.extras-row.editing .edit-block-body > * {
-  flex: 1 1 auto;
+/* Плитки в настройке: та же сетка, плитку тащат целиком, «−» в её углу уносит плитку за «Ещё». */
+.categories.arranging {
+  padding: 0;
+}
+
+.categories.arranging .main-categories {
+  position: relative;
+}
+
+.tile-slot {
+  position: relative;
+  display: grid;
   min-width: 0;
-  max-width: 100%;
 }
 
-.extras-row.editing .edit-slot {
+.tile-slot > .tile-grab {
+  min-width: 0;
+  cursor: grab;
+  touch-action: none;
+}
+
+.tile-slot.lifted {
+  z-index: 4;
+}
+
+.tile-slot.lifted > .tile-grab {
+  box-shadow: 0 8px 20px rgb(0 0 0 / 18%);
+}
+
+.main-categories button.edit-remove {
+  top: -14px;
+  left: -14px;
+  display: grid;
+  width: 36px;
+  min-width: 0;
+  height: 36px;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  gap: 0;
+}
+
+.main-categories button.edit-remove:active {
+  transform: none;
+}
+
+.main-categories .tile-more {
+  border-style: dashed;
+  border-color: var(--control-line);
+  background: transparent;
+  color: var(--muted);
+}
+
+/* Теги в настройке переносятся на новые строки; тег тащат целиком, «−» внутри тега уносит его за «Ещё». */
+.tag-strip.arranging {
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  overflow: visible;
+  position: relative;
+  touch-action: auto;
+}
+
+.tag-slot {
+  --tag: var(--sage);
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-height: 30px;
+  padding: 0 4px 0 0;
+  border: 1px solid color-mix(in srgb, var(--tag) 50%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--tag) 10%, var(--card));
+}
+
+.tag-slot.lifted {
+  z-index: 4;
+  box-shadow: 0 6px 16px rgb(0 0 0 / 16%);
+}
+
+.tag-strip.arranging .tag-grab {
+  min-height: 28px;
+  padding: 0 4px 0 11px;
+  border: 0;
+  background: none;
+  color: var(--ink);
+  font-size: calc(11px * var(--text-scale));
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: grab;
+  touch-action: none;
+}
+
+.tag-grab::before {
+  content: "#";
+  opacity: .55;
+  font-weight: 700;
+}
+
+.tag-strip.arranging .tag-remove {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--soft);
+  color: var(--muted);
+  touch-action: manipulation;
+}
+
+.tag-strip.arranging .tag-add {
   width: auto;
   min-height: 30px;
-  padding: 3px 12px 3px 4px;
+  padding: 0 11px;
   border-radius: 999px;
+  font-size: calc(11px * var(--text-scale));
 }

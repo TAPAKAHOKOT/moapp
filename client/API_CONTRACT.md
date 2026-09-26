@@ -137,8 +137,10 @@ in both lists. Ids of removed categories and tags are allowed and skipped by the
 (created later, possibly by another member) goes to the end of «Ещё». Without the key the member sees the shared starting
 layout: categories with `placement: 'main'` as tiles in `sortOrder`, and the first five tags in `sortOrder`. The client
 applies the member's layout wherever categories or tags are picked or listed: «Расход», card review, the tag sheet, history
-rows and filters (`screen-order.ts`). It changes in Settings → «Категории» and «Теги» with «−», «+» and ≡, works offline
-like any personal setting and never touches the shared `placement`/`sortOrder` (the client no longer calls the `order` routes).
+rows and filters (`screen-order.ts`). It changes right on «Расход» while the screen is being arranged: a tile or a tag is
+dragged, «−» takes it behind «Ещё» and «＋ Ещё» brings it back. Settings → «Категории» and «Теги» only edit what is shared.
+The layout works offline like any personal setting and never touches the shared `placement`/`sortOrder` (the client no
+longer calls the `order` routes).
 
 - `PATCH /api/me/settings` with `{settings: {key: value | null}}` → `{settings: AccountSettings}`.
 - `PATCH /api/workspaces/:workspaceId/me/settings` with the same body → `{settings: MemberSettings}`.
@@ -176,12 +178,18 @@ workspaces.
 Without the `filters` block the saved history filters do not apply (they return with the block). Without the `categories` or
 `tags` card the analytics focus on a category or tag does not apply.
 
-A screen is arranged right on it, in the «Настройка экрана» mode: «Настроить экран» at the bottom of «История» and
-«Аналитика» opens it, and Settings → «Мои экраны» picks a screen (the only way to «Расход»; «История» and «Аналитика»
-wait for the first expense). The header becomes «Настройка экрана · Готово», the fixed part of the screen is dimmed and
-inert, a standing block gets a frame with «−» in its corner, and a removed block stays in its place as a dashed
-«+ name» that brings it back. Analytics cards fold into plates that «−» removes and ≡ reorders; removed ones wait at the
-bottom. Each tap is saved at once; «Готово», Escape or another tab leaves the mode.
+A screen is arranged right on it, in the «Настройка экрана» mode. It opens from the «Настроить экран» icon in the header,
+by holding a block for half a second (the tiles or the note and tags on «Расход», the blocks above the history list or a
+day header, any analytics card), and from Settings → «Мои экраны», which picks a screen («История» and «Аналитика» wait
+for the first expense). The header becomes «Настройка экрана · Готово» and the parts that always stay are dimmed and
+inert. A standing block gets a frame with «−» in its left corner if it can be removed and ≡ in its right corner if it
+can move; removed blocks wait as dashed «+ name» that brings them back to their place. On «Расход» the keypad folds into
+a plate while the tiles and tags are laid out in place; analytics cards fold into plates. Each tap is saved at once;
+«Готово», Escape or another tab leaves the mode.
+
+On «Расход» the blocks stand in the person's order. The note and the tags share one row when they are next to each other.
+The swipe preview covers the screen from the first block that differs between expenses (tiles, note, tags) down to
+«Сохранить», so with the default order the layout is the one from before blocks.
 
 ## Expense routes and synchronization
 

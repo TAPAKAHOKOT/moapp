@@ -354,6 +354,8 @@ export function CategoryMark({ category }: { category?: Pick<Category, 'color' |
 
 export const GridIcon = () => <i className="grid-icon" aria-hidden="true"><svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor"><rect x="1.5" y="1.5" width="5" height="5" rx="1.5"/><rect x="9.5" y="1.5" width="5" height="5" rx="1.5"/><rect x="1.5" y="9.5" width="5" height="5" rx="1.5"/><rect x="9.5" y="9.5" width="5" height="5" rx="1.5"/></svg></i>
 
+export const KeypadIcon = () => <svg viewBox="0 0 20 20" width="20" height="20" fill="currentColor" aria-hidden="true"><rect x="3" y="3" width="3.6" height="3.6" rx="1.2"/><rect x="8.2" y="3" width="3.6" height="3.6" rx="1.2"/><rect x="13.4" y="3" width="3.6" height="3.6" rx="1.2"/><rect x="3" y="8.2" width="3.6" height="3.6" rx="1.2"/><rect x="8.2" y="8.2" width="3.6" height="3.6" rx="1.2"/><rect x="13.4" y="8.2" width="3.6" height="3.6" rx="1.2"/><rect x="3" y="13.4" width="3.6" height="3.6" rx="1.2"/><rect x="8.2" y="13.4" width="3.6" height="3.6" rx="1.2"/><rect x="13.4" y="13.4" width="3.6" height="3.6" rx="1.2"/></svg>
+
 // Экран из блоков: значок настройки экрана в шапке.
 export const ArrangeIcon = () => <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="3.5" y="3.5" width="17" height="17" rx="3.5"/><path d="M3.5 10h17M12 10v10.5"/></svg>
 
@@ -379,68 +381,106 @@ export function ListSheet({ title, onClose, dismissible = true, children }: { ti
   </section></div>
 }
 
-// Порядок в списке меняется перетаскиванием за ручку ≡ (или стрелками с клавиатуры) — вместо двух стрелок на каждую строку.
+export type DragAxis = 'x' | 'y' | 'grid'
+
+// Порядок меняется перетаскиванием: за ручку ≡ в списке, за саму плитку или тег в ряду, стрелками с клавиатуры.
+// Поднятый элемент едет за пальцем, остальные расступаются. Новое место считается по раскладке на момент, когда
+// элемент подняли: соседи разного размера (клавиатура и плитки) иначе перескакивали бы туда-обратно под пальцем.
+// Элемент поднимается, когда палец сдвинулся на несколько пикселей, — простое касание его не трогает.
 // На iOS ручке нужен touch-action: none, иначе Safari отдаёт жест прокрутке и обрывает указатель.
-export function DragList<T extends { id: string }>({ items, disabled = false, className, onReorder, render }: { items: T[]; disabled?: boolean; className?: string; onReorder: (ids: string[]) => void; render: (item: T) => React.ReactNode }) {
+export function useDragOrder<T extends { id: string }>({ items, axis = 'y', disabled = false, onReorder }: { items: T[]; axis?: DragAxis; disabled?: boolean; onReorder: (ids: string[]) => void }) {
   const [order, setOrder] = useState<string[] | null>(null)
-  const [drag, setDrag] = useState<{ id: string; pointerY: number } | null>(null)
+  const [drag, setDrag] = useState<{ id: string; x: number; y: number } | null>(null)
   const listRef = useRef<HTMLDivElement>(null)
-  const grabOffset = useRef(0)
+  // Сам жест живёт в рефах: палец могут отпустить раньше, чем React перерисует поднятый элемент.
+  const pressed = useRef<{ id: string; x: number; y: number; grabX: number; grabY: number } | null>(null)
+  const lifting = useRef(false)
+  const orderRef = useRef<string[] | null>(null)
+  const slots = useRef(new Map<string, DOMRect>())
   const shown = order ? order.map((id) => items.find((item) => item.id === id)).filter((item): item is T => Boolean(item)) : items
-  const rowOf = (id: string) => Array.from(listRef.current?.querySelectorAll<HTMLElement>('[data-drag-id]') ?? []).find((row) => row.dataset.dragId === id) ?? null
-  // Поднятая строка следует за пальцем; её место в списке уже поменялось, поэтому сдвиг считается от новой позиции в раскладке.
+  const nodes = () => Array.from(listRef.current?.querySelectorAll<HTMLElement>('[data-drag-id]') ?? [])
+  const nodeOf = (id: string) => nodes().find((node) => node.dataset.dragId === id) ?? null
+  // Поднятый элемент уже стоит на новом месте в раскладке, поэтому сдвиг считается от этой позиции.
   useLayoutEffect(() => {
-    if (!drag) return
-    const row = rowOf(drag.id)
+    const grab = pressed.current
+    if (!drag || !grab) return
+    const node = nodeOf(drag.id)
     const list = listRef.current
-    if (!row || !list) return
-    row.style.transform = `translateY(${drag.pointerY - (list.getBoundingClientRect().top + row.offsetTop + grabOffset.current)}px)`
+    if (!node || !list) return
+    const box = list.getBoundingClientRect()
+    const dx = axis === 'y' ? 0 : drag.x - (box.left + node.offsetLeft + grab.grabX)
+    const dy = axis === 'x' ? 0 : drag.y - (box.top + node.offsetTop + grab.grabY)
+    node.style.transform = `translate(${dx}px, ${dy}px)`
   }, [drag, order])
+  const indexAt = (id: string, x: number, y: number) => {
+    let index = 0
+    for (const [other, rect] of slots.current) {
+      if (other === id) continue
+      const passed = axis === 'y' ? y > rect.top + rect.height / 2
+        : axis === 'x' ? x > rect.left + rect.width / 2
+        : y > rect.bottom || (y >= rect.top && x > rect.left + rect.width / 2)
+      if (passed) index += 1
+    }
+    return index
+  }
   const start = (event: React.PointerEvent<HTMLElement>, id: string) => {
     if (disabled || event.button !== 0) return
-    const row = rowOf(id)
-    if (!row) return
+    const node = nodeOf(id)
+    if (!node) return
     event.currentTarget.setPointerCapture?.(event.pointerId)
-    grabOffset.current = event.clientY - row.getBoundingClientRect().top
-    setOrder(items.map((item) => item.id))
-    setDrag({ id, pointerY: event.clientY })
+    const rect = node.getBoundingClientRect()
+    pressed.current = { id, x: event.clientX, y: event.clientY, grabX: event.clientX - rect.left, grabY: event.clientY - rect.top }
   }
   const move = (event: React.PointerEvent) => {
-    if (!drag) return
-    const rows = Array.from(listRef.current?.querySelectorAll<HTMLElement>('[data-drag-id]') ?? []).filter((row) => row.dataset.dragId !== drag.id)
-    // Новая позиция — число чужих строк, середину которых палец уже прошёл.
-    let index = 0
-    for (const row of rows) { const rect = row.getBoundingClientRect(); if (event.clientY > rect.top + rect.height / 2) index += 1 }
-    setOrder((current) => {
-      if (!current) return current
-      const without = current.filter((id) => id !== drag.id)
-      const next = [...without.slice(0, index), drag.id, ...without.slice(index)]
-      return next.every((id, at) => id === current[at]) ? current : next
-    })
-    setDrag({ id: drag.id, pointerY: event.clientY })
+    const grab = pressed.current
+    if (!grab) return
+    if (!lifting.current) {
+      if (Math.hypot(event.clientX - grab.x, event.clientY - grab.y) < 4) return
+      lifting.current = true
+      slots.current = new Map(nodes().map((node) => [node.dataset.dragId!, node.getBoundingClientRect()]))
+    }
+    const index = indexAt(grab.id, event.clientX, event.clientY)
+    const current = orderRef.current
+    const without = (current ?? items.map((item) => item.id)).filter((id) => id !== grab.id)
+    const next = [...without.slice(0, index), grab.id, ...without.slice(index)]
+    if (!current || next.some((id, at) => id !== current[at])) { orderRef.current = next; setOrder(next) }
+    setDrag({ id: grab.id, x: event.clientX, y: event.clientY })
   }
   const end = (commit: boolean) => {
-    if (!drag) return
-    const row = rowOf(drag.id)
-    if (row) row.style.transform = ''
-    const next = order
+    const grab = pressed.current
+    const lifted = lifting.current
+    const next = orderRef.current
+    pressed.current = null
+    lifting.current = false
+    orderRef.current = null
+    if (!grab) return
+    const node = nodeOf(grab.id)
+    if (node) node.style.transform = ''
     setDrag(null); setOrder(null)
-    if (commit && next && next.some((id, at) => id !== items[at]?.id)) onReorder(next)
+    if (commit && lifted && next && next.some((id, at) => id !== items[at]?.id)) onReorder(next)
   }
   const keyMove = (event: React.KeyboardEvent, id: string) => {
-    const direction = event.key === 'ArrowUp' ? -1 : event.key === 'ArrowDown' ? 1 : 0
-    if (!direction || disabled) return
+    const back = axis === 'y' ? event.key === 'ArrowUp' : event.key === 'ArrowUp' || event.key === 'ArrowLeft'
+    const forward = axis === 'y' ? event.key === 'ArrowDown' : event.key === 'ArrowDown' || event.key === 'ArrowRight'
+    if ((!back && !forward) || disabled) return
     event.preventDefault()
     const ids = items.map((item) => item.id)
     const index = ids.indexOf(id)
-    const target = index + direction
+    const target = index + (back ? -1 : 1)
     if (index < 0 || target < 0 || target >= ids.length) return
     ;[ids[index], ids[target]] = [ids[target]!, ids[index]!]
     onReorder(ids)
   }
-  return <div ref={listRef} className={`drag-list${className ? ` ${className}` : ''}${drag ? ' dragging' : ''}`}>{shown.map((item) => <div key={item.id} data-drag-id={item.id} className={`drag-row${drag?.id === item.id ? ' lifted' : ''}`}>
+  const handle = (id: string) => ({ onPointerDown: (event: React.PointerEvent<HTMLElement>) => start(event, id), onPointerMove: move, onPointerUp: () => end(true), onPointerCancel: () => end(false) })
+  return { shown, listRef, lifted: drag?.id ?? null, handle, keyMove }
+}
+
+// Список с ручкой ≡ у каждой строки — вместо двух стрелок на строку.
+export function DragList<T extends { id: string }>({ items, disabled = false, className, onReorder, render }: { items: T[]; disabled?: boolean; className?: string; onReorder: (ids: string[]) => void; render: (item: T) => React.ReactNode }) {
+  const drag = useDragOrder({ items, disabled, onReorder })
+  return <div ref={drag.listRef} className={`drag-list${className ? ` ${className}` : ''}${drag.lifted ? ' dragging' : ''}`}>{drag.shown.map((item) => <div key={item.id} data-drag-id={item.id} className={`drag-row${drag.lifted === item.id ? ' lifted' : ''}`}>
     {render(item)}
-    {items.length > 1 && <span className="drag-handle" role="button" tabIndex={disabled ? -1 : 0} aria-label="Перетащить, чтобы изменить порядок" aria-disabled={disabled} onPointerDown={(event) => start(event, item.id)} onPointerMove={move} onPointerUp={() => end(true)} onPointerCancel={() => end(false)} onKeyDown={(event) => keyMove(event, item.id)}>≡</span>}
+    {items.length > 1 && <span className="drag-handle" role="button" tabIndex={disabled ? -1 : 0} aria-label="Перетащить, чтобы изменить порядок" aria-disabled={disabled} {...drag.handle(item.id)} onKeyDown={(event) => drag.keyMove(event, item.id)}>≡</span>}
   </div>)}</div>
 }
 
@@ -514,23 +554,46 @@ export function useHold(onHold: (() => void) | undefined, accept: (target: Eleme
   return setNode
 }
 
-/** «−» в углу блока в режиме «Настройка экрана». */
-export function RemoveBadge({ name, onRemove }: { name: string; onRemove: () => void }) {
-  return <button type="button" className="edit-remove" aria-label={`Убрать «${name}»`} onClick={() => { tap(4); onRemove() }}><span aria-hidden="true"><SignIcon/></span></button>
+/** «−» в углу блока в режиме «Настройка экрана». Нажатие не начинает перетаскивание блока, внутри которого он стоит. */
+export function RemoveBadge({ name, label = `Убрать «${name}»`, onRemove }: { name: string; label?: string; onRemove: () => void }) {
+  return <button type="button" className="edit-remove" aria-label={label} onPointerDown={(event) => event.stopPropagation()} onClick={() => { tap(4); onRemove() }}><span aria-hidden="true"><SignIcon/></span></button>
 }
 
-// Блок в режиме «Настройка экрана». Стоящий виден как есть, но не нажимается: вокруг рамка, в углу «−». Убранный
-// остаётся на своём месте пунктирной заготовкой «+ Название» — по ней он и возвращается.
-export function EditBlock({ name, hint, shown, onToggle, className, children }: { name: string; hint?: string; shown: boolean; onToggle: () => void; className?: string; children?: React.ReactNode }) {
+export type DragHandle = ReturnType<ReturnType<typeof useDragOrder>['handle']> & { onKeyDown: (event: React.KeyboardEvent) => void }
+
+export const GripIcon = () => <svg viewBox="0 0 12 12" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" aria-hidden="true"><path d="M2.5 3.5h7M2.5 6h7M2.5 8.5h7"/></svg>
+
+// Блок в режиме «Настройка экрана». Стоящий виден как есть: вокруг рамка, в левом углу «−» (если блок можно убрать),
+// в правом ≡ (если его можно переставить). Тело не нажимается — кроме блоков, которые раскладываются прямо здесь
+// (`live`: плитки и теги). Убранный остаётся пунктирной заготовкой «+ Название» — по ней он и возвращается.
+export function EditBlock({ name, hint, shown, onToggle = () => {}, removable = true, move, live = false, className, children }: {
+  name: string; hint?: string; shown: boolean; onToggle?: () => void; removable?: boolean; move?: DragHandle; live?: boolean; className?: string; children?: React.ReactNode
+}) {
   const classes = (base: string) => className ? `${base} ${className}` : base
   if (!shown) return <button type="button" className={classes('edit-slot')} aria-label={`Вернуть «${name}»`} onClick={() => { tap(4); onToggle() }}>
     <span className="edit-sign" aria-hidden="true"><SignIcon plus/></span>
     <span className="edit-slot-text"><b>{name}</b>{hint && <small>{hint}</small>}</span>
   </button>
   return <div className={classes('edit-block')}>
-    <div className="edit-block-body" inert>{children}</div>
-    <RemoveBadge name={name} onRemove={onToggle}/>
+    <div className="edit-block-body" inert={!live}>{children}</div>
+    {removable && <RemoveBadge name={name} onRemove={onToggle}/>}
+    {move && <span className="edit-move" role="button" tabIndex={0} aria-label={`Переставить «${name}»`} {...move}><span aria-hidden="true"><GripIcon/></span></span>}
   </div>
+}
+
+// Что стоит за «Ещё» на «Расходе» — категории или теги, которые можно поставить обратно. «+» ставит сразу, лист
+// остаётся открытым, пока не нажали «Готово».
+export function MoreSheet({ title, items, onAdd, onClose }: { title: string; items: { id: string; name: string; mark: React.ReactNode }[]; onAdd: (id: string) => void; onClose: () => void }) {
+  return <ListSheet title={title} onClose={onClose}>
+    {items.length > 0
+      ? <div className="drag-list layout-list">{items.map((item) => <div key={item.id} className="drag-row">
+        <LayoutToggle shown={false} label={`Поставить «${item.name}» на «Расход»`} onToggle={() => onAdd(item.id)}/>
+        {item.mark}
+        <span className="category-name">{item.name}</span>
+      </div>)}</div>
+      : <p className="sheet-copy">Всё уже на «Расходе».</p>}
+    <button type="button" className="primary sheet-action" onClick={onClose}>Готово</button>
+  </ListSheet>
 }
 
 // Одно поле с кнопкой «Сохранить»: имена и названия правятся одинаково, без сохранения «после выхода из поля».

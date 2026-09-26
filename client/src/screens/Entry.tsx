@@ -5,13 +5,13 @@ import { patchSettings } from '../settings'
 import type { SettingsPatch } from '../settings'
 import type { AccountSettings, BlockLayout, Category, Currency, Expense, ScreenOrder, Tag, WorkspaceSummary } from '../types'
 import { amountToMinor, applyKeypad, cachedNumberFormat, formatAmountInput, isoToLocalInput, localInputToIso, swipeDirection, workspaceCurrency } from '../utils'
-import { CategoryMark, ChevronIcon, CurrencySheet, GridIcon, Toast, TrashIcon, prefersReducedMotion, tap, useConfirm, useDialog, useHold, useToast } from '../ui'
+import { CategoryMark, ChevronIcon, CurrencySheet, EditBlock, GridIcon, KeypadIcon, MoreSheet, RemoveBadge, SignIcon, Toast, TrashIcon, prefersReducedMotion, tap, useConfirm, useDialog, useDragOrder, useHold, useToast } from '../ui'
 import { amountSize, formatEntryDate, formatShortWeekday, inputFromExpense } from '../format'
 import type { Bootstrap } from '../format'
-import { ExtrasRow, NoteSheet, TAG_COLORS, createTagOrReuse } from '../tags'
-import { categoryLayout } from '../screen-order'
-import { isShown, screenBlocks, toBlockLayout, toggleBlock } from '../screen-blocks'
-import type { BlockScreen } from '../screen-blocks'
+import { ExtrasRow, NoteSheet, TAG_COLORS, createTagOrReuse, tagStyle } from '../tags'
+import { categoryLayout, moveToMore, moveToShown, reorderGroup, tagLayout, toScreenOrder } from '../screen-order'
+import { hideBlock, reorderBlocks, screenBlocks, showBlock, toBlockLayout } from '../screen-blocks'
+import type { BlockScreen, Blocks } from '../screen-blocks'
 
 export const EMPTY_FORM = { amount: '', currency: 'RSD', note: '', occurredAt: '', tagIds: [] as string[], categoryId: '' }
 
@@ -148,10 +148,35 @@ export function CategoryTiles({ main, additional, selectedId, disabled = false, 
   </div></div>
 }
 
-export function EntryLowerPreview({ main, additional, tags, tagOrder, showNote = true, showTags = true, state }: { main: Category[]; additional: Category[]; tags: Tag[]; tagOrder?: ScreenOrder; showNote?: boolean; showTags?: boolean; state: LowerPreviewState }) {
+const noop = () => {}
+
+/*
+ * Блоки «Расхода» стоят в порядке человека. Заметка и теги рядом — один ряд, как раньше; порознь — каждый своим рядом.
+ * У соседней записи отличаются только плитки, заметка и теги, поэтому слой превью при свайпе накрывает часть экрана
+ * от первого такого блока до «Сохранить» (`tail`), а то, что стоит выше и не меняется (`head`), рисуется один раз. При
+ * обычном порядке это та же раскладка, что до блоков: клавиатура отдельно, плитки, ряд и «Сохранить» под превью.
+ */
+export type EntryUnit = { key: string; ids: string[] }
+
+const VARYING = new Set(['tiles', 'note', 'tags'])
+
+export function entryUnits(ids: string[]): { head: EntryUnit[]; tail: EntryUnit[] } {
+  const units: EntryUnit[] = []
+  const extra = (id?: string) => id === 'note' || id === 'tags'
+  for (const id of ids) {
+    const last = units.at(-1)
+    if (extra(id) && last?.ids.length === 1 && extra(last.ids[0])) { last.ids.push(id); last.key = 'extras'; continue }
+    units.push({ key: extra(id) ? `extras-${id}` : id, ids: [id] })
+  }
+  const first = units.findIndex((unit) => unit.ids.some((id) => VARYING.has(id)))
+  return first < 0 ? { head: units, tail: [] } : { head: units.slice(0, first), tail: units.slice(first) }
+}
+
+export function EntryLowerPreview({ units, main, additional, tags, tagOrder, state }: { units: EntryUnit[]; main: Category[]; additional: Category[]; tags: Tag[]; tagOrder?: ScreenOrder; state: LowerPreviewState }) {
   return <>
-    <CategoryTiles main={main} additional={additional} selectedId={state.categoryId} inert/>
-    <ExtrasRow tags={tags} order={tagOrder} showNote={showNote} showTags={showTags} selected={state.tagIds} note={state.note} inert onChange={() => {}} onNote={() => {}}/>
+    {units.map((unit) => unit.key === 'keypad' ? <Keypad key="keypad" onKey={noop} inert/>
+      : unit.key === 'tiles' ? <CategoryTiles key="tiles" main={main} additional={additional} selectedId={state.categoryId} inert/>
+      : <ExtrasRow key={unit.key} tags={tags} order={tagOrder} showNote={unit.ids.includes('note')} showTags={unit.ids.includes('tags')} tagsFirst={unit.ids[0] === 'tags'} selected={state.tagIds} note={state.note} inert onChange={noop} onNote={noop}/>)}
     <div className="entry-save"><button type="button" className="primary" tabIndex={-1} disabled={!state.canSave}>{state.saveLabel}</button>{state.key !== 'blank' && <button type="button" className="sheet-cancel ghost" tabIndex={-1} disabled aria-hidden>Отменить</button>}</div>
   </>
 }
@@ -628,11 +653,15 @@ export function EntryView({ userId, workspaceId, workspace, bootstrap, setBootst
   // Плитки и теги у каждого свои (настройки → «Категории» и «Теги»); кто их не трогал, видит общую стартовую раскладку.
   const { shown: main, more: additional } = categoryLayout(bootstrap.categories, bootstrap.settings?.categoryOrder)
   const tagOrder = bootstrap.settings?.tagOrder
-  // Заметку и теги можно убрать с экрана. Уже записанные у расхода заметка и теги от этого не теряются.
+  // Блоки «Расхода» в порядке человека; заметку и теги можно убрать. Уже записанные у расхода заметка и теги от этого
+  // не теряются.
   const entryBlocks = screenBlocks('entry', blocks)
-  const showNote = isShown(entryBlocks, 'note')
-  const showTags = isShown(entryBlocks, 'tags')
-  const toggleExtra = (id: 'note' | 'tags') => onScreensChange({ entryBlocks: toBlockLayout(toggleBlock(entryBlocks, id)) })
+  const { head, tail } = entryUnits(entryBlocks.shown.map((block) => block.id))
+  // Плитки и теги раскладываются прямо на экране, в настройке; раскладка у каждого своя и живёт в аккаунте.
+  const saveOrder = (patch: { categoryOrder: ScreenOrder } | { tagOrder: ScreenOrder }) => {
+    setBootstrap((data) => ({ ...data, settings: patchSettings(data.settings, patch) }))
+    saveMemberSettings(userId, workspaceId, patch)
+  }
   const selectedCategoryId = form.categoryId || null
   const dirty = current ? JSON.stringify(form) !== JSON.stringify(inputFromExpense(current, bootstrap.currencies)) : formHasContent(form)
   const save = saveButtonLabel({ amount: form.amount, currency: form.currency, categoryId: selectedCategoryId, editing: Boolean(current), dirty, currencies: bootstrap.currencies })
@@ -670,6 +699,10 @@ export function EntryView({ userId, workspaceId, workspace, bootstrap, setBootst
     return()=>window.removeEventListener('keydown',handle)
   },[active,editing,physicalKey])
   const publishTag = (tag: Tag) => setBootstrap((data) => ({ ...data, tags: [tag, ...(data.tags ?? []).filter((item) => item.id !== tag.id)] }))
+  const saveRow = <div className="entry-save" inert={editing}><button type="button" className="primary" disabled={!save.canSave || saving} onClick={() => void submitExpense()}>{saving ? 'Сохраняем…' : save.label}</button>{current && <button type="button" className={`sheet-cancel${dirty && !saving ? '' : ' ghost'}`} disabled={!dirty || saving} aria-hidden={!dirty || saving} tabIndex={dirty && !saving ? undefined : -1} onClick={cancelEdit}>Отменить</button>}</div>
+  const liveUnit = (unit: EntryUnit) => unit.key === 'keypad' ? <Keypad key="keypad" onKey={key} disabled={saving}/>
+    : unit.key === 'tiles' ? <CategoryTiles key="tiles" main={main} additional={additional} selectedId={selectedCategoryId} disabled={saving} onPick={chooseCategory} onMore={() => setCategorySheet(true)}/>
+    : <ExtrasRow key={unit.key} tags={bootstrap.tags ?? []} order={tagOrder} showNote={unit.ids.includes('note')} showTags={unit.ids.includes('tags')} tagsFirst={unit.ids[0] === 'tags'} selected={form.tagIds} note={form.note} disabled={saving} online={navigator.onLine} onChange={(tagIds) => setForm((value) => ({ ...value, tagIds }))} onNote={() => setNoteSheet(true)} onCreate={(name) => createTagOrReuse(workspaceId, name, TAG_COLORS[(bootstrap.tags ?? []).length % TAG_COLORS.length] ?? null, publishTag)}/>
   return <section ref={sectionRef} className={`entry-view${current ? ' editing' : ''}${saving ? ' saving' : ''}${editing ? ' arranging' : ''}`} aria-label="Ввод суммы" onPointerDown={swipeStart} onPointerMove={swipeMove} onPointerUpCapture={swipeEnd} onPointerCancel={swipeCancel}>
     <div className="swipe-area" inert={editing}>
       <div className="entry-track" ref={trackRef}>
@@ -682,15 +715,15 @@ export function EntryView({ userId, workspaceId, workspace, bootstrap, setBootst
       <button type="button" className="entry-new" disabled={saving || !current || jumpingNew} onClick={() => void startNew()} aria-label="Новый расход">Новый</button>
       <button type="button" className="icon-danger entry-delete" disabled={saving || !current || jumpingNew} onClick={() => void remove()} aria-label="Удалить расход"><TrashIcon/></button>
     </div>
-    <Keypad onKey={key} disabled={saving} inert={editing}/>
-    <div className="entry-lower">
-    <div ref={lowerLiveRef} className="entry-lower-live">
-    <CategoryTiles main={main} additional={additional} selectedId={selectedCategoryId} disabled={saving} inert={editing} onPick={chooseCategory} onMore={() => setCategorySheet(true)}/>
-    <ExtrasRow tags={bootstrap.tags ?? []} order={tagOrder} showNote={showNote} showTags={showTags} edit={editing ? toggleExtra : undefined} selected={form.tagIds} note={form.note} disabled={saving} online={navigator.onLine} onChange={(tagIds) => setForm((value) => ({ ...value, tagIds }))} onNote={() => setNoteSheet(true)} onCreate={(name) => createTagOrReuse(workspaceId, name, TAG_COLORS[(bootstrap.tags ?? []).length % TAG_COLORS.length] ?? null, publishTag)}/>
-    <div className="entry-save" inert={editing}><button type="button" className="primary" disabled={!save.canSave || saving} onClick={() => void submitExpense()}>{saving ? 'Сохраняем…' : save.label}</button>{current && <button type="button" className={`sheet-cancel${dirty && !saving ? '' : ' ghost'}`} disabled={!dirty || saving} aria-hidden={!dirty || saving} tabIndex={dirty && !saving ? undefined : -1} onClick={cancelEdit}>Отменить</button>}</div>
-    </div>
-    {swipePreview && <div ref={lowerPreviewRef} className="entry-lower-preview" aria-hidden="true" inert><EntryLowerPreview main={main} additional={additional} tags={bootstrap.tags ?? []} tagOrder={tagOrder} showNote={showNote} showTags={showTags} state={swipePreview}/></div>}
-    </div>
+    {editing
+      ? <><EntryArrange blocks={entryBlocks} onBlocks={(next) => onScreensChange({ entryBlocks: toBlockLayout(next) })} categories={bootstrap.categories} categoryOrder={bootstrap.settings?.categoryOrder} tags={bootstrap.tags ?? []} tagOrder={tagOrder} onOrder={saveOrder}/>{saveRow}</>
+      : <>
+        {head.map(liveUnit)}
+        <div className={`entry-lower${tail.some((unit) => unit.key === 'keypad') ? ' with-keypad' : ''}`}>
+          <div ref={lowerLiveRef} className="entry-lower-live">{tail.map(liveUnit)}{saveRow}</div>
+          {swipePreview && <div ref={lowerPreviewRef} className="entry-lower-preview" aria-hidden="true" inert><EntryLowerPreview units={tail} main={main} additional={additional} tags={bootstrap.tags ?? []} tagOrder={tagOrder} state={swipePreview}/></div>}
+        </div>
+      </>}
     {dateSheet && <DateSheet value={form.occurredAt} onClose={() => setDateSheet(false)} onPick={(value) => { setForm({ ...form, occurredAt: value }); setDateSheet(false) }}/>}
     {categorySheet && <CategorySheet categories={additional} selectedId={selectedCategoryId ?? undefined} onClose={() => setCategorySheet(false)} onPick={chooseCategory}/>}
     {noteSheet && <NoteSheet value={form.note} onClose={() => setNoteSheet(false)} onSave={(note) => { setForm({ ...form, note }); setNoteSheet(false) }}/>}
@@ -709,4 +742,59 @@ export function EntryView({ userId, workspaceId, workspace, bootstrap, setBootst
     {toast && <Toast toast={toast} onDismiss={dismiss}/>}
     {confirmation}
   </section>
+}
+
+// Режим «Настройка экрана» на «Расходе»: блоки стоят в рамках по порядку. ≡ в правом углу переставляет блок, «−» в левом
+// убирает его (клавиатура и плитки только переставляются), убранные ждут внизу пунктиром. Клавиатура на время
+// настройки свёрнута в плашку, а плитки и теги раскладываются прямо здесь.
+export function EntryArrange({ blocks, onBlocks, categories, categoryOrder, tags, tagOrder, onOrder }: {
+  blocks: Blocks; onBlocks: (next: Blocks) => void
+  categories: Category[]; categoryOrder?: ScreenOrder; tags: Tag[]; tagOrder?: ScreenOrder
+  onOrder: (patch: { categoryOrder: ScreenOrder } | { tagOrder: ScreenOrder }) => void
+}) {
+  const drag = useDragOrder({ items: blocks.shown, onReorder: (ids) => onBlocks(reorderBlocks(blocks, ids)) })
+  const body = (id: string) => id === 'keypad' ? <div className="keypad-plate"><KeypadIcon/><span>Клавиатура</span></div>
+    : id === 'tiles' ? <TilesArrange categories={categories} order={categoryOrder} onChange={(order) => onOrder({ categoryOrder: order })}/>
+    : id === 'tags' ? <TagsArrange tags={tags} order={tagOrder} onChange={(order) => onOrder({ tagOrder: order })}/>
+    : <span className="tag-add extra-add">＋ Заметка</span>
+  return <div className="entry-arrange">
+    <div ref={drag.listRef} className="arrange-list">{drag.shown.map((block) => <div key={block.id} data-drag-id={block.id} className={`arrange-slot${drag.lifted === block.id ? ' lifted' : ''}`}>
+      <EditBlock name={block.name} shown removable={!block.fixed} live={block.id === 'tiles' || block.id === 'tags'} className={`arrange-${block.id}`} onToggle={() => onBlocks(hideBlock(blocks, block.id))}
+        move={blocks.shown.length > 1 ? { ...drag.handle(block.id), onKeyDown: (event) => drag.keyMove(event, block.id) } : undefined}>{body(block.id)}</EditBlock>
+    </div>)}</div>
+    {blocks.hidden.map((block) => <EditBlock key={block.id} name={block.name} hint={block.hint} shown={false} onToggle={() => onBlocks(showBlock(blocks, block.id))}/>)}
+  </div>
+}
+
+// Плитки в настройке: плитку можно перетащить, «−» уносит её за «Ещё», «＋ Ещё» открывает то, что можно поставить обратно.
+export function TilesArrange({ categories, order, onChange }: { categories: Category[]; order?: ScreenOrder; onChange: (order: ScreenOrder) => void }) {
+  const layout = categoryLayout(categories, order)
+  const [more, setMore] = useState(false)
+  const drag = useDragOrder({ items: layout.shown, axis: 'grid', onReorder: (ids) => onChange(toScreenOrder(reorderGroup(layout, 'shown', ids))) })
+  return <div className="categories arranging">
+    <div ref={drag.listRef} className="main-categories">
+      {drag.shown.map((category) => <div key={category.id} data-drag-id={category.id} className={`tile-slot${drag.lifted === category.id ? ' lifted' : ''}`}>
+        <button type="button" className="tile-grab" aria-label={`Переставить плитку «${category.name}»`} {...drag.handle(category.id)} onKeyDown={(event) => drag.keyMove(event, category.id)}><CategoryMark category={category}/><span>{category.name}</span></button>
+        <RemoveBadge name={category.name} label={`Убрать «${category.name}» за «Ещё»`} onRemove={() => onChange(toScreenOrder(moveToMore(layout, category.id)))}/>
+      </div>)}
+      {layout.more.length > 0 && <button type="button" className="tile-more" onClick={() => { tap(4); setMore(true) }}><span className="edit-sign" aria-hidden="true"><SignIcon plus/></span><span>Ещё {layout.more.length}</span></button>}
+    </div>
+    {more && <MoreSheet title="За плиткой «Ещё»" items={layout.more.map((category) => ({ id: category.id, name: category.name, mark: <CategoryMark category={category}/> }))} onAdd={(id) => onChange(toScreenOrder(moveToShown(layout, id)))} onClose={() => setMore(false)}/>}
+  </div>
+}
+
+// Теги в настройке — так же, как плитки: перетащить, «−» за «Ещё», «＋ Ещё» — вернуть.
+export function TagsArrange({ tags, order, onChange }: { tags: Tag[]; order?: ScreenOrder; onChange: (order: ScreenOrder) => void }) {
+  const layout = tagLayout(tags, order)
+  const [more, setMore] = useState(false)
+  const drag = useDragOrder({ items: layout.shown, axis: 'grid', onReorder: (ids) => onChange(toScreenOrder(reorderGroup(layout, 'shown', ids))) })
+  return <div ref={drag.listRef} className="tag-strip arranging">
+    {drag.shown.map((tag) => <span key={tag.id} data-drag-id={tag.id} className={`tag-slot${drag.lifted === tag.id ? ' lifted' : ''}`} style={tagStyle(tag)}>
+      <button type="button" className="tag-grab" aria-label={`Переставить тег «${tag.name}»`} {...drag.handle(tag.id)} onKeyDown={(event) => drag.keyMove(event, tag.id)}>{tag.name}</button>
+      <button type="button" className="tag-remove" aria-label={`Убрать «${tag.name}» за «Ещё»`} onPointerDown={(event) => event.stopPropagation()} onClick={() => { tap(4); onChange(toScreenOrder(moveToMore(layout, tag.id))) }}><SignIcon/></button>
+    </span>)}
+    {layout.more.length > 0 ? <button type="button" className="tag-add extra-add" onClick={() => { tap(4); setMore(true) }}>＋ Ещё {layout.more.length}</button>
+      : !tags.length && <span className="tag-add extra-add">Тегов пока нет</span>}
+    {more && <MoreSheet title="Теги за «Ещё»" items={layout.more.map((tag) => ({ id: tag.id, name: tag.name, mark: <i className="tag-dot" style={tagStyle(tag)}/> }))} onAdd={(id) => onChange(toScreenOrder(moveToShown(layout, id)))} onClose={() => setMore(false)}/>}
+  </div>
 }

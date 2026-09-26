@@ -1,10 +1,9 @@
 import { useId, useLayoutEffect, useRef, useState } from 'react'
 import { WorkspaceApiError as ApiError, createTag } from './workspace-api'
 import type { ScreenOrder, Tag } from './types'
-import { CheckIcon, EditBlock, tap, useConfirm, useDialog, useOverflowHint } from './ui'
+import { CheckIcon, tap, useConfirm, useDialog, useOverflowHint } from './ui'
 import { pluralRu } from './format'
 import { inOrder, tagLayout } from './screen-order'
-import { blockInfo } from './screen-blocks'
 
 export const MAX_EXPENSE_TAGS = 20
 
@@ -27,11 +26,10 @@ export function tagStyle(tag: Pick<Tag, 'color'>) {
   return tag.color ? { '--tag': tag.color } as React.CSSProperties : undefined
 }
 
-// Ряд под категориями: заметка первой, дальше теги как категории — те, что человек держит в ряду, по его порядку,
-// остальные за «Ещё N». Полный список с поиском и созданием — в шите. Заметку и теги можно убрать с экрана: тогда их
-// нет и в ряду, а без обоих нет и самого ряда. В режиме «Настройка экрана» (`edit`) оба стоят на своих местах —
-// в рамке с «−» или пунктирной заготовкой, если убраны.
-export function ExtrasRow({ tags, order, selected, note, onChange, onNote, onCreate, disabled = false, online = true, inert = false, showNote = true, showTags = true, edit }: { tags: Tag[]; order?: ScreenOrder; selected: string[]; note: string; onChange: (ids: string[]) => void; onNote: () => void; onCreate?: (name: string) => Promise<Tag | null>; disabled?: boolean; online?: boolean; inert?: boolean; showNote?: boolean; showTags?: boolean; edit?: (id: 'note' | 'tags') => void }) {
+// Ряд под категориями: заметка, дальше теги как категории — те, что человек держит в ряду, по его порядку, остальные
+// за «Ещё N». Полный список с поиском и созданием — в шите. Заметку и теги можно убрать с экрана или поставить
+// порознь; рядом они делят один ряд, и тогда теги могут стоять первыми (`tagsFirst`).
+export function ExtrasRow({ tags, order, selected, note, onChange, onNote, onCreate, disabled = false, online = true, inert = false, showNote = true, showTags = true, tagsFirst = false }: { tags: Tag[]; order?: ScreenOrder; selected: string[]; note: string; onChange: (ids: string[]) => void; onNote: () => void; onCreate?: (name: string) => Promise<Tag | null>; disabled?: boolean; online?: boolean; inert?: boolean; showNote?: boolean; showTags?: boolean; tagsFirst?: boolean }) {
   const [open, setOpen] = useState(false)
   const stripRef = useRef<HTMLDivElement>(null)
   const layout = tagLayout(tags, order)
@@ -57,7 +55,7 @@ export function ExtrasRow({ tags, order, selected, note, onChange, onNote, onCre
     if (selected.includes(id)) onChange(selected.filter((item) => item !== id))
     else if (selected.length < MAX_EXPENSE_TAGS) onChange([...selected, id])
   }
-  if (!edit && !showNote && !showTags) return null
+  if (!showNote && !showTags) return null
   const noteButton = <button type="button" className={`tag-add extra-add extra-note${note ? ' filled' : ''}`} disabled={disabled} tabIndex={tabIndex} onClick={onNote} aria-label={note ? `Заметка: ${note}` : 'Добавить заметку'}>{note ? `✎ ${note}` : '＋ Заметка'}</button>
   const strip = <div className="tag-strip" ref={stripRef} role="group" aria-label="Теги">
     {shown.map((tag) => <TagChip key={tag.id} name={tag.name} color={tag.color} selected={selected.includes(tag.id)} disabled={disabled} inert={inert} onToggle={() => toggle(tag.id)}/>)}
@@ -66,13 +64,8 @@ export function ExtrasRow({ tags, order, selected, note, onChange, onNote, onCre
   // Шторка рендерится рядом с рядом, а не внутри него: iOS Safari удерживает position:fixed внутри прокручиваемого
   // контейнера, и подложка оказывалась обрезанной полосой и под футером.
   return <>
-    <div className={`extras-row${more && showTags && !edit ? ' more' : ''}${edit ? ' editing' : ''}`} role="group" aria-label={edit || showNote && showTags ? 'Заметка и теги' : showNote ? 'Заметка' : 'Теги'}>
-      {edit
-        ? <>
-          <EditBlock name={blockInfo('entry', 'note').name} shown={showNote} className="note-block" onToggle={() => edit('note')}>{noteButton}</EditBlock>
-          <EditBlock name={blockInfo('entry', 'tags').name} shown={showTags} className="tags-block" onToggle={() => edit('tags')}>{strip}</EditBlock>
-        </>
-        : <>{showNote && noteButton}{showTags && strip}</>}
+    <div className={`extras-row${more && showTags && !(tagsFirst && showNote) ? ' more' : ''}`} role="group" aria-label={showNote && showTags ? 'Заметка и теги' : showNote ? 'Заметка' : 'Теги'}>
+      {tagsFirst ? <>{showTags && strip}{showNote && noteButton}</> : <>{showNote && noteButton}{showTags && strip}</>}
     </div>
     {open && <TagSheet tags={tags} order={order} selected={selected} online={online} onClose={() => setOpen(false)} onChange={onChange} onCreate={onCreate}/>}
   </>

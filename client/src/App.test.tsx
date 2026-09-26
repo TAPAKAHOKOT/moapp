@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import * as accessFlow from './access-flow'
 import App, { AnalyticsView, CardReviewView, CapabilityScreen, CreateWorkspaceSheet, EntryView, fallbackAnalytics, formatEntryDate, formatHistoryDate, HistoryView, pagerTabsAt, RecoverySave, SettingsView, useToast, WorkspaceSwitcher } from './App'
 import { splitDraft, SplitSheet } from './screens/Split'
+import { entryUnits } from './screens/Entry'
 import { ModsView, readStatementFile, statementFeedback } from './screens/Mods'
 import * as workspaceApi from './workspace-api'
 import * as workspaceOffline from './workspace-offline'
@@ -1007,6 +1008,13 @@ describe('splitting one payment into parts', () => {
   })
 })
 
+// «Расход» в настройке с настоящим состоянием: раскладка и данные меняются так же, как в приложении.
+function EntryHarness({ bootstrap: initial, blocks: initialBlocks }: { bootstrap: WorkspaceBootstrap; blocks?: { shown: string[]; hidden: string[] } }) {
+  const [bootstrap, setBootstrap] = useState(initial)
+  const [blocks, setBlocks] = useState(initialBlocks)
+  return <EntryView userId="user-a" workspaceId="workspace-a" workspace={bootstrap.workspace} bootstrap={bootstrap} setBootstrap={setBootstrap} currentId={null} setCurrentId={vi.fn()} refreshPending={vi.fn()} onDraftDirtyChange={vi.fn()} active blocks={blocks} editing onScreensChange={(patch) => setBlocks(patch.entryBlocks ?? undefined)}/>
+}
+
 function SettingsHarness({ bootstrap: initial }: { bootstrap: WorkspaceBootstrap }) {
   const [bootstrap, setBootstrap] = useState(initial)
   const user: AuthenticatedSession = { authenticated: true, user: { id: 'user-a', displayName: 'Аня', recoveryConfigured: true, recoveryGeneration: 1 }, currentSessionId: 'session-a', currentSessionExpiresAt: '2030-01-01T00:00:00.000Z', serverTime: '2026-08-10T14:00:00.000Z', restrictedToRecovery: false, workspaces: [bootstrap.workspace], legacyWorkspaceId: null }
@@ -1413,30 +1421,41 @@ describe('personal «Расход»', () => {
     expect([...live.querySelectorAll('.tag-strip button')].map((node) => node.textContent)).toEqual(['кофе', 'Ещё 2'])
   })
 
-  it('moves tiles and tags with «+» and «−» only for this person, without touching the shared categories', async () => {
-    quietAccess()
+  it('arranges tiles and tags right on «Расход» only for this person, without touching the shared categories', () => {
     const save = vi.spyOn(workspaceApi, 'saveMemberSettings').mockImplementation(() => {})
     const update = vi.spyOn(workspaceApi, 'updateCategory')
-    render(<SettingsHarness bootstrap={expenseBootstrap({ categories: personalCategories, tags: personalTags })}/>)
+    const { container } = render(<EntryHarness bootstrap={expenseBootstrap({ categories: personalCategories, tags: personalTags })}/>)
+    const tiles = () => [...container.querySelectorAll('.tile-grab')].map((node) => node.textContent)
 
-    fireEvent.click(screen.getByRole('button', { name: /^Категории/ }))
-    const sheet = screen.getByRole('dialog', { name: 'Категории' })
-    expect(groups(sheet)).toEqual(['# Плитки на «Расходе»', 'Продукты', '# За плиткой «Ещё»', 'Для дома', 'Развлечения'])
-    expect(sheet.textContent).toContain('Плитки и их порядок — только ваши')
-
-    fireEvent.click(within(sheet).getByRole('button', { name: 'Поставить «Развлечения» на «Расход»' }))
+    expect(tiles()).toEqual(['Продукты'])
+    fireEvent.click(screen.getByRole('button', { name: 'Ещё 2' }))
+    const more = screen.getByRole('dialog', { name: 'За плиткой «Ещё»' })
+    fireEvent.click(within(more).getByRole('button', { name: 'Поставить «Развлечения» на «Расход»' }))
     expect(save).toHaveBeenLastCalledWith('user-a', 'workspace-a', { categoryOrder: { shown: ['products', 'fun'], more: ['home'] } })
-    fireEvent.click(within(sheet).getByRole('button', { name: 'Убрать «Продукты» с «Расхода»' }))
+    fireEvent.click(within(more).getByRole('button', { name: 'Готово' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Убрать «Продукты» за «Ещё»' }))
     expect(save).toHaveBeenLastCalledWith('user-a', 'workspace-a', { categoryOrder: { shown: ['fun'], more: ['products', 'home'] } })
-    expect(groups(sheet)).toEqual(['# Плитки на «Расходе»', 'Развлечения', '# За плиткой «Ещё»', 'Продукты', 'Для дома'])
+    expect(tiles()).toEqual(['Развлечения'])
+    fireEvent.click(screen.getByRole('button', { name: 'Ещё 2' }))
+    fireEvent.click(within(screen.getByRole('dialog', { name: 'За плиткой «Ещё»' })).getByRole('button', { name: 'Поставить «Продукты» на «Расход»' }))
+    fireEvent.click(within(screen.getByRole('dialog', { name: 'За плиткой «Ещё»' })).getByRole('button', { name: 'Готово' }))
+    fireEvent.keyDown(screen.getByRole('button', { name: 'Переставить плитку «Продукты»' }), { key: 'ArrowLeft' })
+    expect(tiles()).toEqual(['Продукты', 'Развлечения'])
     expect(update).not.toHaveBeenCalled()
 
-    fireEvent.click(within(sheet).getByRole('button', { name: 'Закрыть' }))
-    fireEvent.click(screen.getByRole('button', { name: /^Теги/ }))
-    const tags = screen.getByRole('dialog', { name: 'Теги' })
-    fireEvent.click(within(tags).getByRole('button', { name: 'Убрать «отпуск» с «Расхода»' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Убрать «отпуск» за «Ещё»' }))
     expect(save).toHaveBeenLastCalledWith('user-a', 'workspace-a', { tagOrder: { shown: ['tag-0', 'tag-2'], more: ['tag-1'] } })
-    expect(groups(tags)).toEqual(['# В ряду на «Расходе»', 'вдвоём', 'кофе', '# За «Ещё»', 'отпуск'])
+    expect([...container.querySelectorAll('.tag-grab')].map((node) => node.textContent)).toEqual(['вдвоём', 'кофе'])
+  })
+
+  it('keeps only what is shared in the category and tag lists of the settings', () => {
+    quietAccess()
+    render(<SettingsHarness bootstrap={expenseBootstrap({ categories: personalCategories, tags: personalTags })}/>)
+    fireEvent.click(screen.getByRole('button', { name: /^Категории/ }))
+    const sheet = screen.getByRole('dialog', { name: 'Категории' })
+    expect(groups(sheet)).toEqual(['Продукты', 'Для дома', 'Развлечения'])
+    expect(within(sheet).queryByRole('button', { name: /Расход/ })).toBeNull()
+    expect(sheet.textContent).toContain('раскладывает сам, прямо на нём')
   })
 
   it('gives a category a shared emoji in the editor, which no longer decides where it stands', async () => {
@@ -1448,7 +1467,7 @@ describe('personal «Расход»', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Продукты' }))
     const editor = screen.getByRole('dialog', { name: 'Категория' })
     expect(within(editor).queryByRole('switch')).toBeNull()
-    expect(editor.textContent).toContain('Плитки на «Расходе» каждый выбирает себе сам')
+    expect(editor.textContent).toContain('Плитки на «Расходе» каждый раскладывает себе сам')
 
     // Своё поле держит один эмодзи: буквы не проходят, новый эмодзи заменяет прежний, составной не распадается.
     const own = within(editor).getByLabelText('Свой значок: любой эмодзи') as HTMLInputElement
@@ -1588,25 +1607,60 @@ describe('screens made of blocks', () => {
     expect(change).toHaveBeenLastCalledWith({ analyticsBlocks: { shown: ['categories', 'trend', 'tags'], hidden: ['weekdays'] } })
   })
 
-  it('arranges the note and the tags under the tiles and leaves the rest of «Расход» alone', () => {
+  it('arranges «Расход» in frames: the keypad and the tiles only move, the note and the tags go and come back', () => {
     const change = vi.fn()
     const bootstrap = expenseBootstrap({ tags: personalTags })
-    const view = (blocks: { shown: string[]; hidden: string[] }) => <EntryView userId="user-a" workspaceId="workspace-a" workspace={bootstrap.workspace} bootstrap={bootstrap} setBootstrap={vi.fn()} currentId={null} setCurrentId={vi.fn()} refreshPending={vi.fn()} onDraftDirtyChange={vi.fn()} active blocks={blocks} editing onScreensChange={change}/>
-    const { container, rerender } = render(view({ shown: ['tags'], hidden: ['note'] }))
+    const { container } = render(<EntryView userId="user-a" workspaceId="workspace-a" workspace={bootstrap.workspace} bootstrap={bootstrap} setBootstrap={vi.fn()} currentId={null} setCurrentId={vi.fn()} refreshPending={vi.fn()} onDraftDirtyChange={vi.fn()} active blocks={{ shown: ['tags'], hidden: ['note'] }} editing onScreensChange={change}/>)
 
-    for (const part of ['.swipe-area', '.keypad', '.entry-lower-live .categories', '.entry-save']) expect(container.querySelector(part)?.hasAttribute('inert')).toBe(true)
+    // Сумма и «Сохранить» приглушены, клавиатура свёрнута в плашку и цифр не принимает.
+    for (const part of ['.swipe-area', '.entry-save']) expect(container.querySelector(part)?.hasAttribute('inert')).toBe(true)
+    expect(container.querySelector('.keypad')).toBeNull()
+    expect(container.querySelector('.keypad-plate')?.textContent).toBe('Клавиатура')
     fireEvent.keyDown(window, { key: '5' })
     expect(screen.getByLabelText('Сумма').textContent).toBe('0')
+    expect(screen.getAllByRole('button', { name: /^Переставить «/ }).map((button) => button.getAttribute('aria-label'))).toEqual(['Переставить «Клавиатура»', 'Переставить «Плитки»', 'Переставить «Теги»'])
+    expect(screen.queryByRole('button', { name: 'Убрать «Клавиатура»' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Убрать «Плитки»' })).toBeNull()
 
     fireEvent.click(screen.getByRole('button', { name: 'Вернуть «Заметка»' }))
     expect(change).toHaveBeenLastCalledWith({ entryBlocks: { shown: ['keypad', 'tiles', 'note', 'tags'], hidden: [] } })
+    fireEvent.keyDown(screen.getByRole('button', { name: 'Переставить «Плитки»' }), { key: 'ArrowUp' })
+    expect(change).toHaveBeenLastCalledWith({ entryBlocks: { shown: ['tiles', 'keypad', 'tags'], hidden: ['note'] } })
     fireEvent.click(screen.getByRole('button', { name: 'Убрать «Теги»' }))
     expect(change).toHaveBeenLastCalledWith({ entryBlocks: { shown: ['keypad', 'tiles'], hidden: ['tags', 'note'] } })
+  })
 
-    // Без обоих блоков обычный «Расход» остаётся без ряда, а в настройке ряд стоит двумя заготовками.
-    rerender(view({ shown: [], hidden: ['note', 'tags'] }))
-    expect(screen.getByRole('button', { name: 'Вернуть «Заметка»' })).not.toBeNull()
-    expect(screen.getByRole('button', { name: 'Вернуть «Теги»' })).not.toBeNull()
+  it('stands «Расход» blocks in the person\'s order, with the note and tags sharing a row when they meet', () => {
+    const bootstrap = expenseBootstrap({ tags: personalTags })
+    const view = (shown: string[]) => <EntryView userId="user-a" workspaceId="workspace-a" workspace={bootstrap.workspace} bootstrap={bootstrap} setBootstrap={vi.fn()} currentId={null} setCurrentId={vi.fn()} refreshPending={vi.fn()} onDraftDirtyChange={vi.fn()} active blocks={{ shown, hidden: [] }}/>
+    const layout = (container: HTMLElement) => [...container.querySelectorAll('.entry-view > .keypad, .entry-lower-live > *')].map((node) => node.classList[0])
+    const { container, rerender } = render(view(['keypad', 'tiles', 'note', 'tags']))
+    // Обычный порядок — прежняя раскладка: клавиатура отдельно, всё остальное под слоем превью.
+    expect(layout(container)).toEqual(['keypad', 'categories', 'extras-row', 'entry-save'])
+    expect(container.querySelector('.entry-lower.with-keypad')).toBeNull()
+
+    rerender(view(['tiles', 'keypad', 'tags', 'note']))
+    expect(layout(container)).toEqual(['categories', 'keypad', 'extras-row', 'entry-save'])
+    expect(container.querySelector('.entry-lower.with-keypad')).not.toBeNull()
+    expect([...container.querySelector('.extras-row')!.children].map((node) => node.className.split(' ')[0])).toEqual(['tag-strip', 'tag-add'])
+
+    rerender(view(['note', 'keypad', 'tiles', 'tags']))
+    expect(layout(container)).toEqual(['extras-row', 'keypad', 'categories', 'extras-row', 'entry-save'])
+    expect(entryUnits(['keypad', 'tiles', 'note', 'tags'])).toEqual({ head: [{ key: 'keypad', ids: ['keypad'] }], tail: [{ key: 'tiles', ids: ['tiles'] }, { key: 'extras', ids: ['note', 'tags'] }] })
+  })
+
+  it('puts the filters and the total in the person\'s order and moves them with ≡', () => {
+    const at = '2026-09-20T10:00:00.000Z'
+    const change = vi.fn()
+    const bootstrap = expenseBootstrap({ categories: personalCategories, expenses: [spent('a', 'products', at)] })
+    const view = (editing: boolean) => <HistoryView userId="user-a" workspaceId="workspace-a" bootstrap={bootstrap} setBootstrap={vi.fn()} edit={vi.fn()} createNew={vi.fn()} refreshPending={vi.fn()} blocks={{ shown: ['total', 'filters', 'day-totals'], hidden: [] }} editing={editing} onScreensChange={change}/>
+    const { container, rerender } = render(view(false))
+    expect([...container.querySelector('.history-toolbar')!.children].map((node) => node.className)).toEqual(['history-total-line', 'history-chips'])
+
+    rerender(view(true))
+    expect(screen.getAllByRole('button', { name: /^Переставить «/ }).map((button) => button.getAttribute('aria-label'))).toEqual(['Переставить «Итог»', 'Переставить «Фильтры и поиск»'])
+    fireEvent.keyDown(screen.getByRole('button', { name: 'Переставить «Итог»' }), { key: 'ArrowDown' })
+    expect(change).toHaveBeenLastCalledWith({ historyBlocks: { shown: ['filters', 'total', 'day-totals'], hidden: [] } })
   })
 
   it('opens the setup when a card on «Аналитика» or the tiles on «Расход» are held', () => {

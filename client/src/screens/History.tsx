@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { WorkspaceApiError as ApiError, includeExpense, saveMemberSettings, submitExpenseOperation, submitExpenseOperations } from '../workspace-api'
 import { patchSettings } from '../settings'
 import type { SettingsPatch } from '../settings'
@@ -6,12 +6,12 @@ import type { AccountSettings, BlockLayout, Category, Currency, Expense, Tag } f
 import { appTimeZone, cachedDateTimeFormat, localDateKey, monthDateRange, shiftDateKey, weekdayFromDateKey, workspaceCurrency } from '../utils'
 import { HISTORY_PERIOD_LABELS, defaultHistoryPreferences, expenseTagNames, filterHistoryExpenses, historyTotals, parseHistoryPreferences } from '../history'
 import type { HistoryPeriod, HistoryPreferences } from '../history'
-import { CardMark, CategoryMark, ChevronIcon, EditBlock, HOLD_MS, LockIcon, MultiSelect, SearchIcon, Toast, TrashIcon, tap, useDialog, useHold, useOverflowHint, useToast } from '../ui'
+import { CardMark, CategoryMark, ChevronIcon, EditBlock, HOLD_MS, LockIcon, MultiSelect, SearchIcon, Toast, TrashIcon, tap, useDialog, useDragOrder, useHold, useOverflowHint, useToast } from '../ui'
 import { formatAnalyticsAmount, formatDateRange, formatHistoryDate, money, pluralRu } from '../format'
 import type { Bootstrap } from '../format'
 import { sortTags } from '../tags'
 import { categoryLayout, inOrder } from '../screen-order'
-import { blockInfo, isShown, screenBlocks, toBlockLayout, toggleBlock } from '../screen-blocks'
+import { blockInfo, isShown, reorderBlocks, screenBlocks, toBlockLayout, toggleBlock } from '../screen-blocks'
 import type { BlockScreen } from '../screen-blocks'
 
 // Календарь для фильтра истории: первый тап — начало, второй — конец; один день — два тапа по одной дате.
@@ -259,6 +259,9 @@ export const HistoryView = memo(function HistoryView({ userId, workspaceId, boot
   const showFilters = isShown(historyBlocks, 'filters')
   const showTotal = isShown(historyBlocks, 'total')
   const showDayTotals = isShown(historyBlocks, 'day-totals')
+  // Фильтры и «Итог» стоят над списком в порядке человека; суммы по дням живут у дат.
+  const toolbarBlocks = historyBlocks.shown.filter((block) => !block.pinned)
+  const toolbarDrag = useDragOrder({ items: toolbarBlocks, onReorder: (ids) => onScreensChange({ historyBlocks: toBlockLayout(reorderBlocks(historyBlocks, ids)) }) })
   const activeFilters = useMemo(() => showFilters ? filters : defaultHistoryPreferences(localDateKey(new Date())), [showFilters, filters])
   // Настройка экрана начинается сверху, где стоят блоки; выбор записей и открытый свайп ей не нужны.
   useEffect(() => {
@@ -473,23 +476,24 @@ export const HistoryView = memo(function HistoryView({ userId, workspaceId, boot
   </div>
   return <section ref={sectionRef} className={`page history-page${editing ? ' arranging' : ''}`}>
     {editing
-      ? <div className="history-toolbar">
-        <EditBlock {...editBlock('filters', true)}>{chips}{search}</EditBlock>
-        <EditBlock {...editBlock('total', true)}>{totalLine}</EditBlock>
+      ? <div ref={toolbarDrag.listRef} className="history-toolbar">
+        {toolbarDrag.shown.map((block) => <div key={block.id} data-drag-id={block.id} className={`arrange-slot${toolbarDrag.lifted === block.id ? ' lifted' : ''}`}>
+          <EditBlock {...editBlock(block.id, true)} move={toolbarBlocks.length > 1 ? { ...toolbarDrag.handle(block.id), onKeyDown: (event) => toolbarDrag.keyMove(event, block.id) } : undefined}>{block.id === 'filters' ? <>{chips}{search}</> : totalLine}</EditBlock>
+        </div>)}
+        {historyBlocks.hidden.filter((block) => !block.pinned).map((block) => <EditBlock key={block.id} {...editBlock(block.id, true)}/>)}
       </div>
       : activeExpenses.length > 0 && (selected.size > 0 || showFilters || showTotal) && <div className="history-toolbar">
-        {selected.size > 0
-          ? <div className="history-selectbar" role="toolbar" aria-label="Выбранные расходы"><span>Выбрано {selected.size}</span><button type="button" className="danger-link" onClick={removeSelected} disabled={deleting} aria-label={`Удалить выбранные расходы: ${selected.size}`}>Удалить</button><button type="button" className="text-button" onClick={() => setSelected(new Set())}>Отмена</button></div>
-          : showFilters && chips}
-        {showFilters && selected.size === 0 && search}
+        {selected.size > 0 && <div className="history-selectbar" role="toolbar" aria-label="Выбранные расходы"><span>Выбрано {selected.size}</span><button type="button" className="danger-link" onClick={removeSelected} disabled={deleting} aria-label={`Удалить выбранные расходы: ${selected.size}`}>Удалить</button><button type="button" className="text-button" onClick={() => setSelected(new Set())}>Отмена</button></div>}
+        {toolbarBlocks.map((block) => block.id === 'filters'
+          ? selected.size === 0 && <Fragment key="filters">{chips}{search}</Fragment>
+          : <Fragment key="total">{totalLine}{showParts && totalParts && <p className="history-total-parts">{totalParts}{totals.missing.length ? ` · нет курса: ${totals.missing.join(', ')}` : ''}</p>}</Fragment>)}
+        {!showTotal && filtersActive && totalLine}
         {periodOpen && <PeriodSheet value={filters.period} onClose={() => setPeriodOpen(false)} onSelect={(period) => {
           setPeriodOpen(false)
           // Свой период без дат бесполезен, поэтому календарь открывается сразу.
           if (period === 'range') { setCalendar(true); return }
           if (period !== filters.period) updateFilters({ period })
         }}/>}
-        {(showTotal || filtersActive) && totalLine}
-        {showTotal && showParts && totalParts && <p className="history-total-parts">{totalParts}{totals.missing.length ? ` · нет курса: ${totals.missing.join(', ')}` : ''}</p>}
       </div>}
     {reminder && !selected.size && (reminder.compact
       ? <div className="history-inbox history-reminder compact" inert={editing}><span className="reminder-mark"><LockIcon/></span><b>Сохраните ссылку доступа</b><button type="button" className="text-button reminder-save" onClick={reminder.onSave}>Сохранить</button><button type="button" className="text-button reminder-later" onClick={reminder.onLater}>Позже</button></div>

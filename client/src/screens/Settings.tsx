@@ -9,13 +9,12 @@ import { completeRotationSafely } from '../recovery-flow'
 import type { AuthenticatedSession, Category, Expense, RecoveryPrepareResponse, SessionState, Tag, ThemePreference, WorkspaceMod, WorkspaceSummary } from '../types'
 import { PINNED_CURRENCIES, lastEmoji, localDateKey, workspaceCurrency } from '../utils'
 import { buildHistoryCsv } from '../history'
-import { CategoryMark, ChevronIcon, CurrencySheet, DragList, LayoutToggle, ListSheet, TextSheet, Toast, copyText, tap, useConfirm, useDialog, useToast } from '../ui'
+import { CategoryMark, ChevronIcon, CurrencySheet, ListSheet, TextSheet, Toast, copyText, tap, useConfirm, useDialog, useToast } from '../ui'
 import type { SelectOption } from '../ui'
 import { formatLinkLifetime, formatRelativeTime } from '../format'
 import type { Bootstrap } from '../format'
 import { TAG_COLORS, TAG_COLOR_NAMES, TagEditor } from '../tags'
-import { ROOMY_TILES, categoryLayout, moveToMore, moveToShown, reorderGroup, tagLayout, toScreenOrder } from '../screen-order'
-import type { Layout } from '../screen-order'
+import { categoryLayout, inOrder, tagLayout } from '../screen-order'
 import { BLOCK_SCREENS, SCREENS, blocksOf, hiddenBlockCount } from '../screen-blocks'
 import type { BlockScreen } from '../screen-blocks'
 import { RecoverySave } from './Access'
@@ -360,18 +359,12 @@ export function SettingsView({ user, workspace, workspaceId, bootstrap, setBoots
   }
   // Скрытые видны только здесь: имя за ними остаётся занятым, поэтому вернуть их нужно уметь без повторного создания.
   const hiddenCategories=bootstrap.categories.filter((x)=>x.archivedAt).sort((a,b)=>a.name.localeCompare(b.name,'ru'))
-  // Что стоит на «Расходе», у каждого своё и живёт в аккаунте: меняется сразу и без сети, как тема. Сами категории
-  // и теги — общие, их правка идёт на сервер.
-  const categoryTiles=categoryLayout(bootstrap.categories,bootstrap.settings?.categoryOrder)
-  const activeCount=categoryTiles.shown.length+categoryTiles.more.length
+  // Здесь правится общее: название, значок и цвет. Какие категории стоят плитками и какие теги в ряду, каждый
+  // раскладывает сам, прямо на «Расходе»; списки идут в его порядке.
+  const activeCategories=inOrder(categoryLayout(bootstrap.categories,bootstrap.settings?.categoryOrder))
+  const activeCount=activeCategories.length
   const tags=bootstrap.tags??[]
-  const tagRow=tagLayout(tags,bootstrap.settings?.tagOrder)
-  const saveLayout=(key:'categoryOrder'|'tagOrder',layout:Layout<{id:string}>)=>{
-    const order=toScreenOrder(layout)
-    const patch=key==='categoryOrder'?{categoryOrder:order}:{tagOrder:order}
-    setBootstrap((b)=>({...b,settings:patchSettings(b.settings,patch)}))
-    saveMemberSettings(user.user.id,workspaceId,patch)
-  }
+  const orderedTags=inOrder(tagLayout(tags,bootstrap.settings?.tagOrder))
   const saveTag=async(name:string,color:string|null)=>{
     try{
       const saved=editingTag?await updateTag(workspaceId,editingTag.id,{name,color,version:editingTag.version}):await createTag(workspaceId,{name,color})
@@ -395,18 +388,7 @@ export function SettingsView({ user, workspace, workspaceId, bootstrap, setBoots
   const modsValue=mods===null?(online?'…':'нужна сеть'):modsNeedAttention?'нужно обновить':addedMods.length?String(addedMods.length):'нет'
   const hiddenBlocks=hiddenBlockCount(user.settings)
   const hasExpenses=bootstrap.expenses.some((expense)=>!expense.deletedAt)
-  // «−» убирает с «Расхода» за «Ещё», «+» ставит обратно в конец ряда; ≡ меняет порядок внутри группы.
-  const layoutToggle=(name:string,shown:boolean,move:()=>void)=><LayoutToggle shown={shown} label={shown?`Убрать «${name}» с «Расхода»`:`Поставить «${name}» на «Расход»`} onToggle={move}/>
-  const categoryRow=(shown:boolean)=>(category:Category)=><>
-    {layoutToggle(category.name,shown,()=>saveLayout('categoryOrder',shown?moveToMore(categoryTiles,category.id):moveToShown(categoryTiles,category.id)))}
-    <CategoryMark category={category}/>
-    <button type="button" className="category-name" disabled={!online} onClick={()=>setEditing(category)}>{category.name}</button>
-  </>
-  const tagLine=(shown:boolean)=>(tag:Tag)=><>
-    {layoutToggle(tag.name,shown,()=>saveLayout('tagOrder',shown?moveToMore(tagRow,tag.id):moveToShown(tagRow,tag.id)))}
-    <i style={{background:tag.color??'#a9afa5'}}/>
-    <button type="button" className="category-name" disabled={!online} onClick={()=>setEditingTag(tag)}>{tag.name}</button>
-  </>
+  const arrangeHint='Плитки и ряд тегов на «Расходе» каждый раскладывает сам, прямо на нём: удержите плитку.'
   return <section className="page settings-page">
     <AccessSettings user={user} workspace={workspace} bootstrap={bootstrap} setBootstrap={setBootstrap} pendingCount={pendingCount} online={online} onSession={onSession} onNotice={accessNotice} onBusyChange={setAccessBusy}
       profileRows={<>
@@ -426,35 +408,31 @@ export function SettingsView({ user, workspace, workspaceId, bootstrap, setBoots
       <SettingsRow label="Выйти" tone="danger" disabled={accessBusy} onClick={onLogout}/>
     </div></div>
     {sheet==='categories'&&<ListSheet title="Категории" onClose={()=>setSheet(null)}>
-      {activeCount>0&&<h3>Плитки на «Расходе»</h3>}
-      <DragList className="layout-list" items={categoryTiles.shown} onReorder={(ids)=>saveLayout('categoryOrder',reorderGroup(categoryTiles,'shown',ids))} render={categoryRow(true)}/>
-      {activeCount>0&&!categoryTiles.shown.length&&<p className="sheet-copy">Плиток нет: все категории за плиткой «Ещё».</p>}
-      {categoryTiles.shown.length>ROOMY_TILES&&<p className="sheet-copy">На узком телефоне больше четырёх плиток помещаются с трудом, подписи обрежутся.</p>}
-      {categoryTiles.more.length>0&&<h3>За плиткой «Ещё»</h3>}
-      <DragList className="layout-list" items={categoryTiles.more} onReorder={(ids)=>saveLayout('categoryOrder',reorderGroup(categoryTiles,'more',ids))} render={categoryRow(false)}/>
-      {!activeCount&&<p className="sheet-copy">Категорий пока нет.</p>}
+      {activeCount>0?<div className="drag-list">{activeCategories.map((category)=><div className="drag-row" key={category.id}>
+        <CategoryMark category={category}/>
+        <button type="button" className="category-name" disabled={!online} onClick={()=>setEditing(category)}>{category.name}</button>
+      </div>)}</div>:<p className="sheet-copy">Категорий пока нет.</p>}
       {hiddenCategories.length>0&&<><h3>Скрытые</h3>
         {hiddenCategories.map((category)=><div className="management-row hidden-category" key={category.id}>
           <CategoryMark category={category}/>
           <span>{category.name}<small>остаётся у старых расходов</small></span>
           <button type="button" disabled={!online} onClick={()=>void save({...category,archivedAt:null})}>Вернуть</button>
         </div>)}</>}
-      <p className="sheet-copy">{`Плитки и их порядок — только ваши. Название, значок и цвет — общие для всех в «${workspace.name}»${online?'.':', их можно менять только при подключении к сети.'}`}</p>
+      <p className="sheet-copy">{`Название, значок и цвет — общие для всех в «${workspace.name}»${online?'.':', их можно менять только при подключении к сети.'} ${arrangeHint}`}</p>
       <button type="button" className="primary sheet-action" disabled={!online} onClick={()=>setAdding(true)}>Новая категория</button>
     </ListSheet>}
     {sheet==='tags'&&<ListSheet title="Теги" onClose={()=>setSheet(null)}>
-      {tags.length>0&&<h3>В ряду на «Расходе»</h3>}
-      <DragList className="layout-list" items={tagRow.shown} onReorder={(ids)=>saveLayout('tagOrder',reorderGroup(tagRow,'shown',ids))} render={tagLine(true)}/>
-      {tags.length>0&&!tagRow.shown.length&&<p className="sheet-copy">В ряду пусто: все теги за «Ещё».</p>}
-      {tagRow.more.length>0&&<h3>За «Ещё»</h3>}
-      <DragList className="layout-list" items={tagRow.more} onReorder={(ids)=>saveLayout('tagOrder',reorderGroup(tagRow,'more',ids))} render={tagLine(false)}/>
-      <p className="sheet-copy">{tags.length?'Тег — короткая пометка поверх категории, например «отпуск». Ряд и его порядок — только ваши, название и цвет — общие.':'Тегов пока нет. Тег — короткая пометка поверх категории, например «отпуск» или «вдвоём».'}</p>
+      {tags.length>0&&<div className="drag-list">{orderedTags.map((tag)=><div className="drag-row" key={tag.id}>
+        <i style={{background:tag.color??'#a9afa5'}}/>
+        <button type="button" className="category-name" disabled={!online} onClick={()=>setEditingTag(tag)}>{tag.name}</button>
+      </div>)}</div>}
+      <p className="sheet-copy">{tags.length?`Тег — короткая пометка поверх категории, например «отпуск». Название и цвет — общие. ${arrangeHint}`:'Тегов пока нет. Тег — короткая пометка поверх категории, например «отпуск» или «вдвоём».'}</p>
       <button type="button" className="primary sheet-action" disabled={!online} onClick={()=>setAddingTag(true)}>Новый тег</button>
     </ListSheet>}
     {sheet==='appearance'&&<AppearanceSheet appearance={appearance} onChange={onAppearanceChange} onClose={()=>setSheet(null)}/>}
     {sheet==='screens'&&<ListSheet title="Мои экраны" onClose={()=>setSheet(null)}>
       <div className="settings-rows">{BLOCK_SCREENS.map((screen)=>{
-        const hidden=blocksOf(screen,user.settings).hidden.length
+        const hidden=blocksOf(screen,user.settings).hidden.filter((block)=>!block.optional).length
         // Историю и аналитику нечего настраивать, пока нет ни одной траты: их блоки появляются вместе с записями.
         const waiting=screen!=='entry'&&!hasExpenses
         return <SettingsRow key={screen} label={SCREENS[screen].title} value={waiting?'после первых трат':hidden?`убрано ${hidden}`:'всё на месте'} disabled={waiting} onClick={()=>{setSheet(null);onEditScreen(screen)}}/>
@@ -471,7 +449,7 @@ export function SettingsView({ user, workspace, workspaceId, bootstrap, setBoots
 export const EMOJI_CHOICES = ['🛒', '🍽️', '☕', '🏠', '🚕', '💊', '🎬', '👕', '🎁', '✈️']
 
 // Редактор категории правит то, что общее для всех: название, значок и цвет. Стоит ли она плиткой на «Расходе»,
-// каждый решает сам в списке категорий.
+// каждый решает сам, прямо на «Расходе».
 export function CategoryEditor({ category, workspaceName, onClose, onSave }:{category:Category|null;workspaceName:string;onClose:()=>void;onSave:(c:Category)=>Promise<void>}) {
   const now = new Date().toISOString()
   const [draft,setDraft]=useState<Category>(category?{...category,emoji:category.emoji??null}:{id:crypto.randomUUID(),name:'',color:TAG_COLORS[0]!,emoji:null,placement:'additional',sortOrder:999,createdAt:now,updatedAt:now,archivedAt:null,version:1})
@@ -498,7 +476,7 @@ export function CategoryEditor({ category, workspaceName, onClose, onSave }:{cat
       <button type="button" aria-label="Без значка" aria-pressed={!draft.emoji} className={`colors-none${draft.emoji?'':' selected'}`} onClick={()=>setDraft({...draft,emoji:null})}>—</button>
     </div></fieldset>
     <fieldset><legend>Цвет</legend><div className="colors">{TAG_COLORS.map((color,index)=><button aria-label={`Цвет: ${TAG_COLOR_NAMES[index] ?? color}`} aria-pressed={draft.color===color} type="button" key={color} className={draft.color===color?'selected':''} style={{background:color}} onClick={()=>setDraft({...draft,color})}/>)}</div></fieldset>
-    <p className="sheet-copy">{`Название, значок и цвет общие для всех в «${workspaceName}». Плитки на «Расходе» каждый выбирает себе сам в списке категорий.`}</p>
+    <p className="sheet-copy">{`Название, значок и цвет общие для всех в «${workspaceName}». Плитки на «Расходе» каждый раскладывает себе сам, прямо на нём.`}</p>
     <button className="primary" disabled={busy}>{busy?'Сохраняем…':'Сохранить'}</button>
     {category&&<button type="button" className="danger-link" disabled={busy} onClick={()=>void (async()=>{if(await confirm({title:'Скрыть категорию?',message:'Она пропадёт из выбора, но останется у старых расходов. Вернуть её можно в списке категорий.',confirmLabel:'Скрыть',danger:true}))await submit({...draft,archivedAt:new Date().toISOString()})})()}>Скрыть</button>}
   </form></div>{confirmation}</>
