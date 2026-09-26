@@ -196,6 +196,8 @@ export type UsualExpense = { key: string; categoryId: string; amountMinor: numbe
 
 const NO_USUAL: UsualExpense[] = []
 
+const NO_TAGS: Tag[] = []
+
 // «Как обычно»: траты, которые за последние три месяца повторились хотя бы трижды, — та же категория, сумма, валюта
 // и теги. Самые частые первыми, не больше четырёх. Скрытую категорию подставить нельзя (сервер такой расход не
 // примет), а удалённые теги просто отпадают.
@@ -721,6 +723,8 @@ export const EntryView = memo(function EntryView({ userId, workspaceId, workspac
   // Плитки и теги у каждого свои (настройки → «Категории» и «Теги»); кто их не трогал, видит общую стартовую раскладку.
   const { shown: main, more: additional } = categoryLayout(bootstrap.categories, bootstrap.settings?.categoryOrder)
   const tagOrder = bootstrap.settings?.tagOrder
+  // Ряд тегов перемеряет полосу, когда ему дают другие теги, поэтому пустой список — всегда один и тот же.
+  const tags = bootstrap.tags ?? NO_TAGS
   // Блоки «Расхода» в порядке человека; заметку и теги можно убрать. Уже записанные у расхода заметка и теги от этого
   // не теряются.
   const entryBlocks = screenBlocks('entry', blocks)
@@ -786,12 +790,12 @@ export const EntryView = memo(function EntryView({ userId, workspaceId, workspac
   }
   // «Сегодня» и «Как обычно» одинаковы у любой записи: при свайпе они не меняются, а в превью — неживые копии.
   const fixedBlock = (id: string, live = true) => id === 'today' ? today && <TodayLine total={today}/>
-    : id === 'usual' ? <UsualChips items={usualItems} categories={bootstrap.categories} tags={bootstrap.tags ?? []} currencies={bootstrap.currencies} usualCurrency={defaultCurrency()} disabled={saving} inert={!live} onPick={live ? pickUsual : undefined}/>
+    : id === 'usual' ? <UsualChips items={usualItems} categories={bootstrap.categories} tags={tags} currencies={bootstrap.currencies} usualCurrency={defaultCurrency()} disabled={saving} inert={!live} onPick={live ? pickUsual : undefined}/>
     : null
   const liveUnit = (unit: EntryUnit) => unit.key === 'keypad' ? <Keypad key="keypad" onKey={key} disabled={saving}/>
     : unit.key === 'today' || unit.key === 'usual' ? <div key={unit.key}>{fixedBlock(unit.key)}</div>
     : unit.key === 'tiles' ? <CategoryTiles key="tiles" main={main} additional={additional} selectedId={selectedCategoryId} disabled={saving} onPick={chooseCategory} onMore={() => setCategorySheet(true)}/>
-    : <ExtrasRow key={unit.key} tags={bootstrap.tags ?? []} order={tagOrder} showNote={unit.ids.includes('note')} showTags={unit.ids.includes('tags')} tagsFirst={unit.ids[0] === 'tags'} selected={form.tagIds} note={form.note} disabled={saving} online={online} onChange={(tagIds) => setForm((value) => ({ ...value, tagIds }))} onNote={() => setNoteSheet(true)} onCreate={(name) => createTagOrReuse(workspaceId, name, TAG_COLORS[(bootstrap.tags ?? []).length % TAG_COLORS.length] ?? null, publishTag)}/>
+    : <ExtrasRow key={unit.key} tags={tags} order={tagOrder} showNote={unit.ids.includes('note')} showTags={unit.ids.includes('tags')} tagsFirst={unit.ids[0] === 'tags'} selected={form.tagIds} note={form.note} disabled={saving} online={online} onChange={(tagIds) => setForm((value) => ({ ...value, tagIds }))} onNote={() => setNoteSheet(true)} onCreate={(name) => createTagOrReuse(workspaceId, name, TAG_COLORS[tags.length % TAG_COLORS.length] ?? null, publishTag)}/>
   return <section ref={sectionRef} className={`entry-view${current ? ' editing' : ''}${saving ? ' saving' : ''}${editing ? ' arranging' : ''}`} aria-label="Ввод суммы" onPointerDown={swipeStart} onPointerMove={swipeMove} onPointerUpCapture={swipeEnd} onPointerCancel={swipeCancel}>
     <div className="swipe-area" inert={editing}>
       <div className="entry-track" ref={trackRef}>
@@ -805,12 +809,12 @@ export const EntryView = memo(function EntryView({ userId, workspaceId, workspac
       <button type="button" className="icon-danger entry-delete" disabled={saving || !current || jumpingNew} onClick={() => void remove()} aria-label="Удалить расход"><TrashIcon/></button>
     </div>
     {editing
-      ? <><EntryArrange blocks={entryBlocks} onBlocks={(next) => onScreensChange({ entryBlocks: toBlockLayout(next) })} categories={bootstrap.categories} categoryOrder={bootstrap.settings?.categoryOrder} tags={bootstrap.tags ?? []} tagOrder={tagOrder} onOrder={saveOrder} fixedBody={(id) => fixedBlock(id, false)}/>{saveRow}</>
+      ? <><EntryArrange blocks={entryBlocks} onBlocks={(next) => onScreensChange({ entryBlocks: toBlockLayout(next) })} categories={bootstrap.categories} categoryOrder={bootstrap.settings?.categoryOrder} tags={tags} tagOrder={tagOrder} onOrder={saveOrder} fixedBody={(id) => fixedBlock(id, false)}/>{saveRow}</>
       : <>
         {head.map(liveUnit)}
         <div className={`entry-lower${tail.some((unit) => unit.key === 'keypad') ? ' with-keypad' : ''}`}>
           <div ref={lowerLiveRef} className="entry-lower-live">{tail.map(liveUnit)}{saveRow}</div>
-          {swipePreview && <div ref={lowerPreviewRef} className="entry-lower-preview" aria-hidden="true" inert><EntryLowerPreview units={tail} main={main} additional={additional} tags={bootstrap.tags ?? []} tagOrder={tagOrder} state={swipePreview} renderFixed={(id) => fixedBlock(id, false)}/></div>}
+          {swipePreview && <div ref={lowerPreviewRef} className="entry-lower-preview" aria-hidden="true" inert><EntryLowerPreview units={tail} main={main} additional={additional} tags={tags} tagOrder={tagOrder} state={swipePreview} renderFixed={(id) => fixedBlock(id, false)}/></div>}
         </div>
       </>}
     {dateSheet && <DateSheet value={form.occurredAt} onClose={() => setDateSheet(false)} onPick={(value) => { setForm({ ...form, occurredAt: value }); setDateSheet(false) }}/>}

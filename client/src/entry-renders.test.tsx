@@ -1,9 +1,11 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { EntryView } from './screens/Entry'
-import type { BlockLayout, Expense, WorkspaceBootstrap } from './types'
+import { ExtrasRow } from './tags'
+import type { BlockLayout, Expense, Tag, WorkspaceBootstrap } from './types'
+import { useOverflowHint } from './ui'
 
 afterEach(() => {
   cleanup()
@@ -119,5 +121,140 @@ describe('«Расход» and redraws of the app', () => {
     Object.defineProperty(window.navigator, 'onLine', { configurable: true, value: true })
     act(() => { window.dispatchEvent(new Event('online')) })
     expect(screen.getByRole('button', { name: 'Создать тег «кофе»' }).hasAttribute('disabled')).toBe(false)
+  })
+})
+
+// В jsdom нет раскладки: полоса шириной 300 px, каждый чип в ней — 100 px. Чтения scrollWidth считаются: по ним
+// видно, читал ли кто-то раскладку после рендера.
+const layout = { box: 300, reads: 0 }
+function fakeLayout() {
+  layout.box = 300
+  layout.reads = 0
+  Object.defineProperty(HTMLElement.prototype, 'clientWidth', { configurable: true, get() { return layout.box } })
+  Object.defineProperty(HTMLElement.prototype, 'scrollWidth', { configurable: true, get(this: HTMLElement) { layout.reads += 1; return Math.max(layout.box, this.childElementCount * 100) } })
+}
+function realLayout() {
+  delete (HTMLElement.prototype as { clientWidth?: number }).clientWidth
+  delete (HTMLElement.prototype as { scrollWidth?: number }).scrollWidth
+}
+
+// ResizeObserver, который помнит, за кем следит, и даёт вызвать себя вручную.
+class FakeResizeObserver {
+  static observed: Element[] = []
+  static all: FakeResizeObserver[] = []
+  targets = new Set<Element>()
+  constructor(readonly callback: () => void) { FakeResizeObserver.all.push(this) }
+  observe(target: Element) { this.targets.add(target); FakeResizeObserver.observed.push(target) }
+  unobserve(target: Element) { this.targets.delete(target) }
+  disconnect() { this.targets.clear() }
+  static resize(target: Element) { for (const observer of FakeResizeObserver.all) if (observer.targets.has(target)) observer.callback() }
+}
+function fakeResizeObserver() {
+  FakeResizeObserver.observed = []
+  FakeResizeObserver.all = []
+  vi.stubGlobal('ResizeObserver', FakeResizeObserver)
+}
+
+describe('layout reads of the tag and chip strips', () => {
+  afterEach(realLayout)
+
+  const tags: Tag[] = Array.from({ length: 8 }, (_, index) => ({ id: `t${index}`, name: `тег ${index}`, color: null, sortOrder: index, version: 1, createdAt: '2026-08-01T00:00:00.000Z', updatedAt: '2026-08-01T00:00:00.000Z' }))
+  const order = { shown: ['t0', 't1'], more: ['t2', 't3', 't4', 't5', 't6', 't7'] }
+  const noop = () => {}
+  const row = (props: Partial<React.ComponentProps<typeof ExtrasRow>> = {}) => <ExtrasRow tags={tags} order={order} selected={[]} note="" onChange={noop} onNote={noop} {...props}/>
+
+  it('switches the pan and the fading edge of the tag row when chips start and stop overflowing it', () => {
+    fakeLayout()
+    fakeResizeObserver()
+    const selected = ['t5']
+    const { container, rerender } = render(row())
+    const strip = container.querySelector<HTMLElement>('.tag-strip')!
+    const extras = container.querySelector('.extras-row')!
+    // Два чипа и «Ещё 6» помещаются.
+    expect(strip.style.touchAction).toBe('pan-y')
+    expect(extras.classList.contains('more')).toBe(false)
+    // Выбранный тег из «Ещё» встаёт в ряд — чипы переполняют полосу.
+    rerender(row({ selected }))
+    expect(strip.style.touchAction).toBe('pan-x')
+    expect(extras.classList.contains('more')).toBe(true)
+    // Полосу долистали до конца: край больше не затухает, а пан остаётся.
+    Object.defineProperty(strip, 'scrollLeft', { configurable: true, value: 100 })
+    fireEvent.scroll(strip)
+    expect(extras.classList.contains('more')).toBe(false)
+    expect(strip.style.touchAction).toBe('pan-x')
+    Object.defineProperty(strip, 'scrollLeft', { configurable: true, value: 0 })
+    fireEvent.scroll(strip)
+    expect(extras.classList.contains('more')).toBe(true)
+    // Полоса стала шире — всё снова помещается.
+    layout.box = 500
+    act(() => FakeResizeObserver.resize(strip))
+    expect(strip.style.touchAction).toBe('pan-y')
+    expect(extras.classList.contains('more')).toBe(false)
+    layout.box = 300
+    act(() => FakeResizeObserver.resize(strip))
+    expect(extras.classList.contains('more')).toBe(true)
+    // Выбор сняли — тег вернулся за «Ещё».
+    rerender(row({ selected: [] }))
+    expect(strip.style.touchAction).toBe('pan-y')
+    expect(extras.classList.contains('more')).toBe(false)
+    // Один ResizeObserver на всю жизнь полосы.
+    expect(FakeResizeObserver.observed.filter((node) => node === strip)).toHaveLength(1)
+  })
+
+  it('reads the layout of the tag row only when what it shows changes', () => {
+    fakeLayout()
+    const selected: string[] = []
+    const { rerender } = render(row({ selected }))
+    layout.reads = 0
+    rerender(row({ selected, disabled: true }))
+    rerender(row({ selected, disabled: false }))
+    expect(layout.reads).toBe(0)
+    rerender(row({ selected, note: 'IKEA' }))
+    expect(layout.reads).toBeGreaterThan(0)
+    layout.reads = 0
+    rerender(row({ selected, note: 'IKEA', showNote: false }))
+    expect(layout.reads).toBeGreaterThan(0)
+  })
+
+  // Так полосу чипов меряет «История».
+  function Chips({ labels, strip = 'a' }: { labels: string[]; strip?: string }) {
+    const ref = useRef<HTMLDivElement>(null)
+    const more = useOverflowHint(ref)
+    return <div className={`history-chips${more ? ' more' : ''}`}><div key={strip} ref={ref} className="history-chip-strip">{labels.map((label) => <button key={label} type="button">{label}</button>)}</div></div>
+  }
+
+  it('fades the edge of the history chips as before but reads the layout only when the chips change', () => {
+    fakeLayout()
+    fakeResizeObserver()
+    const { container, rerender } = render(<Chips labels={['Даты', 'Категория']}/>)
+    const chips = () => container.querySelector('.history-chips')!
+    expect(chips().classList.contains('more')).toBe(false)
+    layout.reads = 0
+    rerender(<Chips labels={['Даты', 'Категория']}/>)
+    expect(layout.reads).toBe(0)
+    rerender(<Chips labels={['Даты', 'Категория', 'Валюта', 'Тег']}/>)
+    expect(chips().classList.contains('more')).toBe(true)
+    // Подпись сменилась при том же числе чипов — полосу меряют заново.
+    layout.reads = 0
+    rerender(<Chips labels={['Сегодня', 'Категория', 'Валюта', 'Тег']}/>)
+    expect(layout.reads).toBeGreaterThan(0)
+    const strip = container.querySelector<HTMLElement>('.history-chip-strip')!
+    Object.defineProperty(strip, 'scrollLeft', { configurable: true, value: 100 })
+    fireEvent.scroll(strip)
+    expect(chips().classList.contains('more')).toBe(false)
+    layout.box = 250
+    act(() => FakeResizeObserver.resize(strip))
+    expect(chips().classList.contains('more')).toBe(true)
+    expect(FakeResizeObserver.observed.filter((node) => node === strip)).toHaveLength(1)
+    // Полосу нарисовали заново другим элементом: за ним и следят, а за прежним — нет.
+    layout.box = 300
+    rerender(<Chips labels={['Сегодня', 'Категория', 'Валюта', 'Тег']} strip="b"/>)
+    const next = container.querySelector<HTMLElement>('.history-chip-strip')!
+    expect(next).not.toBe(strip)
+    expect(chips().classList.contains('more')).toBe(true)
+    expect(FakeResizeObserver.all.filter((observer) => observer.targets.has(strip))).toHaveLength(0)
+    expect(FakeResizeObserver.all.filter((observer) => observer.targets.has(next))).toHaveLength(1)
+    rerender(<Chips labels={['Даты']} strip="b"/>)
+    expect(chips().classList.contains('more')).toBe(false)
   })
 })

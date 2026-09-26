@@ -248,16 +248,27 @@ export function SelectSheet({ title, value, options, searchable, onClose, onSele
 // Полоса с прокруткой не показывает, что справа есть ещё: пока содержимое не доехало до конца, край затухает.
 export function useOverflowHint(ref: React.RefObject<HTMLElement | null>) {
   const [more, setMore] = useState(false)
+  // Полосу меряем не после каждого рендера — чтение посреди коммита раскладывало всю страницу, — а когда сменился сам
+  // элемент или его разметка (подписи и набор чипов), при прокрутке и по ResizeObserver, одному на жизнь элемента.
+  // Разметку сравниваем строкой: это не трогает раскладку.
+  const watched = useRef<{ node: HTMLElement; markup: string | null; update: () => void; stop: () => void } | null>(null)
   useLayoutEffect(() => {
     const node = ref.current
+    if (watched.current && watched.current.node !== node) { watched.current.stop(); watched.current = null }
     if (!node) return
-    const update = () => setMore(node.scrollWidth - node.clientWidth - node.scrollLeft > 1)
-    update()
-    node.addEventListener('scroll', update, { passive: true })
-    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(update)
-    observer?.observe(node)
-    return () => { node.removeEventListener('scroll', update); observer?.disconnect() }
+    if (!watched.current) {
+      const update = () => setMore(node.scrollWidth - node.clientWidth - node.scrollLeft > 1)
+      node.addEventListener('scroll', update, { passive: true })
+      const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(update)
+      observer?.observe(node)
+      watched.current = { node, markup: null, update, stop: () => { node.removeEventListener('scroll', update); observer?.disconnect() } }
+    }
+    const markup = node.innerHTML
+    if (markup === watched.current.markup) return
+    watched.current.markup = markup
+    watched.current.update()
   })
+  useLayoutEffect(() => () => { watched.current?.stop(); watched.current = null }, [])
   return more
 }
 

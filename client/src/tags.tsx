@@ -1,7 +1,7 @@
-import { useId, useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useId, useLayoutEffect, useRef, useState } from 'react'
 import { WorkspaceApiError as ApiError, createTag } from './workspace-api'
 import type { ScreenOrder, Tag } from './types'
-import { CheckIcon, tap, useConfirm, useDialog, useOverflowHint } from './ui'
+import { CheckIcon, tap, useConfirm, useDialog } from './ui'
 import { pluralRu } from './format'
 import { inOrder, tagLayout } from './screen-order'
 
@@ -31,25 +31,36 @@ export function tagStyle(tag: Pick<Tag, 'color'>) {
 // порознь; рядом они делят один ряд, и тогда теги могут стоять первыми (`tagsFirst`).
 export function ExtrasRow({ tags, order, selected, note, onChange, onNote, onCreate, disabled = false, online = true, inert = false, showNote = true, showTags = true, tagsFirst = false }: { tags: Tag[]; order?: ScreenOrder; selected: string[]; note: string; onChange: (ids: string[]) => void; onNote: () => void; onCreate?: (name: string) => Promise<Tag | null>; disabled?: boolean; online?: boolean; inert?: boolean; showNote?: boolean; showTags?: boolean; tagsFirst?: boolean }) {
   const [open, setOpen] = useState(false)
-  const stripRef = useRef<HTMLDivElement>(null)
+  const [more, setMore] = useState(false)
+  const stripRef = useRef<HTMLDivElement | null>(null)
   const layout = tagLayout(tags, order)
   // Порядок стабилен: выбранный чип не переезжает под пальцем в начало, а тег из «Ещё» встаёт в конец ряда.
   const shown = inOrder(layout).filter((tag) => layout.shown.includes(tag) || selected.includes(tag.id))
   const hidden = tags.length - shown.length
   const tabIndex = inert ? -1 : undefined
-  const more = useOverflowHint(stripRef)
   // Полоса тегов — единственное место экрана ввода, где разрешён горизонтальный пан. Пока чипам хватает ширины, ей
-  // нечего листать, и браузер отдавал жест пейджеру вкладок: страница отъезжала и возвращалась. Без переполнения пан запрещён.
-  useLayoutEffect(() => {
+  // нечего листать, и браузер отдавал жест пейджеру вкладок: страница отъезжала и возвращалась. Без переполнения пан запрещён,
+  // а пока полоса не доехала до конца, край затухает. Раскладку читаем, когда меняется то, что стоит в ряду, когда полосу
+  // листают и когда меняется её размер, — не после каждого рендера: чтение посреди коммита раскладывало всю страницу.
+  const measure = useCallback(() => {
     const node = stripRef.current
     if (!node) return
-    const update = () => { const next = node.scrollWidth > node.clientWidth + 1 ? 'pan-x' : 'pan-y'; if (node.style.touchAction !== next) node.style.touchAction = next }
-    update()
-    if (typeof ResizeObserver === 'undefined') return
-    const observer = new ResizeObserver(update)
-    observer.observe(node)
-    return () => observer.disconnect()
-  })
+    const overflow = node.scrollWidth - node.clientWidth
+    const rest = overflow - node.scrollLeft
+    const pan = overflow > 1 ? 'pan-x' : 'pan-y'
+    if (node.style.touchAction !== pan) node.style.touchAction = pan
+    setMore(rest > 1)
+  }, [])
+  // Прокрутку и размер слушаем один раз на всю жизнь полосы.
+  const attachStrip = useCallback((node: HTMLDivElement | null) => {
+    stripRef.current = node
+    if (!node) return
+    node.addEventListener('scroll', measure, { passive: true })
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure)
+    observer?.observe(node)
+    return () => { stripRef.current = null; node.removeEventListener('scroll', measure); observer?.disconnect() }
+  }, [measure])
+  useLayoutEffect(measure, [measure, tags, order, selected, note, showNote, showTags, tagsFirst])
   const toggle = (id: string) => {
     tap(4)
     if (selected.includes(id)) onChange(selected.filter((item) => item !== id))
@@ -57,7 +68,7 @@ export function ExtrasRow({ tags, order, selected, note, onChange, onNote, onCre
   }
   if (!showNote && !showTags) return null
   const noteButton = <button type="button" className={`tag-add extra-add extra-note${note ? ' filled' : ''}`} disabled={disabled} tabIndex={tabIndex} onClick={onNote} aria-label={note ? `Заметка: ${note}` : 'Добавить заметку'}>{note ? `✎ ${note}` : '＋ Заметка'}</button>
-  const strip = <div className="tag-strip" ref={stripRef} role="group" aria-label="Теги">
+  const strip = <div className="tag-strip" ref={attachStrip} role="group" aria-label="Теги">
     {shown.map((tag) => <TagChip key={tag.id} name={tag.name} color={tag.color} selected={selected.includes(tag.id)} disabled={disabled} inert={inert} onToggle={() => toggle(tag.id)}/>)}
     <button type="button" className="tag-add extra-add" disabled={disabled} tabIndex={tabIndex} onClick={() => setOpen(true)} aria-label={hidden ? `Ещё ${hidden} ${pluralRu(hidden, ['тег', 'тега', 'тегов'])}, все теги` : tags.length ? 'Все теги' : 'Добавить тег'}>{hidden ? `Ещё ${hidden}` : '＋ Тег'}</button>
   </div>
