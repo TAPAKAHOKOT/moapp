@@ -144,10 +144,9 @@ export function guard(ms, name) {
 const sampleExpression = (sample, arg) => `(${sample.toString()})(${JSON.stringify(arg ?? null)})`
 
 // Покадровая запись в реальном времени: requestAnimationFrame на странице пишет состояние каждого кадра (~16 мс) в течение
-// ms от старта, пока скрипт ведёт действие. shots — снимки по ходу: [{ at: мс от старта, path, clip? }]; снимок в WebKit
-// занимает ~90 мс, поэтому в JSON идёт фактическое время каждого. Запись кончается и по таймеру страницы — даже если
-// кадры перестали приходить.
-export async function realtimeFrames(page, { ms = 500, sample, arg, action, shots = [] }) {
+// ms от старта, пока скрипт ведёт действие. Запись кончается и по таймеру страницы — даже если кадры перестали приходить.
+// Снимков здесь нет: снимок в WebKit занимает ~90 мс и на это время останавливает кадры страницы.
+export async function realtimeFrames(page, { ms = 500, sample, arg, action }) {
   await page.evaluate(`(() => {
     const record = window.__realtime = { samples: [], t0: performance.now() }
     record.done = new Promise((resolve) => {
@@ -160,19 +159,25 @@ export async function realtimeFrames(page, { ms = 500, sample, arg, action, shot
       requestAnimationFrame(tick)
     })
   })()`)
+  await action()
+  await page.evaluate(() => window.__realtime.done)
+  return page.evaluate(() => window.__realtime.samples)
+}
+
+// Снимки по ходу повторного действия: shots — [{ at: мс от старта, path, clip? }], в ответе фактическое время каждого.
+export async function snapshotsDuring(page, { action, shots }) {
   const started = Date.now()
   const taken = []
   const shooting = (async () => {
     for (const shot of shots) {
       const wait = shot.at - (Date.now() - started)
       if (wait > 0) await sleep(wait)
-      const t = await page.evaluate(() => Math.round(performance.now() - window.__realtime.t0))
+      const t = Date.now() - started
       await page.screenshot({ path: shot.path, ...(shot.clip ? { clip: shot.clip } : {}) })
       taken.push({ t, png: shot.path.split('/').pop() })
     }
   })()
   await action()
   await shooting
-  await page.evaluate(() => window.__realtime.done)
-  return { samples: await page.evaluate(() => window.__realtime.samples), shots: taken }
+  return taken
 }

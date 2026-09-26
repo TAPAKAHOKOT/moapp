@@ -1,7 +1,8 @@
 // Покадрово: строка «Истории» открывается свайпом влево и закрывается — касанием открытой строки и протяжкой обратно.
 //   node client/e2e/row-swipe.mjs [метка] [ссылка входа]      адрес — MOAPP_BASE, вход — client/e2e/.state/
 // Вторая строка списка, три фазы (open, closeTap, closeDrag). В каждой — кадры requestAnimationFrame (~16 мс) в течение
-// ~500 мс от начала жеста и четыре снимка области строки по ходу.
+// ~500 мс от начала жеста; затем те же жесты ещё раз с четырьмя снимками области строки по ходу (снимок останавливает
+// кадры страницы на ~90 мс, поэтому числа и снимки пишутся в разных повторах).
 // В кадре: tx — сдвиг слоя строки (из вычисленного transform, то есть и посреди перехода), row — классы строки,
 // delete — кнопка «Удалить»: shown / hidden / absent (нет в DOM), opened — насколько строка открыта, red — сколько красного
 // видно, gap — открытая часть в пределах ширины кнопки без красного (дыра, должно быть 0), deletes — кнопок во всём списке.
@@ -9,7 +10,7 @@
 // Время кадров плавает на кадр-другой между прогонами; состояния и сводка повторяются.
 // Результат — .shots/row-swipe-<метка>/row-swipe.json и PNG.
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
-import { launch, openApp, goTab, acceptDeviceLink, guard, pinLocalState, resetAccount, realtimeFrames, SHOTS, sleep, touchDrag } from './common.mjs'
+import { launch, openApp, goTab, acceptDeviceLink, guard, pinLocalState, resetAccount, realtimeFrames, snapshotsDuring, SHOTS, sleep, touchDrag } from './common.mjs'
 
 guard(150_000, 'row-swipe.mjs')
 const link = process.argv.find((arg) => arg.includes('#/device/'))
@@ -49,7 +50,7 @@ const ROW_SAMPLE = (index) => {
   }
 }
 
-function summarize({ samples }) {
+function summarize(samples) {
   const last = samples.at(-1)
   let settled = samples.length - 1
   while (settled > 0 && Math.abs(samples[settled - 1].tx - last.tx) < 0.5) settled--
@@ -86,28 +87,33 @@ const row = await page.evaluate((index) => {
   return { top: Math.round(box.top), height: Math.round(box.height), y: Math.round(box.top + box.height / 2) }
 }, ROW)
 const clip = { x: 0, y: row.top, width: page.viewportSize().width, height: row.height }
-const record = (name, action) => realtimeFrames(page, {
-  ms: 500, sample: ROW_SAMPLE, arg: ROW, action,
-  shots: [40, 140, 260, 420].map((at, index) => ({ at, clip, path: `${dir}${name}-${index}.png` })),
-})
 const open = () => touchDrag(page, null, { x: 300, y: row.y }, { x: 180, y: row.y }, { steps: 8, stepDelay: 16 })
-
-const phases = {}
-phases.open = await record('open', open)
-await sleep(400)
 // Короткое касание открытой строки и клик следом, как на телефоне (синтетические касания клика не порождают).
-phases.closeTap = await record('close-tap', async () => {
+const closeTap = async () => {
   await touchDrag(page, null, { x: 150, y: row.y }, { x: 150, y: row.y }, { steps: 1, stepDelay: 48 })
   await page.evaluate((index) => document.querySelectorAll('.page-slot')[1].querySelectorAll('.history-row')[index].click(), ROW)
-})
-await sleep(400)
-await open()
-await sleep(600)
+}
 // Протяжка обратно на 60 px — дальше половины кнопки, строка доезжает до места сама.
-phases.closeDrag = await record('close-drag', () => touchDrag(page, null, { x: 180, y: row.y }, { x: 240, y: row.y }, { steps: 5, stepDelay: 16 }))
+const closeDrag = () => touchDrag(page, null, { x: 180, y: row.y }, { x: 240, y: row.y }, { steps: 5, stepDelay: 16 })
+
+// Каждая фаза — действие и то, что готовит строку к нему; между фазами строка успокаивается.
+async function run(each) {
+  const result = {}
+  result.open = await each('open', open)
+  await sleep(400)
+  result.closeTap = await each('close-tap', closeTap)
+  await sleep(400)
+  await open()
+  await sleep(600)
+  result.closeDrag = await each('close-drag', closeDrag)
+  await sleep(400)
+  return result
+}
+const phases = await run((name, action) => realtimeFrames(page, { ms: 500, sample: ROW_SAMPLE, arg: ROW, action }))
+const shots = await run((name, action) => snapshotsDuring(page, { action, shots: [40, 140, 260, 420].map((at, index) => ({ at, clip, path: `${dir}${name}-${index}.png` })) }))
 await browser.close()
 
 const summary = Object.fromEntries(Object.entries(phases).map(([name, phase]) => [name, summarize(phase)]))
-writeFileSync(`${dir}row-swipe.json`, JSON.stringify({ label, row: { index: ROW, ...row }, summary, phases }, null, 2))
+writeFileSync(`${dir}row-swipe.json`, JSON.stringify({ label, row: { index: ROW, ...row }, summary, phases, shots }, null, 2))
 for (const [name, value] of Object.entries(summary)) console.log(`${name.padEnd(9)} стоп ${value.final} к ${value.settledAt} мс · «Удалить»: ${value.delete}, пропала раньше строки: ${value.deleteGoneWhileOpen} · дыра в ${value.gapFrames} кадрах (до ${value.maxGap} px) · кнопок в списке ${value.deletesInList}`)
 console.log(`→ ${dir}`)
