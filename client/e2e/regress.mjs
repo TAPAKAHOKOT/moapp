@@ -9,7 +9,9 @@ const link = process.argv.find((arg) => arg.includes('#/device/'))
 const label = process.argv.slice(2).find((arg) => !arg.includes('#/device/')) ?? 'now'
 const dir = `${SHOTS}regress-${label}/`
 mkdirSync(dir, { recursive: true })
-const mask = (page) => [page.locator('.entry-card .topline .date-chip')]
+// Дата на карточке «Расхода» показывает текущее время, и ширина чипа меняется с цифрами — маска на всю строку заголовка
+// карточки, чтобы её край не зависел от часов.
+const mask = (page) => [page.locator('.entry-card .topline')]
 const log = { label, base: BASE, settingsWidth: {}, historyEnd: {} }
 const HISTORY = 1, ANALYTICS = 2
 
