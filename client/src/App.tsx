@@ -203,14 +203,26 @@ export default function App({ capability = null }: { capability?: CapabilityInte
   const seenTimeZone=useRef(timeZone)
   useEffect(()=>{if(seenTimeZone.current===timeZone)return;seenTimeZone.current=timeZone;setWorkspaceReloadEpoch((value)=>value+1)},[timeZone])
   const stateRef=useRef(state); stateRef.current=state
+  // Последнее отрисованное состояние ленты: по нему нажатие и таймер прокрутки не будят приложение, когда менять нечего.
+  const pagerStateRef=useRef(pagerState); pagerStateRef.current=pagerState
   const tab=pagerState.workspaceId===state.activeWorkspaceId?pagerState.tab:'entry'
   const mountedTabs=pagerState.workspaceId===state.activeWorkspaceId?pagerState.mounted:['entry']
   const navigationTabs=tabs
   const setTab=useCallback((next:Tab)=>{
     const workspaceId=stateRef.current.activeWorkspaceId
+    const wanted=pagerTabsFor(next)
     // Сначала срочно меняем вкладку (лента поехала), а тяжёлые страницы монтируем в transition — нажатие не ждёт их рендера.
-    setPagerState((previous)=>previous.workspaceId===workspaceId?{...previous,tab:next}:{workspaceId,tab:next,mounted:['entry']})
-    startTransition(()=>setPagerState((previous)=>previous.workspaceId===workspaceId?{...previous,mounted:[...previous.mounted,...pagerTabsFor(next).filter((item)=>!previous.mounted.includes(item))]}:{workspaceId,tab:next,mounted:pagerTabsFor(next)}))
+    // Та же вкладка оставляет прежний объект, а уже смонтированные страницы не планируют второй рендер: приложение
+    // перерисовывается один раз. Если transition не будет, а пространство успело смениться, страницы монтируются сразу.
+    const shown=pagerStateRef.current
+    const ready=shown.workspaceId===workspaceId&&wanted.every((item)=>shown.mounted.includes(item))
+    setPagerState((previous)=>previous.workspaceId!==workspaceId?{workspaceId,tab:next,mounted:ready?wanted:['entry']}:previous.tab===next?previous:{...previous,tab:next})
+    if(ready)return
+    startTransition(()=>setPagerState((previous)=>{
+      if(previous.workspaceId!==workspaceId)return {workspaceId,tab:next,mounted:wanted}
+      const missing=wanted.filter((item)=>!previous.mounted.includes(item))
+      return missing.length?{...previous,mounted:[...previous.mounted,...missing]}:previous
+    }))
   },[])
   // Настройку экрана открывают значок в шапке, удержание любого блока и «Мои экраны» в настройках — оттуда лента
   // сначала едет к нужной вкладке. Закрывают «Готово», Escape и переход на другую вкладку или в другое пространство.
@@ -227,7 +239,8 @@ export default function App({ capability = null }: { capability?: CapabilityInte
     setEditingScreen(null)
     requestAnimationFrame(()=>document.querySelector<HTMLElement>('.screen-edit-open')?.focus({preventScroll:true}))
   },[])
-  useEffect(()=>{setEditingScreen((current)=>current&&current!==tab?null:current)},[tab])
+  // Без открытой настройки состояние не трогаем: даже setState с тем же значением стоил бы приложению лишнего рендера.
+  useEffect(()=>{if(editingScreen&&editingScreen!==tab)setEditingScreen(null)},[tab]) // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(()=>setEditingScreen(null),[state.activeWorkspaceId])
   useEffect(()=>{
     if(!editingScreen)return
@@ -723,7 +736,10 @@ export default function App({ capability = null }: { capability?: CapabilityInte
     }
     clearTimeout(pagerTimer.current)
     pagerTimer.current=setTimeout(()=>{const node=pager.current;if(!node?.clientWidth)return;if(pagerTarget.current!==null){// Safari может остановить плавную прокрутку между точками привязки, особенно при быстрых тапах по вкладкам — дожимаем без анимации.
-if(Math.abs(node.scrollLeft-pagerTarget.current)>1)node.scrollLeft=pagerTarget.current;pagerTarget.current=null}const item=navigationTabs[Math.max(0,Math.min(navigationTabs.length-1,Math.round(node.scrollLeft/node.clientWidth)))];if(item)setTab(item.id)},90)
+if(Math.abs(node.scrollLeft-pagerTarget.current)>1)node.scrollLeft=pagerTarget.current;pagerTarget.current=null}const item=navigationTabs[Math.max(0,Math.min(navigationTabs.length-1,Math.round(node.scrollLeft/node.clientWidth)))]
+      // Лента доехала до уже выставленной вкладки (после нажатия так всегда) — повторный setTab только разбудил бы приложение.
+      const shown=pagerStateRef.current
+      if(item&&!(shown.workspaceId===stateRef.current.activeWorkspaceId&&shown.tab===item.id))setTab(item.id)},90)
   }
 
   if(state.phase==='checking')return <div className="splash"><div className="brand-mark">m</div>{error&&<p>{error}</p>}</div>
