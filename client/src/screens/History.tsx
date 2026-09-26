@@ -79,6 +79,16 @@ export const LONG_PRESS_MS = HOLD_MS
 
 export const ROW_DRAG_START = 8
 
+/** Отпущенная строка едет на место 220 мс (переход transform у .history-swipe), и конец пути приходит событием
+ *  transitionend. Если события так и не было, строка через секунду точно на месте и перестаёт быть «живой». */
+export const ROW_SETTLE_LIMIT_MS = 1000
+
+// Строка стоит на месте, когда у слоя нет сдвига: `none` в браузере, пустая строка там, где стилей не считают (jsdom).
+const atRest = (node: Element) => {
+  const transform = getComputedStyle(node).transform
+  return !transform || transform === 'none' || /^matrix\(1, 0, 0, 1, 0, 0\)$/.test(transform)
+}
+
 // Строка истории: тап открывает запись, долгое нажатие включает выбор нескольких, свайп влево открывает удаление.
 // Заголовок — всегда категория; второй строкой — то, что человек написал сам, и теги текстом: «Maxi · #вдвоём».
 // На сенсорных экранах жест ведут touch-события с preventDefault: Safari обрывает pointer-события, как только
@@ -101,6 +111,30 @@ export const HistoryRow = memo(function HistoryRow({ expense, category, tags, cu
   const suppressClick = useRef(false)
   const [dragOffset, setDragOffset] = useState<number | null>(null)
   const swipeDisabled = disabled || selecting
+  const translate = dragOffset ?? (open ? -ROW_ACTION_WIDTH : 0)
+  // Кнопка «Удалить», слой и обрезка нужны только «живой» строке: открытой, той, которую тянут, и отпущенной, пока она
+  // едет на место. Без них сотни неподвижных строк обходятся Safari заметно дешевле.
+  // Закрытие начинается, когда строку отпустили сдвинутой (тап по открытой, протяжка обратно, открылась другая), и
+  // кончается, когда слой строки доехал до нуля. Сдвинута ли она была, помнит прошлый рендер: палец и открытие меняют
+  // состояние в разных местах, а у строки, отпущенной на нуле (тянули вправо), ехать нечему — она сразу неподвижна.
+  const held = open || dragOffset !== null
+  const shifted = translate !== 0
+  const [closing, setClosing] = useState(false)
+  const [last, setLast] = useState({ held, shifted })
+  if (last.held !== held || last.shifted !== shifted) {
+    setLast({ held, shifted })
+    setClosing(!held && last.held && last.shifted)
+  }
+  useEffect(() => {
+    if (!closing) return
+    const timer = setTimeout(() => setClosing(false), ROW_SETTLE_LIMIT_MS)
+    return () => clearTimeout(timer)
+  }, [closing])
+  // Конец пути — только у сдвига самого слоя и только на нуле. Переходы потомков (фон строки, галочка) всплывают сюда же,
+  // а переход открытия, кончившийся в кадр начала закрытия, приходит, пока слой ещё сдвинут.
+  const settled = (event: React.TransitionEvent) => {
+    if (event.target === event.currentTarget && event.propertyName === 'transform' && atRest(event.currentTarget)) setClosing(false)
+  }
   useEffect(() => () => clearTimeout(gesture.current?.longPress), [])
   const begin = (x: number, y: number, touchId: number | null) => {
     if (disabled) return
@@ -197,17 +231,17 @@ export const HistoryRow = memo(function HistoryRow({ expense, category, tags, cu
     else if (expense.voidedAt && onVoided) onVoided(expense)
     else onEdit(expense.id)
   }
-  const translate = dragOffset ?? (open ? -ROW_ACTION_WIDTH : 0)
   // Теги приходят уже в порядке этого человека.
   const tagList = expense.tagIds?.length ? tags.filter((tag) => expense.tagIds?.includes(tag.id)) : []
   const categoryName = category?.name || 'Скрытая категория'
   const details = [expense.note, tagList.map((tag) => `#${tag.name}`).join(' ')].filter(Boolean).join(' · ')
-  return <div ref={root} className={`history-expense${checked ? ' selected' : ''}${open ? ' open' : ''}${dragOffset !== null ? ' dragging' : ''}`} inert={inert} onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={pointerEnd} onPointerCancel={pointerEnd}>
-    <div className="history-swipe" style={{ transform: translate ? `translateX(${translate}px)` : undefined, transition: dragOffset === null ? undefined : 'none', willChange: dragOffset === null ? undefined : 'transform' }}>
+  // У строки отменённого платежа слои прежние: её полупрозрачная метка категории без своего слоя рисуется чуть иначе.
+  return <div ref={root} className={`history-expense${checked ? ' selected' : ''}${open ? ' open' : ''}${dragOffset !== null ? ' dragging' : ''}${closing ? ' closing' : ''}${expense.voidedAt ? ' voided' : ''}`} inert={inert} onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={pointerEnd} onPointerCancel={pointerEnd}>
+    <div className="history-swipe" style={{ transform: translate ? `translateX(${translate}px)` : undefined, transition: dragOffset === null ? undefined : 'none', willChange: dragOffset === null ? undefined : 'transform' }} onTransitionEnd={settled}>
       <label className="expense-check" aria-label={`Выбрать расход ${categoryName}`}><input type="checkbox" tabIndex={selecting ? 0 : -1} checked={checked} onChange={() => onToggle(expense.id)}/><span/></label>
       <button type="button" className={`history-row${expense.voidedAt ? ' voided' : ''}`} aria-pressed={selecting ? checked : undefined} onClick={click}><CategoryMark category={category}/><span><b>{categoryName}</b>{details && <small>{details}</small>}</span><strong>{money(expense.amountMinor,expense.currency,currencies)}</strong>{expense.voidedAt && <em className="voided-badge" aria-label="Платёж не прошёл, не учитывается">{expense.voidReason?.kind === 'reversed' ? 'Возврат' : 'Не прошёл'}</em>}</button>
     </div>
-    <button type="button" className="history-swipe-delete" tabIndex={open ? 0 : -1} aria-hidden={!open} disabled={disabled} onClick={() => onDelete(expense)}><TrashIcon/><span>Удалить</span></button>
+    {(held || closing) && <button type="button" className="history-swipe-delete" tabIndex={open ? 0 : -1} aria-hidden={!open} disabled={disabled} onClick={() => onDelete(expense)}><TrashIcon/><span>Удалить</span></button>}
   </div>
 })
 

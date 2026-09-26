@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { HISTORY_FIRST_ROWS, HISTORY_MORE_ROWS, HistoryView } from './screens/History'
+import { HISTORY_FIRST_ROWS, HISTORY_MORE_ROWS, HistoryView, ROW_SETTLE_LIMIT_MS } from './screens/History'
+import * as workspaceApi from './workspace-api'
 import type { Expense, WorkspaceBootstrap } from './types'
 
 afterEach(() => {
@@ -138,3 +139,136 @@ describe('history window', () => {
     expect(rows(container)).toBe(HISTORY_FIRST_ROWS)
   })
 })
+
+describe('history rows at rest', () => {
+  // Мышью: строку тянут и отпускают, клик следом за жестом строка гасит сама.
+  const drag = (row: Element, from: number, to: number) => {
+    fireEvent.pointerDown(row, { pointerType: 'mouse', button: 0, clientX: from, clientY: 20 })
+    fireEvent.pointerMove(row, { pointerType: 'mouse', clientX: to, clientY: 20 })
+    fireEvent.pointerUp(row, { pointerType: 'mouse', clientX: to, clientY: 20 })
+    fireEvent.click(row.querySelector('.history-row')!)
+  }
+  const tapRow = (row: Element) => {
+    fireEvent.pointerDown(row, { pointerType: 'mouse', button: 0, clientX: 150, clientY: 20 })
+    fireEvent.pointerUp(row, { pointerType: 'mouse', clientX: 150, clientY: 20 })
+    fireEvent.click(row.querySelector('.history-row')!)
+  }
+  // Конец пути строки: переход transform у самого .history-swipe.
+  const slidEnd = (row: Element) => fireEvent.transitionEnd(row.querySelector('.history-swipe')!, { propertyName: 'transform' })
+  const deleteOf = (row: Element) => row.querySelector('.history-swipe-delete')
+  const deletes = (container: HTMLElement) => container.querySelectorAll('.history-swipe-delete')
+
+  it('draws resting rows without the delete button and with their plain class', () => {
+    const { container } = render(<HistoryView {...props} bootstrap={bootstrapWith(5)}/>)
+    expect(deletes(container)).toHaveLength(0)
+    expect([...container.querySelectorAll('.history-expense')].map((row) => row.className)).toEqual(Array(5).fill('history-expense'))
+    // Чекбокс выбора остаётся у каждой строки: его появление анимировано.
+    expect(container.querySelectorAll('.history-expense .expense-check')).toHaveLength(5)
+  })
+
+  it('keeps the delete button under a row that is dragged, open and sliding back after a tap', () => {
+    const { container } = render(<HistoryView {...props} bootstrap={bootstrapWith(5)}/>)
+    const [row, other] = container.querySelectorAll('.history-expense')
+
+    fireEvent.pointerDown(row!, { pointerType: 'mouse', button: 0, clientX: 300, clientY: 20 })
+    fireEvent.pointerMove(row!, { pointerType: 'mouse', clientX: 220, clientY: 20 })
+    expect(row!.classList.contains('dragging')).toBe(true)
+    expect(deleteOf(row!)).not.toBeNull()
+    fireEvent.pointerUp(row!, { pointerType: 'mouse', clientX: 220, clientY: 20 })
+    fireEvent.click(row!.querySelector('.history-row')!)
+    expect(row!.className).toBe('history-expense open')
+    expect(screen.getByRole('button', { name: 'Удалить' })).toBe(deleteOf(row!))
+    // Строка доехала до открытого положения — это не конец закрытия, кнопка на месте.
+    slidEnd(row!)
+    expect(deleteOf(row!)).not.toBeNull()
+
+    tapRow(row!)
+    expect(row!.className).toBe('history-expense closing')
+    expect(deleteOf(row!)).not.toBeNull()
+    // Переходы потомков (фон строки, галочка) всплывают сюда же, но концом пути не считаются.
+    fireEvent.transitionEnd(row!.querySelector('.history-row')!, { propertyName: 'background-color' })
+    fireEvent.transitionEnd(row!.querySelector('.history-row')!, { propertyName: 'transform' })
+    expect(deleteOf(row!)).not.toBeNull()
+    slidEnd(row!)
+    expect(deleteOf(row!)).toBeNull()
+    expect(row!.className).toBe('history-expense')
+    expect(other!.className).toBe('history-expense')
+    expect(deletes(container)).toHaveLength(0)
+  })
+
+  it('keeps the button while a row dragged back slides home, even when its opening slide ends late', () => {
+    const { container } = render(<HistoryView {...props} bootstrap={bootstrapWith(5)}/>)
+    const [row] = container.querySelectorAll('.history-expense')
+    drag(row!, 300, 200)
+    expect(row!.className).toBe('history-expense open')
+
+    // Протяжка открытой строки обратно дальше половины кнопки: строка доезжает до места сама.
+    drag(row!, 180, 240)
+    expect(row!.className).toBe('history-expense closing')
+    const swipe = row!.querySelector<HTMLElement>('.history-swipe')!
+    // Переход открытия кончился в тот же кадр, когда началось закрытие: строка ещё сдвинута, путь не пройден.
+    swipe.style.transform = 'translateX(-40px)'
+    slidEnd(row!)
+    expect(deleteOf(row!)).not.toBeNull()
+    swipe.style.transform = ''
+    slidEnd(row!)
+    expect(deleteOf(row!)).toBeNull()
+    expect(row!.className).toBe('history-expense')
+  })
+
+  it('lets the open row slide home with its button when another row opens', () => {
+    const { container } = render(<HistoryView {...props} bootstrap={bootstrapWith(5)}/>)
+    const [first, second] = container.querySelectorAll('.history-expense')
+    drag(first!, 300, 200)
+    drag(second!, 300, 200)
+    expect(second!.className).toBe('history-expense open')
+    expect(first!.className).toBe('history-expense closing')
+    expect(deleteOf(first!)).not.toBeNull()
+    slidEnd(first!)
+    expect(deleteOf(first!)).toBeNull()
+    expect(deletes(container)).toHaveLength(1)
+  })
+
+  it('does not wait for a slide when the released row never left its place', () => {
+    const { container } = render(<HistoryView {...props} bootstrap={bootstrapWith(5)}/>)
+    const [row] = container.querySelectorAll('.history-expense')
+    // Вправо закрытая строка не едет: сдвиг остаётся нулевым, и ехать на место нечему.
+    fireEvent.pointerDown(row!, { pointerType: 'mouse', button: 0, clientX: 100, clientY: 20 })
+    fireEvent.pointerMove(row!, { pointerType: 'mouse', clientX: 160, clientY: 20 })
+    expect(row!.classList.contains('dragging')).toBe(true)
+    fireEvent.pointerUp(row!, { pointerType: 'mouse', clientX: 160, clientY: 20 })
+    expect(row!.className).toBe('history-expense')
+    expect(deleteOf(row!)).toBeNull()
+  })
+
+  it('lets a row go once it has surely arrived, even if the end of its slide was never reported', () => {
+    vi.useFakeTimers()
+    const { container } = render(<HistoryView {...props} bootstrap={bootstrapWith(5)}/>)
+    const [row] = container.querySelectorAll('.history-expense')
+    drag(row!, 300, 200)
+    tapRow(row!)
+    act(() => vi.advanceTimersByTime(ROW_SETTLE_LIMIT_MS - 1))
+    expect(deleteOf(row!)).not.toBeNull()
+    act(() => vi.advanceTimersByTime(1))
+    expect(deleteOf(row!)).toBeNull()
+    expect(row!.className).toBe('history-expense')
+  })
+
+  it('keeps the old layers for a row whose payment did not go through', () => {
+    const bootstrap = bootstrapWith(3)
+    bootstrap.expenses[1] = { ...bootstrap.expenses[1]!, voidedAt: '2026-09-20T12:00:00.000Z', voidReason: null }
+    const { container } = render(<HistoryView {...props} bootstrap={bootstrap}/>)
+    expect([...container.querySelectorAll('.history-expense')].map((row) => row.className)).toEqual(['history-expense', 'history-expense voided', 'history-expense'])
+    expect(deletes(container)).toHaveLength(0)
+  })
+
+  it('still deletes a record from its swipe button', async () => {
+    const submit = vi.spyOn(workspaceApi, 'submitExpenseOperation').mockResolvedValue(null)
+    const { container } = render(<HistoryView {...props} bootstrap={bootstrapWith(5)}/>)
+    drag(container.querySelector('.history-expense')!, 300, 200)
+    fireEvent.click(screen.getByRole('button', { name: 'Удалить' }))
+    await waitFor(() => expect(submit).toHaveBeenCalledWith('user-a', 'workspace-a', 'deleteExpense', expect.objectContaining({ id: 'e0' })))
+    expect(await screen.findByText('Расход удалён')).not.toBeNull()
+  })
+})
+
