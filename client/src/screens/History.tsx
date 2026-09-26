@@ -79,6 +79,9 @@ export const LONG_PRESS_MS = HOLD_MS
 
 export const ROW_DRAG_START = 8
 
+/** Касание подсвечивает строку, когда палец постоял на месте столько миллисекунд: у пролистывания плашка не мигает. */
+export const ROW_PRESS_DELAY_MS = 100
+
 /** Отпущенная строка едет на место 220 мс (переход transform у .history-swipe), и конец пути приходит событием
  *  transitionend. Если события так и не было, строка через секунду точно на месте и перестаёт быть «живой». */
 export const ROW_SETTLE_LIMIT_MS = 1000
@@ -96,6 +99,8 @@ const atRest = (node: Element) => {
 // Нарисованных строк сотни, и они остаются в дереве, пока открыто пространство. Мемоизация с колбэками,
 // принимающими запись, даёт перерисовку только тех строк, чьё состояние (выбор, открытый свайп) действительно изменилось.
 type RowGesture = { x: number; y: number; touchId: number | null; dragging: boolean; longPress: ReturnType<typeof setTimeout> | undefined }
+
+type RowPress = { x: number; y: number; touchId: number | null; timer: ReturnType<typeof setTimeout> | undefined; stop: () => void }
 
 const usesNativeTouch = () => typeof window !== 'undefined' && 'ontouchstart' in window
 
@@ -136,6 +141,38 @@ export const HistoryRow = memo(function HistoryRow({ expense, category, tags, cu
     if (event.target === event.currentTarget && event.propertyName === 'transform' && atRest(event.currentTarget)) setClosing(false)
   }
   useEffect(() => () => clearTimeout(gesture.current?.longPress), [])
+  // Плашка нажатия — класс, а не :active: под пальцем, листающим список, :active мигал на каждой строке. Касание зажигает
+  // её, только когда палец постоял на месте ROW_PRESS_DELAY_MS, а гасит сдвиг дальше порога, подъём пальца или отмена
+  // касания. Мышь, как и :active, зажигает её сразу и гасит, когда кнопку отпустили где угодно.
+  const [pressed, setPressed] = useState(false)
+  const press = useRef<RowPress | null>(null)
+  const unpress = () => {
+    const state = press.current
+    if (!state) return
+    press.current = null
+    clearTimeout(state.timer)
+    state.stop()
+    setPressed(false)
+  }
+  // Касание (touchId) ведут и гасят свои touch-события; указатель отпускают и за пределами строки — его ловит окно.
+  const pressAt = (x: number, y: number, touchId: number | null, delayed: boolean) => {
+    unpress()
+    const state: RowPress = { x, y, touchId, timer: undefined, stop: () => {} }
+    press.current = state
+    if (touchId === null) {
+      const up = () => unpress()
+      window.addEventListener('pointerup', up, true)
+      window.addEventListener('pointercancel', up, true)
+      state.stop = () => { window.removeEventListener('pointerup', up, true); window.removeEventListener('pointercancel', up, true) }
+    }
+    if (delayed) state.timer = setTimeout(() => { if (press.current === state) setPressed(true) }, ROW_PRESS_DELAY_MS)
+    else setPressed(true)
+  }
+  const pressMove = (x: number, y: number) => {
+    const state = press.current
+    if (state && Math.max(Math.abs(x - state.x), Math.abs(y - state.y)) > ROW_DRAG_START) unpress()
+  }
+  useEffect(() => () => { const state = press.current; press.current = null; clearTimeout(state?.timer); state?.stop() }, [])
   const begin = (x: number, y: number, touchId: number | null) => {
     if (disabled) return
     clearTimeout(gesture.current?.longPress)
@@ -181,10 +218,12 @@ export const HistoryRow = memo(function HistoryRow({ expense, category, tags, cu
   const pointerDown = (event: React.PointerEvent) => {
     if (event.pointerType === 'touch' && usesNativeTouch()) return
     if (event.button !== 0) return
+    pressAt(event.clientX, event.clientY, null, event.pointerType === 'touch')
     begin(event.clientX, event.clientY, null)
   }
   const pointerMove = (event: React.PointerEvent) => {
     if (event.pointerType === 'touch' && usesNativeTouch()) return
+    if (event.pointerType === 'touch') pressMove(event.clientX, event.clientY)
     const wasDragging = gesture.current?.dragging
     if (move(event.clientX, event.clientY) && !wasDragging) event.currentTarget.setPointerCapture?.(event.pointerId)
   }
@@ -193,26 +232,33 @@ export const HistoryRow = memo(function HistoryRow({ expense, category, tags, cu
     finish(event.type === 'pointerup', event.clientX)
   }
   // Touch-слушатели ставятся один раз на строку; актуальные замыкания берутся из рефа.
-  const touch = useRef({ begin, move, finish })
-  touch.current = { begin, move, finish }
+  const touch = useRef({ begin, move, finish, pressAt, pressMove, unpress })
+  touch.current = { begin, move, finish, pressAt, pressMove, unpress }
   useEffect(() => {
     const node = root.current
     if (!node || !usesNativeTouch()) return
-    const tracked = (touches: TouchList) => { const id = gesture.current?.touchId; return id === null || id === undefined ? undefined : Array.from(touches).find((item) => item.identifier === id) }
+    const find = (touches: TouchList, id: number | null | undefined) => id === null || id === undefined ? undefined : Array.from(touches).find((item) => item.identifier === id)
+    const tracked = (touches: TouchList) => find(touches, gesture.current?.touchId)
     const touchStart = (event: TouchEvent) => {
-      if (event.touches.length !== 1) { clearTimeout(gesture.current?.longPress); gesture.current = null; return }
+      if (event.touches.length !== 1) { clearTimeout(gesture.current?.longPress); gesture.current = null; touch.current.unpress(); return }
       const point = event.touches[0]
-      if (point) touch.current.begin(point.clientX, point.clientY, point.identifier)
+      if (!point) return
+      touch.current.pressAt(point.clientX, point.clientY, point.identifier, true)
+      touch.current.begin(point.clientX, point.clientY, point.identifier)
     }
     const touchMove = (event: TouchEvent) => {
+      // Плашка следит за пальцем и тогда, когда строка его уже отпустила листать список.
+      const pressing = find(event.touches, press.current?.touchId)
+      if (pressing) touch.current.pressMove(pressing.clientX, pressing.clientY)
       const point = tracked(event.touches)
       if (point && touch.current.move(point.clientX, point.clientY)) event.preventDefault()
     }
     const touchEnd = (event: TouchEvent) => {
+      touch.current.unpress()
       const point = tracked(event.changedTouches)
       if (point) touch.current.finish(true, point.clientX)
     }
-    const touchCancel = () => touch.current.finish(false)
+    const touchCancel = () => { touch.current.unpress(); touch.current.finish(false) }
     node.addEventListener('touchstart', touchStart, { passive: true })
     node.addEventListener('touchmove', touchMove, { passive: false })
     node.addEventListener('touchend', touchEnd, { passive: true })
@@ -236,7 +282,7 @@ export const HistoryRow = memo(function HistoryRow({ expense, category, tags, cu
   const categoryName = category?.name || 'Скрытая категория'
   const details = [expense.note, tagList.map((tag) => `#${tag.name}`).join(' ')].filter(Boolean).join(' · ')
   // У строки отменённого платежа слои прежние: её полупрозрачная метка категории без своего слоя рисуется чуть иначе.
-  return <div ref={root} className={`history-expense${checked ? ' selected' : ''}${open ? ' open' : ''}${dragOffset !== null ? ' dragging' : ''}${closing ? ' closing' : ''}${expense.voidedAt ? ' voided' : ''}`} inert={inert} onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={pointerEnd} onPointerCancel={pointerEnd}>
+  return <div ref={root} className={`history-expense${checked ? ' selected' : ''}${open ? ' open' : ''}${dragOffset !== null ? ' dragging' : ''}${closing ? ' closing' : ''}${pressed ? ' pressed' : ''}${expense.voidedAt ? ' voided' : ''}`} inert={inert} onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={pointerEnd} onPointerCancel={pointerEnd}>
     <div className="history-swipe" style={{ transform: translate ? `translateX(${translate}px)` : undefined, transition: dragOffset === null ? undefined : 'none', willChange: dragOffset === null ? undefined : 'transform' }} onTransitionEnd={settled}>
       <label className="expense-check" aria-label={`Выбрать расход ${categoryName}`}><input type="checkbox" tabIndex={selecting ? 0 : -1} checked={checked} onChange={() => onToggle(expense.id)}/><span/></label>
       <button type="button" className={`history-row${expense.voidedAt ? ' voided' : ''}`} aria-pressed={selecting ? checked : undefined} onClick={click}><CategoryMark category={category}/><span><b>{categoryName}</b>{details && <small>{details}</small>}</span><strong>{money(expense.amountMinor,expense.currency,currencies)}</strong>{expense.voidedAt && <em className="voided-badge" aria-label="Платёж не прошёл, не учитывается">{expense.voidReason?.kind === 'reversed' ? 'Возврат' : 'Не прошёл'}</em>}</button>

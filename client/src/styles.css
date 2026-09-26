@@ -2157,17 +2157,18 @@ button.tag-chip:disabled {
   background: var(--soft);
 }
 
-/* Нажатие на строку истории подсвечивает её той же скруглённой плашкой, что и выбор, без масштабирования. */
-.history-expense:active:not(.open):not(.dragging) {
+/* Нажатие на строку истории подсвечивает её той же скруглённой плашкой, что и выбор, без масштабирования. Класс ставит
+   строка сама вместо :active: касанием — когда палец постоял на месте, чтобы плашка не мигала под листающим пальцем. */
+.history-expense.pressed:not(.open):not(.dragging) {
   border-bottom-color: transparent;
 }
 
-.history-expense:active:not(.open):not(.dragging) .history-swipe {
+.history-expense.pressed:not(.open):not(.dragging) .history-swipe {
   background: var(--soft);
   border-radius: 14px;
 }
 
-.history-expense:active:not(.open):not(.dragging) .history-swipe-delete {
+.history-expense.pressed:not(.open):not(.dragging) .history-swipe-delete {
   visibility: hidden;
 }
 

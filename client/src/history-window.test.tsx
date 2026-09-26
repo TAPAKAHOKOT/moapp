@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { HISTORY_FIRST_ROWS, HISTORY_MORE_ROWS, HistoryView, ROW_SETTLE_LIMIT_MS } from './screens/History'
+import { HISTORY_FIRST_ROWS, HISTORY_MORE_ROWS, HistoryView, LONG_PRESS_MS, ROW_PRESS_DELAY_MS, ROW_SETTLE_LIMIT_MS } from './screens/History'
 import * as workspaceApi from './workspace-api'
 import type { Expense, WorkspaceBootstrap } from './types'
 
@@ -269,6 +269,116 @@ describe('history rows at rest', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Удалить' }))
     await waitFor(() => expect(submit).toHaveBeenCalledWith('user-a', 'workspace-a', 'deleteExpense', expect.objectContaining({ id: 'e0' })))
     expect(await screen.findByText('Расход удалён')).not.toBeNull()
+  })
+})
+
+describe('history row press', () => {
+  // На телефоне жест строки ведут touch-события: строка слушает их, если у окна есть ontouchstart.
+  const touch = (node: Element, type: 'touchstart' | 'touchmove' | 'touchend' | 'touchcancel', x = 150, y = 20) => {
+    const point = { identifier: 1, clientX: x, clientY: y }
+    const event = new Event(type, { bubbles: true, cancelable: true })
+    const lifted = type === 'touchend' || type === 'touchcancel'
+    Object.defineProperties(event, { touches: { value: lifted ? [] : [point] }, changedTouches: { value: [point] } })
+    act(() => { node.dispatchEvent(event) })
+  }
+  const later = (ms: number) => act(() => vi.advanceTimersByTime(ms))
+  const pressed = (row: Element) => row.classList.contains('pressed')
+  const onPhone = (edit = vi.fn()) => {
+    vi.stubGlobal('ontouchstart', null)
+    vi.useFakeTimers()
+    const view = render(<HistoryView {...props} edit={edit} bootstrap={bootstrapWith(5)}/>)
+    return { ...view, row: view.container.querySelector('.history-expense')!, edit }
+  }
+
+  it('lights a touched row only once the finger has stayed still for a moment', () => {
+    const { row } = onPhone()
+    touch(row, 'touchstart')
+    expect(pressed(row)).toBe(false)
+    later(ROW_PRESS_DELAY_MS - 1)
+    // Палец дрогнул в пределах порога — это ещё касание, а не прокрутка.
+    touch(row, 'touchmove', 155, 26)
+    expect(pressed(row)).toBe(false)
+    later(1)
+    expect(pressed(row)).toBe(true)
+    touch(row, 'touchend', 155, 26)
+    expect(pressed(row)).toBe(false)
+  })
+
+  it('does not light a row the finger scrolls or swipes past', () => {
+    const { row } = onPhone()
+    touch(row, 'touchstart')
+    later(50)
+    touch(row, 'touchmove', 150, 32)
+    later(200)
+    expect(pressed(row)).toBe(false)
+    touch(row, 'touchend', 150, 32)
+
+    touch(row, 'touchstart', 300)
+    later(50)
+    touch(row, 'touchmove', 288)
+    later(200)
+    expect(pressed(row)).toBe(false)
+    touch(row, 'touchend', 288)
+  })
+
+  it('drops the light when the finger moves on or the touch is cancelled', () => {
+    const { row } = onPhone()
+    touch(row, 'touchstart')
+    later(ROW_PRESS_DELAY_MS)
+    expect(pressed(row)).toBe(true)
+    touch(row, 'touchmove', 150, 32)
+    expect(pressed(row)).toBe(false)
+    touch(row, 'touchend', 150, 32)
+
+    touch(row, 'touchstart')
+    later(ROW_PRESS_DELAY_MS)
+    expect(pressed(row)).toBe(true)
+    touch(row, 'touchcancel')
+    expect(pressed(row)).toBe(false)
+  })
+
+  it('keeps the tap, the long press and the swipe of a touched row', () => {
+    const { row, edit } = onPhone()
+    touch(row, 'touchstart')
+    later(60)
+    touch(row, 'touchend')
+    fireEvent.click(row.querySelector('.history-row')!)
+    expect(edit).toHaveBeenCalledWith('e0')
+
+    touch(row, 'touchstart')
+    later(LONG_PRESS_MS)
+    expect(row.classList.contains('selected')).toBe(true)
+    expect(pressed(row)).toBe(true)
+    touch(row, 'touchend')
+    expect(pressed(row)).toBe(false)
+    // Клик следом за долгим нажатием гасится, выбор остаётся; следующий тап снимает его.
+    fireEvent.click(row.querySelector('.history-row')!)
+    expect(row.classList.contains('selected')).toBe(true)
+    touch(row, 'touchstart')
+    touch(row, 'touchend')
+    fireEvent.click(row.querySelector('.history-row')!)
+    expect(row.classList.contains('selected')).toBe(false)
+
+    touch(row, 'touchstart', 300)
+    touch(row, 'touchmove', 220)
+    expect(row.classList.contains('dragging')).toBe(true)
+    touch(row, 'touchend', 220)
+    expect(row.className).toBe('history-expense open')
+  })
+
+  it('lights the row at once under a mouse button and keeps it until the button is released anywhere', () => {
+    const { container } = render(<HistoryView {...props} bootstrap={bootstrapWith(5)}/>)
+    const row = container.querySelector('.history-expense')!
+    fireEvent.pointerDown(row, { pointerType: 'mouse', button: 0, clientX: 150, clientY: 20 })
+    expect(pressed(row)).toBe(true)
+    // Как у :active: курсор ушёл со строки, кнопка ещё нажата — плашка остаётся.
+    fireEvent.pointerMove(row, { pointerType: 'mouse', clientX: 150, clientY: 200 })
+    expect(pressed(row)).toBe(true)
+    fireEvent.pointerUp(document.body, { pointerType: 'mouse', clientX: 150, clientY: 200 })
+    expect(pressed(row)).toBe(false)
+
+    fireEvent.pointerDown(row, { pointerType: 'mouse', button: 2, clientX: 150, clientY: 20 })
+    expect(pressed(row)).toBe(false)
   })
 })
 
