@@ -292,66 +292,100 @@ export const HistoryRow = memo(function HistoryRow({ expense, category, tags, cu
   </div>
 })
 
-/** Карточка над списком раскрывается и сворачивается за столько миллисекунд. */
+/** Карточки и панель фильтров над списком раскрываются, сворачиваются и меняют высоту за столько миллисекунд. */
 export const CARD_MOTION_MS = 200
 
-// Карточка над списком («Сохраните ссылку доступа», «N операций с карты ждут разбора») на показанном экране появляется,
-// раскрываясь по высоте от нуля, и уходит, сворачиваясь, — список под ней едет, а не прыгает. Высота меняется покадрово,
-// как у блоков в настройке экрана: путь считается от первого кадра, а не от перерисовки, и CSS-переходов нет. Обёртка —
-// отдельный блочный контекст, поэтому отступ карточки сверху живёт внутри неё и сворачивается вместе с ней; положение
-// карточки и списка в покое то же, что без обёртки. Уходящая карточка досматривается с последними данными и не
-// нажимается; вернувшаяся едет обратно с той высоты, где её застали. При первом рендере, на вкладке, которую не видно,
-// и при «уменьшении движения» карточка сразу в конечном виде.
-function CardSlot({ show, children }: { show: boolean; children: React.ReactNode }) {
+const alwaysGlides = () => true
+
+// Плавная высота по ключу. Обёртка над списком держит одно из состояний `view` (null — обёртки нет) и, когда оно сменилось
+// на показанном экране, едет по высоте от прежней к новой, а список под ней — следом, без скачка. Так появляются и уходят
+// карточки («Сохраните ссылку доступа», «N операций с карты ждут разбора») и так панель фильтров меняет высоту при входе в
+// выбор записей и выходе из него.
+// - Содержимое меняется сразу; на время пути оно обрезано по обёртке, потом стили снимаются. Обёртка — отдельный блочный
+//   контекст: отступ содержимого сверху живёт внутри неё и сворачивается вместе с ним, а в покое всё стоит там же, где
+//   стояло бы без обёртки.
+// - Высота меняется покадрово через requestAnimationFrame, как у блоков в настройке экрана: часы идут с первого кадра, а
+//   не с перерисовки, и CSS-переходов нет — на iPhone ускоренный переход терял содержимое слоя на первом кадре. Обёртки,
+//   сменившие вид в одной перерисовке, получают одно время кадра и едут одним движением.
+// - Прежнюю высоту в момент смены уже не измерить: содержимое новое. Её помнит ResizeObserver — он сообщает размер после
+//   раскладки, в которой тот изменился, и сам ничего не раскладывает; посреди пути прежняя высота — та, что поставлена
+//   обёртке. Без ResizeObserver (старые браузеры, jsdom) обёртка меряется в момент смены: у уходящей карточки
+//   содержимое прежнее, и замер верен, а смена вида панели тогда просто не едет. Новую высоту даёт одно чтение раскладки
+//   в момент смены, а не в каждом рендере.
+// - Уходящее содержимое досматривается с последними данными и не нажимается; вернувшееся едет обратно с той высоты, где
+//   его застали. Какие смены вида едут, решает `glides(было, стало)`; остальные — сразу, как без обёртки.
+// - При первом рендере, на вкладке, которую не видно, в фоне и при «уменьшении движения» — сразу в конечном виде.
+function GlideSlot({ view, glides = alwaysGlides, className, children }: { view: string | null; glides?: (was: string | null, now: string | null) => boolean; className: string; children: React.ReactNode }) {
   const kept = useRef(children)
-  if (show) kept.current = children
-  const [present, setPresent] = useState(show)
-  if (show && !present) setPresent(true)
+  if (view !== null) kept.current = children
+  const [present, setPresent] = useState(view !== null)
+  if (view !== null && !present) setPresent(true)
   const slot = useRef<HTMLDivElement>(null)
-  const motion = useRef({ shown: show, frame: 0 })
+  // height — высота, поставленная обёртке в пути (null — своя); seen — последняя, о которой сообщил ResizeObserver.
+  const motion = useRef({ view, frame: 0, height: null as number | null, seen: null as number | null })
+  useLayoutEffect(() => {
+    const node = slot.current
+    const run = motion.current
+    if (!present || !node) return
+    const observer = typeof ResizeObserver === 'function' ? new ResizeObserver((entries) => { const entry = entries[entries.length - 1]; if (entry) run.seen = entry.contentRect.height }) : null
+    observer?.observe(node)
+    return () => { observer?.disconnect(); run.seen = null; run.height = null }
+  }, [present])
   useLayoutEffect(() => {
     const run = motion.current
-    if (run.shown === show) return
-    run.shown = show
-    const moving = run.frame !== 0
+    if (run.view === view) return
+    const was = run.view
+    run.view = view
     cancelAnimationFrame(run.frame)
     run.frame = 0
     const node = slot.current
     if (!node) return
-    if (prefersReducedMotion() || document.hidden || node.closest('.page-slot')?.hasAttribute('inert')) {
+    const at = run.height
+    run.height = null
+    if (!glides(was, view) || prefersReducedMotion() || document.hidden || node.closest('.page-slot')?.hasAttribute('inert')) {
       node.style.height = ''
       node.style.overflow = ''
-      if (!show) setPresent(false)
+      if (view === null) setPresent(false)
       return
     }
-    const current = node.getBoundingClientRect().height
+    const from = at ?? (was === null ? 0 : run.seen ?? node.getBoundingClientRect().height)
     node.style.height = ''
-    const natural = node.getBoundingClientRect().height
-    const from = moving ? current : show ? 0 : natural
-    const to = show ? natural : 0
+    const to = view === null ? 0 : node.getBoundingClientRect().height
+    if (Math.abs(to - from) < 0.5) {
+      node.style.overflow = ''
+      if (view === null) setPresent(false)
+      return
+    }
     node.style.overflow = 'hidden'
     node.style.height = `${from}px`
+    run.height = from
     let started = 0
     const step = (time: number) => {
       started ||= time
       const progress = Math.min(1, (time - started) / CARD_MOTION_MS)
       if (progress < 1) {
-        node.style.height = `${from + (to - from) * trackEasing(progress)}px`
+        run.height = from + (to - from) * trackEasing(progress)
+        node.style.height = `${run.height}px`
         run.frame = requestAnimationFrame(step)
         return
       }
       run.frame = 0
       // Свёрнутая остаётся нулевой высоты, пока React её не уберёт: иначе на кадр вернулась бы во весь рост.
-      if (!show) { node.style.height = '0px'; setPresent(false); return }
+      if (view === null) { run.height = 0; node.style.height = '0px'; setPresent(false); return }
+      run.height = null
       node.style.height = ''
       node.style.overflow = ''
     }
     run.frame = requestAnimationFrame(step)
-  }, [show])
+  }, [view])
   useEffect(() => () => cancelAnimationFrame(motion.current.frame), [])
   if (!present) return null
-  return <div ref={slot} className="history-card" inert={!show}>{show ? children : kept.current}</div>
+  return <div ref={slot} className={className} inert={view === null}>{view !== null ? children : kept.current}</div>
 }
+
+// Панель фильтров едет по высоте, только когда входят в выбор записей или выходят из него. Прочие её перемены (поиск,
+// части итога, «Сбросить», появление с первой записью) и настройка экрана — сразу, как и были.
+const selectionGlides = (was: string | null, now: string | null) => (was === 'select') !== (now === 'select') && was !== 'editing' && now !== 'editing'
 
 export type HistoryInbox = { count: number; onOpen: () => void }
 
@@ -718,15 +752,18 @@ export const HistoryView = memo(function HistoryView({ userId, workspaceId, boot
     <span>{showTotal && totalLabel ? '· ' : ''}{countLabel}</span>
     {filtersActive && <button type="button" className="history-reset" onClick={resetFilters}>Сбросить</button>}
   </div>
+  // Панель над списком: в настройке экрана — блоки в рамках, в выборе записей — полоса выбора, иначе — фильтры и итог, если
+  // человек их оставил. Вход в выбор и выход из него панель проходит плавно, по высоте (GlideSlot).
+  const toolbarView = editing ? 'editing' : !activeExpenses.length ? null : selected.size > 0 ? 'select' : showFilters || showTotal ? 'rest' : null
   return <section ref={sectionRef} className={`page history-page${editing ? ' arranging' : ''}`}>
-    {editing
+    <GlideSlot view={toolbarView} glides={selectionGlides} className="history-toolbar-slot">{toolbarView !== null && (editing
       ? <div ref={toolbarDrag.listRef} className="history-toolbar">
         {toolbarDrag.shown.map((block) => <div key={block.id} data-drag-id={block.id} data-flip-id={block.id} className={`arrange-slot${toolbarDrag.lifted === block.id ? ' lifted' : ''}`}>
           <EditBlock {...editBlock(block.id, true)} flipId={undefined} move={toolbarBlocks.length > 1 ? { ...toolbarDrag.handle(block.id), onKeyDown: (event) => toolbarDrag.keyMove(event, block.id) } : undefined}>{block.id === 'filters' ? <>{chips}{search}</> : totalLine}</EditBlock>
         </div>)}
         {historyBlocks.hidden.filter((block) => !block.pinned).map((block) => <EditBlock key={block.id} {...editBlock(block.id, true)}/>)}
       </div>
-      : activeExpenses.length > 0 && (selected.size > 0 || showFilters || showTotal) && <div className="history-toolbar">
+      : <div className="history-toolbar">
         {selected.size > 0 && <div className="history-selectbar" role="toolbar" aria-label="Выбранные расходы"><span>Выбрано {selected.size}</span><button type="button" className="danger-link" onClick={removeSelected} disabled={deleting} aria-label={`Удалить выбранные расходы: ${selected.size}`}>Удалить</button><button type="button" className="text-button" onClick={() => setSelected(new Set())}>Отмена</button></div>}
         {toolbarBlocks.map((block) => block.id === 'filters'
           ? selected.size === 0 && <Fragment key="filters">{chips}{search}</Fragment>
@@ -738,11 +775,11 @@ export const HistoryView = memo(function HistoryView({ userId, workspaceId, boot
           if (period === 'range') { setCalendar(true); return }
           if (period !== filters.period) updateFilters({ period })
         }}/>}
-      </div>}
-    <CardSlot show={Boolean(reminder) && !selected.size}>{reminder && (reminder.compact
+      </div>)}</GlideSlot>
+    <GlideSlot view={reminder && !selected.size ? 'card' : null} className="history-card">{reminder && (reminder.compact
       ? <div className="history-inbox history-reminder compact" inert={editing} data-flip-id="reminder"><span className="reminder-mark"><LockIcon/></span><b>Сохраните ссылку доступа</b><button type="button" className="text-button reminder-save" onClick={reminder.onSave}>Сохранить</button><button type="button" className="text-button reminder-later" onClick={reminder.onLater}>Позже</button></div>
-      : <div className="history-inbox history-reminder" inert={editing} data-flip-id="reminder"><span className="reminder-mark"><LockIcon/></span><span><b>Сохраните ссылку доступа</b><small>Иначе без этого телефона расходы не вернуть</small></span><span className="reminder-actions"><button type="button" className="reminder-action" onClick={reminder.onSave}>Сохранить</button><button type="button" className="text-button reminder-later" onClick={reminder.onLater}>Позже</button></span></div>)}</CardSlot>
-    <CardSlot show={Boolean(inbox && inbox.count > 0) && !selected.size}>{inbox && <button type="button" className="history-inbox" inert={editing} data-flip-id="inbox" onClick={inbox.onOpen}><CardMark/><span><b>{inbox.count} {pluralRu(inbox.count, ['операция с карты ждёт', 'операции с карты ждут', 'операций с карты ждут'])} разбора</b><small>Выбрать категории</small></span><ChevronIcon/></button>}</CardSlot>
+      : <div className="history-inbox history-reminder" inert={editing} data-flip-id="reminder"><span className="reminder-mark"><LockIcon/></span><span><b>Сохраните ссылку доступа</b><small>Иначе без этого телефона расходы не вернуть</small></span><span className="reminder-actions"><button type="button" className="reminder-action" onClick={reminder.onSave}>Сохранить</button><button type="button" className="text-button reminder-later" onClick={reminder.onLater}>Позже</button></span></div>)}</GlideSlot>
+    <GlideSlot view={inbox && inbox.count > 0 && !selected.size ? 'card' : null} className="history-card">{inbox && <button type="button" className="history-inbox" inert={editing} data-flip-id="inbox" onClick={inbox.onOpen}><CardMark/><span><b>{inbox.count} {pluralRu(inbox.count, ['операция с карты ждёт', 'операции с карты ждут', 'операций с карты ждут'])} разбора</b><small>Выбрать категории</small></span><ChevronIcon/></button>}</GlideSlot>
     {/* Суммы по дням настраиваются у первого дня: в рамке с «−» или заготовкой на месте суммы. */}
     <div ref={listRef} className={`history-list${selected.size ? ' selecting' : ''}`} data-flip-id="list">{shown.days.map(({ date, items, total }, index) => <div key={date} className="history-day"><div className="history-date"><span>{formatHistoryDate(date)}</span>{editing && index === 0 ? <EditBlock {...editBlock('day-totals')} className="day-totals-block"><b>{total ?? '—'}</b></EditBlock> : showDayTotals && total && <b>{total}</b>}</div>{items.map((expense) => <HistoryRow key={expense.id} expense={expense} category={categoryMap.get(expense.categoryId)} tags={tags} currencies={bootstrap.currencies} checked={selected.has(expense.id)} selecting={selected.size > 0} open={openRow === expense.id} disabled={deleting} inert={editing} onOpen={setOpenRow} onToggle={toggle} onEdit={editRow} onDelete={deleteRow} onVoided={setVoided}/>)}</div>)}</div>
     {hasRest && <div ref={restRef} className="history-rest" aria-hidden="true"/>}

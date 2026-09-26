@@ -407,9 +407,9 @@ describe('history cards above the list', () => {
       expect(slot.getAttribute('style')).toBeNull()
       expect(slot.hasAttribute('inert')).toBe(false)
     }
-    // Карточки стоят между панелью фильтров и списком, как и раньше.
+    // Карточки стоят между панелью фильтров (в своей обёртке) и списком, как и раньше.
     const order = [...container.querySelector('.history-page')!.children].map((node) => node.className)
-    expect(order.slice(0, 4)).toEqual(['history-toolbar', 'history-card', 'history-card', 'history-list'])
+    expect(order.slice(0, 4)).toEqual(['history-toolbar-slot', 'history-card', 'history-card', 'history-list'])
   })
 
   it('unfolds a card that comes to a shown screen and folds one that goes away', () => {
@@ -494,6 +494,223 @@ describe('history cards above the list', () => {
     expect(slots(container)[0]!.getAttribute('style')).toBeNull()
     rerender(hidden({ reminder: null }))
     expect(slots(container)).toHaveLength(0)
+  })
+})
+
+describe('history toolbar entering and leaving selection', () => {
+  // jsdom ничего не раскладывает: обёртка панели в покое высотой со своё содержимое (отступ сверху 14, полосы через 10),
+  // а в движении — какую ей поставили.
+  const PART: Record<string, number> = { 'history-selectbar': 36, 'history-chips': 38, search: 44, 'history-total-line': 24 }
+  const natural = (toolbar: Element | null) => {
+    const parts = toolbar ? [...toolbar.children].map((child) => PART[child.classList[0] ?? ''] ?? 0).filter(Boolean) : []
+    return 14 + parts.reduce((sum, part) => sum + part, 0) + 10 * Math.max(0, parts.length - 1)
+  }
+  const measure = () => vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+    const height = !this.classList.contains('history-toolbar-slot') ? 0 : this.style.height ? parseFloat(this.style.height) : natural(this.firstElementChild)
+    return { x: 0, y: 0, top: 0, left: 0, right: 0, bottom: height, width: 0, height, toJSON: () => ({}) } as DOMRect
+  })
+  // Поддельный ResizeObserver: после каждого «кадра» сообщает нынешние размеры, как настоящий после раскладки.
+  class FakeResizeObserver {
+    static live = new Set<FakeResizeObserver>()
+    targets = new Set<Element>()
+    constructor(readonly callback: ResizeObserverCallback) {}
+    observe(target: Element) { this.targets.add(target); FakeResizeObserver.live.add(this) }
+    unobserve(target: Element) { this.targets.delete(target) }
+    disconnect() { this.targets.clear(); FakeResizeObserver.live.delete(this) }
+  }
+  const setup = () => {
+    measure()
+    FakeResizeObserver.live.clear()
+    vi.stubGlobal('ResizeObserver', FakeResizeObserver)
+    vi.useFakeTimers()
+  }
+  const layout = () => {
+    for (const observer of [...FakeResizeObserver.live]) {
+      const entries = [...observer.targets].map((target) => ({ target, contentRect: target.getBoundingClientRect() }))
+      observer.callback(entries as unknown as ResizeObserverEntry[], observer as unknown as ResizeObserver)
+    }
+  }
+  const frames = (ms: number) => act(() => { vi.advanceTimersByTime(ms); layout() })
+  const slot = (container: HTMLElement) => container.querySelector<HTMLElement>('.history-toolbar-slot')
+  const height = (node: HTMLElement) => node.style.height === '' ? null : parseFloat(node.style.height)
+  const parts = (node: HTMLElement) => [...node.querySelector('.history-toolbar')!.children].map((child) => child.className)
+  const hold = (container: HTMLElement) => {
+    const row = container.querySelector('.history-expense')!
+    fireEvent.pointerDown(row, { pointerType: 'mouse', button: 0, clientX: 150, clientY: 20 })
+    act(() => { vi.advanceTimersByTime(LONG_PRESS_MS) })
+    fireEvent.pointerUp(row, { pointerType: 'mouse', clientX: 150, clientY: 20 })
+  }
+  const cancel = () => fireEvent.click(screen.getByRole('button', { name: 'Отмена' }))
+  const onlyTotal = { shown: ['total'], hidden: ['filters'] }
+  const noToolbar = { shown: [], hidden: ['filters', 'total'] }
+  const view = (blocks?: { shown: string[]; hidden: string[] }, extra: { editing?: boolean } = {}) => <HistoryView {...props} bootstrap={bootstrapWith(5)} blocks={blocks} {...extra}/>
+
+  it('grows the toolbar from its old height to the new one as records get selected, then lets it rest', () => {
+    setup()
+    const { container } = render(view(onlyTotal))
+    const toolbar = slot(container)!
+    // Первый рендер — сразу в конечном виде.
+    expect(toolbar.getAttribute('style')).toBeNull()
+    expect(parts(toolbar)).toEqual(['history-total-line'])
+    layout()
+
+    hold(container)
+    // Содержимое уже новое, а высота пока прежняя и содержимое обрезано.
+    expect(parts(toolbar)).toEqual(['history-selectbar', 'history-total-line'])
+    expect(height(toolbar)).toBe(38)
+    expect(toolbar.style.overflow).toBe('hidden')
+    frames(100)
+    expect(height(toolbar)).toBeGreaterThan(38 + 46 / 2)
+    expect(height(toolbar)).toBeLessThan(84)
+    frames(150)
+    expect(toolbar.getAttribute('style')).toBe('')
+    expect(slot(container)).toBe(toolbar)
+    expect(toolbar.hasAttribute('inert')).toBe(false)
+    expect(parts(toolbar)).toEqual(['history-selectbar', 'history-total-line'])
+    expect(toolbar.textContent).toContain('Выбрано 1')
+  })
+
+  it('shrinks the toolbar back when the selection is cancelled', () => {
+    setup()
+    const { container } = render(view(onlyTotal))
+    layout()
+    hold(container)
+    frames(250)
+    const toolbar = slot(container)!
+
+    cancel()
+    expect(parts(toolbar)).toEqual(['history-total-line'])
+    expect(height(toolbar)).toBe(84)
+    expect(toolbar.style.overflow).toBe('hidden')
+    frames(100)
+    expect(height(toolbar)).toBeLessThan(84 - 46 / 2)
+    expect(height(toolbar)).toBeGreaterThan(38)
+    frames(150)
+    expect(toolbar.getAttribute('style')).toBe('')
+    expect(container.querySelector('.history-selectbar')).toBeNull()
+    expect(container.querySelector('.history-expense.selected')).toBeNull()
+  })
+
+  it('unfolds a toolbar that exists only for the selection from zero and folds it away again', () => {
+    setup()
+    const { container } = render(view(noToolbar))
+    expect(slot(container)).toBeNull()
+    layout()
+
+    hold(container)
+    const toolbar = slot(container)!
+    expect(parts(toolbar)).toEqual(['history-selectbar'])
+    expect(height(toolbar)).toBe(0)
+    expect(toolbar.style.overflow).toBe('hidden')
+    frames(100)
+    expect(height(toolbar)).toBeGreaterThan(25)
+    expect(height(toolbar)).toBeLessThan(50)
+    frames(150)
+    expect(toolbar.getAttribute('style')).toBe('')
+
+    cancel()
+    // Уходящая панель ещё видна с последним содержимым и сворачивается, но уже не нажимается.
+    expect(slot(container)).toBe(toolbar)
+    expect(toolbar.hasAttribute('inert')).toBe(true)
+    expect(toolbar.textContent).toContain('Выбрано 1')
+    expect(height(toolbar)).toBe(50)
+    frames(100)
+    expect(height(toolbar)).toBeGreaterThan(0)
+    expect(height(toolbar)).toBeLessThan(25)
+    frames(150)
+    expect(slot(container)).toBeNull()
+    expect(container.querySelector('.history-expense.selected')).toBeNull()
+  })
+
+  it('turns a folding toolbar back from where it is when records are selected again', () => {
+    setup()
+    const { container } = render(view(noToolbar))
+    layout()
+    hold(container)
+    frames(250)
+    cancel()
+    frames(100)
+    const toolbar = slot(container)!
+    const folded = height(toolbar)!
+    expect(folded).toBeGreaterThan(0)
+    // Долгое нажатие дольше сворачивания, поэтому запись снова отмечают её флажком.
+    fireEvent.click(container.querySelector('.expense-check input')!)
+    expect(slot(container)).toBe(toolbar)
+    expect(toolbar.hasAttribute('inert')).toBe(false)
+    expect(height(toolbar)).toBe(folded)
+    frames(250)
+    expect(toolbar.getAttribute('style')).toBe('')
+  })
+
+  it('changes the toolbar at once when motion is reduced or the tab is out of sight', () => {
+    setup()
+    vi.stubGlobal('matchMedia', (query: string) => ({ matches: query.includes('reduce'), media: query, addEventListener() {}, removeEventListener() {} }))
+    const reduced = render(view(onlyTotal))
+    layout()
+    hold(reduced.container)
+    expect(slot(reduced.container)!.getAttribute('style')).toBeNull()
+    expect(parts(slot(reduced.container)!)).toEqual(['history-selectbar', 'history-total-line'])
+    cancel()
+    expect(slot(reduced.container)!.getAttribute('style')).toBeNull()
+    reduced.unmount()
+    vi.unstubAllGlobals()
+
+    vi.stubGlobal('ResizeObserver', FakeResizeObserver)
+    const hidden = render(<div className="page-slot" inert>{view(noToolbar)}</div>)
+    layout()
+    hold(hidden.container)
+    expect(slot(hidden.container)!.getAttribute('style')).toBeNull()
+    fireEvent.click(hidden.container.querySelector('.history-selectbar .text-button')!)
+    expect(slot(hidden.container)).toBeNull()
+  })
+
+  it('leaves the other changes of the toolbar and the screen setup without motion', () => {
+    setup()
+    const { container, rerender } = render(view(undefined))
+    const toolbar = slot(container)!
+    layout()
+    // Поиск открывается скачком, как раньше.
+    fireEvent.click(screen.getByRole('button', { name: 'Поиск' }))
+    expect(parts(toolbar)).toEqual(['history-chips', 'search', 'history-total-line'])
+    expect(toolbar.getAttribute('style')).toBeNull()
+    layout()
+
+    // Настройка экрана посреди движения: панель сразу в своём виде, без высоты и обрезки.
+    hold(container)
+    expect(toolbar.style.overflow).toBe('hidden')
+    rerender(view(undefined, { editing: true }))
+    expect(slot(container)).toBe(toolbar)
+    expect(toolbar.getAttribute('style')).toBe('')
+    expect(toolbar.querySelectorAll('.arrange-slot')).toHaveLength(2)
+    frames(250)
+    expect(toolbar.getAttribute('style')).toBe('')
+    rerender(view(undefined))
+    expect(toolbar.getAttribute('style')).toBe('')
+    expect(parts(toolbar)).toEqual(['history-chips', 'search', 'history-total-line'])
+  })
+
+  it('still enters the selection by a long press, cancels it and deletes the selected records', async () => {
+    const submit = vi.spyOn(workspaceApi, 'submitExpenseOperations').mockImplementation(async (_user, _workspace, _type, expenses) => expenses.map((expense) => ({ status: 'applied', expense: { ...expense, deletedAt: '2026-09-20T15:00:00.000Z', version: expense.version + 1 } }) as never))
+    setup()
+    const { container } = render(view(undefined))
+    layout()
+    hold(container)
+    expect(container.querySelector('.history-expense')!.classList.contains('selected')).toBe(true)
+    expect(screen.getByRole('toolbar', { name: 'Выбранные расходы' }).textContent).toContain('Выбрано 1')
+    cancel()
+    expect(container.querySelector('.history-selectbar')).toBeNull()
+    expect(container.querySelector('.history-expense.selected')).toBeNull()
+    frames(250)
+
+    hold(container)
+    frames(250)
+    // Удаление ждёт ответа сервера — дальше настоящие часы.
+    vi.useRealTimers()
+    fireEvent.click(screen.getByRole('button', { name: 'Удалить выбранные расходы: 1' }))
+    expect(container.querySelector('.history-selectbar')).toBeNull()
+    await waitFor(() => expect(submit).toHaveBeenCalledWith('user-a', 'workspace-a', 'deleteExpense', [expect.objectContaining({ id: 'e0' })]))
+    expect(await screen.findByText('Удалено расходов: 1')).not.toBeNull()
+    await waitFor(() => expect(slot(container)!.getAttribute('style')).toBe(''))
   })
 })
 
