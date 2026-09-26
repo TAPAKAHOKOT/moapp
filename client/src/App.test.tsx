@@ -1555,7 +1555,7 @@ describe('screens made of blocks', () => {
     expect(container.querySelector('.history-page.arranging')).not.toBeNull()
 
     fireEvent.click(screen.getByRole('button', { name: 'Вернуть «Итог»' }))
-    expect(change).toHaveBeenLastCalledWith({ historyBlocks: { shown: ['filters', 'day-totals', 'total'], hidden: [] } })
+    expect(change).toHaveBeenLastCalledWith({ historyBlocks: { shown: ['filters', 'total', 'day-totals'], hidden: [] } })
     fireEvent.click(screen.getByRole('button', { name: 'Убрать «Фильтры и поиск»' }))
     expect(change).toHaveBeenLastCalledWith({ historyBlocks: { shown: ['day-totals'], hidden: ['filters', 'total'] } })
     fireEvent.click(screen.getByRole('button', { name: 'Убрать «Суммы по дням»' }))
@@ -1599,9 +1599,9 @@ describe('screens made of blocks', () => {
     expect(screen.getByLabelText('Сумма').textContent).toBe('0')
 
     fireEvent.click(screen.getByRole('button', { name: 'Вернуть «Заметка»' }))
-    expect(change).toHaveBeenLastCalledWith({ entryBlocks: { shown: ['tags', 'note'], hidden: [] } })
+    expect(change).toHaveBeenLastCalledWith({ entryBlocks: { shown: ['keypad', 'tiles', 'note', 'tags'], hidden: [] } })
     fireEvent.click(screen.getByRole('button', { name: 'Убрать «Теги»' }))
-    expect(change).toHaveBeenLastCalledWith({ entryBlocks: { shown: [], hidden: ['tags', 'note'] } })
+    expect(change).toHaveBeenLastCalledWith({ entryBlocks: { shown: ['keypad', 'tiles'], hidden: ['tags', 'note'] } })
 
     // Без обоих блоков обычный «Расход» остаётся без ряда, а в настройке ряд стоит двумя заготовками.
     rerender(view({ shown: [], hidden: ['note', 'tags'] }))
@@ -2127,7 +2127,7 @@ describe('appearance in the account', () => {
     expect(screen.getByText('Настройка экрана')).not.toBeNull()
     fireEvent.click(screen.getByRole('button', { name: 'Убрать «Заметка»' }))
     await waitFor(() => expect(fetchMock.mock.calls.some(([url, init]) => url === '/api/me/settings' && init?.method === 'PATCH'
-      && init.body === JSON.stringify({ settings: { entryBlocks: { shown: ['tags'], hidden: ['note'] } } }))).toBe(true))
+      && init.body === JSON.stringify({ settings: { entryBlocks: { shown: ['keypad', 'tiles', 'tags'], hidden: ['note'] } } }))).toBe(true))
     fireEvent.click(screen.getByRole('button', { name: 'Готово' }))
 
     expect(screen.queryByText('Настройка экрана')).toBeNull()

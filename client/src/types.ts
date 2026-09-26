@@ -189,10 +189,11 @@ export type TextSize = 'normal' | 'large'
 export type AnalyticsPeriod = 'week' | 'month'
 
 /**
- * Блоки экрана: `shown` — что стоит на экране, по порядку, `hidden` — что человек убрал. Блок, которого нет ни в одном
- * списке (появился в приложении позже), стоит на экране. Каталог блоков — screen-blocks.ts.
+ * Блоки экрана: `shown` — что стоит на экране, по порядку, `hidden` — что человек убрал, `small` — какие карточки он
+ * сделал маленькими. Блок, которого нет ни в одном списке (появился в приложении позже), встаёт на своё место, а новый
+ * необязательный ждёт среди убранных. Каталог блоков — screen-blocks.ts.
  */
-export type BlockLayout = { shown: string[]; hidden: string[] }
+export type BlockLayout = { shown: string[]; hidden: string[]; small?: string[] }
 
 /** Личные настройки, общие для всех пространств человека. Хранятся в аккаунте, видит их только он сам. */
 export type AccountSettings = {

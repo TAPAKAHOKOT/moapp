@@ -78,12 +78,13 @@ test("the screens of a profile keep their blocks and the analytics period, the s
     analyticsPeriod: "month",
     entryBlocks: { shown: ["tags"], hidden: ["note"] },
     historyBlocks: { shown: ["filters", "filters", "day-totals"], hidden: ["total"] },
-    analyticsBlocks: { shown: ["categories", "trend", "weekdays", "future-block"], hidden: ["tags"] }
+    analyticsBlocks: { shown: ["categories", "trend", "weekdays", "future-block"], hidden: ["tags"], small: ["trend", "tags"] }
   };
   const saved = await saveAccount(phone, screens);
   assert.equal(saved.statusCode, 200, saved.body);
   assert.deepEqual(saved.json().settings.historyBlocks, { shown: ["filters", "day-totals"], hidden: ["total"] });
   assert.deepEqual(saved.json().settings.analyticsBlocks.shown, ["categories", "trend", "weekdays", "future-block"], "a block from a newer app is kept");
+  assert.deepEqual(saved.json().settings.analyticsBlocks.small, ["trend", "tags"], "a removed card keeps its size");
   assert.deepEqual((await session(device(phone.userId))).json().settings.entryBlocks, { shown: ["tags"], hidden: ["note"] });
 
   for (const settings of [
@@ -92,7 +93,9 @@ test("the screens of a profile keep their blocks and the analytics period, the s
     { entryBlocks: { shown: ["note"] } },
     { historyBlocks: { shown: ["Filters"], hidden: [] } },
     { analyticsBlocks: { shown: Array.from({ length: 13 }, (_, index) => `b${"x".repeat(index)}`), hidden: [] } },
-    { analyticsBlocks: ["trend"] }
+    { analyticsBlocks: ["trend"] },
+    { analyticsBlocks: { shown: ["trend"], hidden: [], small: ["categories"] } },
+    { analyticsBlocks: { shown: ["trend"], hidden: [], small: "trend" } }
   ]) {
     const refused = await saveAccount(phone, settings);
     assert.equal(refused.statusCode, 400, JSON.stringify(settings));

@@ -60,21 +60,23 @@ function screenOrder(value: unknown) {
 }
 
 /*
- * Какие блоки стоят на экране и в каком порядке (`shown`), а какие человек убрал (`hidden`). Каталог блоков знает
- * клиент (screen-blocks.ts), поэтому незнакомое имя блока — не ошибка: так настройки переживают и старую, и более
- * новую версию приложения.
+ * Какие блоки стоят на экране и в каком порядке (`shown`), какие человек убрал (`hidden`) и какие карточки сделал
+ * маленькими (`small`, по две в ряд; размер помнится и у убранной). Каталог блоков знает клиент (screen-blocks.ts),
+ * поэтому незнакомое имя блока — не ошибка: так настройки переживают и старую, и более новую версию приложения.
  */
 const BLOCK_ID = /^[a-z][a-z-]{0,29}$/;
 
 function blockLayout(value: unknown) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
   const input = value as Record<string, unknown>;
-  if (Object.keys(input).some((key) => key !== "shown" && key !== "hidden")) return undefined;
+  if (Object.keys(input).some((key) => key !== "shown" && key !== "hidden" && key !== "small")) return undefined;
   const block = (item: string) => BLOCK_ID.test(item);
   const shown = idList(input.shown, block, 12);
   const hidden = idList(input.hidden, block, 12);
-  if (!shown || !hidden || shown.some((id) => hidden.includes(id))) return undefined;
-  return { shown, hidden };
+  const small = input.small === undefined ? [] : idList(input.small, block, 12);
+  if (!shown || !hidden || !small || shown.some((id) => hidden.includes(id))) return undefined;
+  if (small.some((id) => !shown.includes(id) && !hidden.includes(id))) return undefined;
+  return small.length ? { shown, hidden, small } : { shown, hidden };
 }
 
 /*

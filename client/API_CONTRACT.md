@@ -158,16 +158,20 @@ removed on logout. The accent is applied as `data-accent` on the root (tokens in
 
 ### Screens made of blocks
 
-`entryBlocks`, `historyBlocks` and `analyticsBlocks` are `{shown: string[], hidden: string[]}`: the blocks on the screen in
-order, and the blocks the person removed (at most 12 each, lowercase ids with dashes, never in both lists). The catalog lives
-in the client (`screen-blocks.ts`), so the server accepts any well-formed id and an id unknown to the client is skipped;
-a block in neither list — added to the app later — stands on the screen at the end. The layout is one for all workspaces.
+`entryBlocks`, `historyBlocks` and `analyticsBlocks` are `{shown: string[], hidden: string[], small?: string[]}`: the
+blocks on the screen in order, the blocks the person removed, and the cards made small (half width, two in a row; a
+removed card keeps its size). Each list holds at most 12 lowercase ids with dashes, `shown` and `hidden` never share an
+id, and `small` only names ids from them. The catalog lives in the client (`screen-blocks.ts`), so the server accepts any
+well-formed id and an id unknown to the client is skipped. A block in neither list — added to the app later — stands in
+its default place, and a new optional block waits among the removed ones. A block that cannot be removed stays on the
+screen even if a layout lists it as removed. A removed block comes back to its default place. The layout is one for all
+workspaces.
 
 | Screen | Blocks (default order) | Always there |
 |---|---|---|
-| «Расход» | `note`, `tags` | amount, keypad, tiles, «Сохранить» |
-| «История» | `filters`, `total`, `day-totals` | the list, reminders, card review |
-| «Аналитика» (reorderable) | `trend`, `categories`, `tags`, `weekdays` (month only) | the total and the period switch |
+| «Расход» | `keypad` and `tiles` (cannot be removed), `note`, `tags` | the amount and «Сохранить» |
+| «История» | `filters`, `total`, `day-totals` (stays by the dates) | the list, reminders, card review |
+| «Аналитика» (cards can be small) | `trend`, `categories`, `tags`, `weekdays` (month only) | the total and the period switch |
 
 Without the `filters` block the saved history filters do not apply (they return with the block). Without the `categories` or
 `tags` card the analytics focus on a category or tag does not apply.
