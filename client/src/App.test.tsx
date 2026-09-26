@@ -1605,6 +1605,19 @@ describe('screens made of blocks', () => {
     expect(change).toHaveBeenLastCalledWith({ analyticsBlocks: { shown: ['trend', 'categories', 'tags', 'weekdays'], hidden: [] } })
     fireEvent.keyDown(screen.getAllByRole('button', { name: /Перетащить/ })[1]!, { key: 'ArrowUp' })
     expect(change).toHaveBeenLastCalledWith({ analyticsBlocks: { shown: ['categories', 'trend', 'tags'], hidden: ['weekdays'] } })
+    fireEvent.click(screen.getByRole('button', { name: 'Размер «Категории»: большая, сделать маленькой' }))
+    expect(change).toHaveBeenLastCalledWith({ analyticsBlocks: { shown: ['trend', 'categories', 'tags'], hidden: ['weekdays'], small: ['categories'] } })
+  })
+
+  it('puts small cards two in a row with only the main thing, and a small category card does not narrow the total', () => {
+    const now = new Date().toISOString()
+    const bootstrap = expenseBootstrap({ categories: personalCategories, tags: personalTags, expenses: [spent('a', 'products', now, ['tag-0']), spent('b', 'home', now)] })
+    const { container } = render(<AnalyticsView userId="user-a" workspaceId="workspace-a" bootstrap={bootstrap} theme="light" online={false} blocks={{ shown: ['trend', 'categories', 'tags'], hidden: [], small: ['trend', 'categories'] }}/>)
+    const small = [...container.querySelectorAll('.analytics-cards > .chart-card.small')]
+    expect(small.map((card) => card.querySelector('h2')?.textContent)).toEqual(['Динамика', 'Категории'])
+    expect([...small[1]!.querySelectorAll('.mini-list span')].map((node) => node.textContent)).toEqual(['Продукты', 'Для дома'])
+    expect(small[1]!.querySelector('button')).toBeNull()
+    expect(container.querySelector('.analytics-cards > .chart-card:not(.small) h2')?.textContent).toBe('Теги')
   })
 
   it('arranges «Расход» in frames: the keypad and the tiles only move, the note and the tags go and come back', () => {

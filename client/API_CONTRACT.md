@@ -184,7 +184,9 @@ day header, any analytics card), and from Settings → «Мои экраны», 
 for the first expense). The header becomes «Настройка экрана · Готово» and the parts that always stay are dimmed and
 inert. A standing block gets a frame with «−» in its left corner if it can be removed and ≡ in its right corner if it
 can move; removed blocks wait as dashed «+ name» that brings them back to their place. On «Расход» the keypad folds into
-a plate while the tiles and tags are laid out in place; analytics cards fold into plates. Each tap is saved at once;
+a plate while the tiles and tags are laid out in place; analytics cards fold into plates with a size switch. A small
+card stands in half the width, two in a row, and shows only the main thing (a sparkline, the top three shares, the
+weekday bars); a small «Категории» or «Теги» card has no legend, so its focus does not apply. Each tap is saved at once;
 «Готово», Escape or another tab leaves the mode.
 
 On «Расход» the blocks stand in the person's order. The note and the tags share one row when they are next to each other.

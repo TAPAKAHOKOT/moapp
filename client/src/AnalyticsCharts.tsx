@@ -27,6 +27,8 @@ type LineChartProps = {
   textColor: string
   gridColor: string
   maxTicksLimit: number
+  /** Маленькая карточка: только линия, без осей. */
+  compact?: boolean
 }
 
 type DoughnutChartProps = {
@@ -45,6 +47,8 @@ type BarChartProps = {
   target: string
   textColor: string
   gridColor: string
+  /** Маленькая карточка: столбики и буквы дней, без шкалы. */
+  compact?: boolean
 }
 
 type AnalyticsChartProps = LineChartProps | DoughnutChartProps | BarChartProps
@@ -152,7 +156,7 @@ export default function AnalyticsChart(props: AnalyticsChartProps) {
         legend: { display: false },
         tooltip: { callbacks: { label: (context) => exactAmount(context.parsed.y ?? 0, props.target) } },
       },
-      scales: {
+      scales: props.compact ? { x: { display: false }, y: { display: false, beginAtZero: true } } : {
         x: { grid: { display: false }, ticks: { maxTicksLimit: props.maxTicksLimit, color: props.textColor } },
         y: {
           beginAtZero: true,
@@ -188,8 +192,8 @@ export default function AnalyticsChart(props: AnalyticsChartProps) {
       tooltip: { callbacks: { label: (context) => exactAmount(context.parsed.y ?? 0, props.target) } },
     },
     scales: {
-      x: { grid: { display: false }, ticks: { color: props.textColor } },
-      y: {
+      x: { grid: { display: false }, border: { display: !props.compact }, ticks: { color: props.textColor, ...(props.compact ? { font: { size: 10 }, padding: 0 } : {}) } },
+      y: props.compact ? { display: false, beginAtZero: true } : {
         beginAtZero: true,
         border: { display: false },
         grid: { color: props.gridColor },
