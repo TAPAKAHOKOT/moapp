@@ -20,13 +20,20 @@ export function monitorServiceWorkerUpdates({ onWaiting, onControllerChange }: O
   let registration: ServiceWorkerRegistration | undefined
   let disposed = false
   // Первая установка воркера забирает страницу без контроллера (clients.claim()) — это не обновление, а перезагрузка
-  // потеряла бы приглашение, уже вынутое из адреса. Перезагружаемся, когда меняется прежний контроллер или человек
-  // сам нажал «Обновить».
+  // потеряла бы приглашение, уже вынутое из адреса. Перезагружаемся, когда меняется прежний контроллер, человек сам
+  // нажал «Обновить» или страница уже предлагала обновиться: вкладку после жёсткой перезагрузки (контроллера нет, а
+  // приложение установлено) забирает новая версия, активированная в другой вкладке, и без перезагрузки кнопка
+  // «Обновить» так и висела бы в шапке — ожидающего воркера для неё больше нет.
   let controlled = Boolean(navigator.serviceWorker.controller)
   let activationRequested = false
+  let reported = false
   // Ожидающий воркер — обновление, только если есть действующий, которого он сменит: первая установка тоже на миг
   // проходит через waiting, и без перезагрузки кнопка «Обновить» так и осталась бы в шапке.
-  const reportWaiting = () => { if (!disposed && registration?.waiting && registration.active) onWaiting() }
+  const reportWaiting = () => {
+    if (disposed || !registration?.waiting || !registration.active) return
+    reported = true
+    onWaiting()
+  }
   const observe = (next: ServiceWorkerRegistration) => {
     registration = next
     next.addEventListener('updatefound', () => {
@@ -38,7 +45,7 @@ export function monitorServiceWorkerUpdates({ onWaiting, onControllerChange }: O
     return next
   }
   const controllerChange = () => {
-    const replaced = controlled || activationRequested
+    const replaced = controlled || activationRequested || reported
     controlled = true
     if (!disposed && replaced) onControllerChange()
   }

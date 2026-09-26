@@ -64,6 +64,56 @@ describe('service worker update monitor', () => {
     expect(controllerChange).toHaveBeenCalledTimes(1)
   })
 
+  // Вкладка открыта жёсткой перезагрузкой (Cmd+Shift+R): контроллера нет, хотя приложение уже установлено.
+  function hardReloaded(waiting: EventTarget | null) {
+    const registration = Object.assign(new EventTarget(), {
+      installing: null as EventTarget | null,
+      waiting,
+      active: new EventTarget() as EventTarget | null,
+      update: vi.fn(async () => {}),
+    })
+    const serviceWorker = Object.assign(new EventTarget(), {
+      controller: null,
+      ready: Promise.resolve(registration as unknown as ServiceWorkerRegistration),
+      getRegistration: vi.fn(async () => registration as unknown as ServiceWorkerRegistration),
+    })
+    vi.stubGlobal('navigator', { serviceWorker })
+    const waitingSeen = vi.fn()
+    const controllerChange = vi.fn()
+    const monitor = monitorServiceWorkerUpdates({ onWaiting: waitingSeen, onControllerChange: controllerChange })
+    // Новая версия занимает место действующей (её активировали в другой вкладке), clients.claim() забирает и эту.
+    const takeOver = () => {
+      registration.active = registration.waiting; registration.waiting = null
+      serviceWorker.dispatchEvent(new Event('controllerchange'))
+    }
+    return { registration, monitor, waitingSeen, controllerChange, takeOver }
+  }
+
+  it('reloads a hard-reloaded tab once «Обновить», offered in it too, is pressed in another tab', async () => {
+    const { monitor, waitingSeen, controllerChange, takeOver } = hardReloaded(new EventTarget())
+    await monitor.checkForUpdate()
+    expect(waitingSeen).toHaveBeenCalled()
+
+    takeOver()
+    expect(controllerChange).toHaveBeenCalledTimes(1)
+  })
+
+  it('reloads a hard-reloaded tab when an update that arrived later is activated in another tab', async () => {
+    const { registration, monitor, waitingSeen, controllerChange, takeOver } = hardReloaded(null)
+    await monitor.checkForUpdate()
+    expect(waitingSeen).not.toHaveBeenCalled()
+
+    const next = new EventTarget()
+    registration.installing = next
+    registration.dispatchEvent(new Event('updatefound'))
+    registration.installing = null; registration.waiting = next
+    next.dispatchEvent(new Event('statechange'))
+    expect(waitingSeen).toHaveBeenCalled()
+
+    takeOver()
+    expect(controllerChange).toHaveBeenCalledTimes(1)
+  })
+
   it('does not offer «Обновить» for the first install, which passes through waiting on its way to active', async () => {
     const registration = Object.assign(new EventTarget(), {
       installing: null as EventTarget | null,
