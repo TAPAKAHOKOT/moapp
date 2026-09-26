@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { buildHistoryCsv, defaultHistoryPreferences, filterHistoryExpenses, historyDateRange, historyTotals, parseHistoryPreferences, type HistoryFilters } from './history'
 import type { Category, Currency, Expense, RateSnapshot, Tag } from './types'
 
@@ -62,6 +62,71 @@ describe('history filters', () => {
     expect(parseHistoryPreferences(JSON.stringify({ period: 'day', date: '2026-08-30' }), '2026-09-01').period).toBe('all')
     expect(parseHistoryPreferences(JSON.stringify({ tagIds: ['trip', 'trip', 7] }), '2026-09-01').tagIds).toEqual(['trip'])
     expect(parseHistoryPreferences('{broken', '2026-09-01')).toEqual(defaultHistoryPreferences('2026-09-01'))
+  })
+})
+
+describe('history filters against the previous implementation', () => {
+  afterEach(() => { vi.restoreAllMocks() })
+
+  // Прежний фильтр — эталон: день записи он считал всегда, даже у «Всех дат».
+  const belgradeDay = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Belgrade', year: 'numeric', month: '2-digit', day: '2-digit' })
+  const legacyDay = (iso: string) => {
+    const parts = Object.fromEntries(belgradeDay.formatToParts(new Date(iso)).map((part) => [part.type, part.value]))
+    return `${parts.year}-${parts.month}-${parts.day}`
+  }
+  const legacyFilter = (list: Expense[], active: HistoryFilters, today: string) => {
+    const { from, to } = historyDateRange(active, today)
+    return list.filter((expense) => {
+      if (expense.deletedAt) return false
+      if (active.categoryIds.length && !active.categoryIds.includes(expense.categoryId)) return false
+      if (active.tagIds.length && !(expense.tagIds ?? []).some((id) => active.tagIds.includes(id))) return false
+      if (active.currencies.length && !active.currencies.includes(expense.currency)) return false
+      const date = legacyDay(expense.occurredAt)
+      return (!from || date >= from) && (!to || date <= to)
+    }).sort((left, right) => right.occurredAt.localeCompare(left.occurredAt))
+  }
+
+  // Записи у белградских полуночей, у смены месяца и переходов на летнее и зимнее время.
+  const spread: Expense[] = []
+  for (const [first, days] of [['2026-03-20', 22], ['2026-08-25', 12], ['2026-10-20', 16]] as const) {
+    for (let day = 0; day < days; day += 1) {
+      for (const [slot, time] of ['21:30', '22:30', '23:30', '00:30', '10:00'].entries()) {
+        const date = new Date(`${first}T${time}:00.000Z`)
+        date.setUTCDate(date.getUTCDate() + day)
+        const at = date.toISOString()
+        const index = spread.length
+        spread.push({
+          id: `e${index}`, amountMinor: 100 + index, currency: index % 3 ? 'RSD' : 'EUR', categoryId: slot % 2 ? 'food' : 'transport', note: null,
+          tagIds: [undefined, [], ['trip'], ['work', 'trip']][index % 4], occurredAt: at, createdAt: at, updatedAt: at, version: 1,
+          deletedAt: index % 11 === 0 ? at : null,
+        })
+      }
+    }
+  }
+  const variants: Partial<HistoryFilters>[] = [
+    { period: 'all' }, { period: 'today' }, { period: 'this-week' }, { period: 'this-month' },
+    { period: 'range', from: '2026-03-28', to: '2026-03-30' }, { period: 'range', from: '2026-11-01', to: '2026-10-25' },
+    { period: 'range', from: '2026-08-31', to: '' }, { period: 'range', from: '', to: '2026-03-29' }, { period: 'range', from: '', to: '' },
+  ]
+  const narrowing: Partial<HistoryFilters>[] = [{}, { categoryIds: ['food'] }, { tagIds: ['trip'] }, { currencies: ['EUR'] }, { categoryIds: ['transport'], tagIds: ['work'], currencies: ['RSD'] }]
+
+  it('shows the same records in the same order for every period', () => {
+    for (const today of ['2026-03-29', '2026-03-30', '2026-08-31', '2026-09-01', '2026-10-25', '2026-11-01']) {
+      for (const variant of variants) {
+        for (const extra of narrowing) {
+          const active = filters({ ...variant, ...extra })
+          expect(filterHistoryExpenses(spread, active, today).map((expense) => expense.id)).toEqual(legacyFilter(spread, active, today).map((expense) => expense.id))
+        }
+      }
+    }
+  })
+
+  it('does not work out the day of each record when the period has no bounds', () => {
+    const fresh = spread.map((expense, index) => ({ ...expense, occurredAt: new Date(Date.parse('2034-01-01T00:00:00.000Z') + index * 60_000).toISOString() }))
+    const formatToParts = vi.spyOn(Intl.DateTimeFormat.prototype, 'formatToParts')
+    expect(filterHistoryExpenses(fresh, filters({ period: 'all' }), '2034-01-01')).toHaveLength(fresh.filter((expense) => !expense.deletedAt).length)
+    expect(filterHistoryExpenses(fresh, filters({ period: 'range', from: '', to: '' }), '2034-01-01')).toHaveLength(fresh.filter((expense) => !expense.deletedAt).length)
+    expect(formatToParts).not.toHaveBeenCalled()
   })
 })
 

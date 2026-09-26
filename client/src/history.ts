@@ -64,11 +64,14 @@ export function historyDateRange(filters: HistoryFilters, today = localDateKey(n
 
 export function filterHistoryExpenses(expenses: Expense[], filters: HistoryFilters, today = localDateKey(new Date())) {
   const { from, to } = historyDateRange(filters, today)
+  // У «Всех дат» границ нет — день записи не нужен, и его не считаем.
+  const bounded = Boolean(from || to)
   return expenses.filter((expense) => {
     if (expense.deletedAt) return false
     if (filters.categoryIds.length && !filters.categoryIds.includes(expense.categoryId)) return false
     if (filters.tagIds.length && !(expense.tagIds ?? []).some((id) => filters.tagIds.includes(id))) return false
     if (filters.currencies.length && !filters.currencies.includes(expense.currency)) return false
+    if (!bounded) return true
     const date = localDateKey(expense.occurredAt)
     return (!from || date >= from) && (!to || date <= to)
   }).sort((left, right) => right.occurredAt.localeCompare(left.occurredAt))

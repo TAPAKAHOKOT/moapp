@@ -137,9 +137,19 @@ export function cachedNumberFormat(locale: string, options: Intl.NumberFormatOpt
   return formatter
 }
 
+// Части момента по поясу — основа дня покупки и поля «Когда». Форматтер ищется по одному поясу, без сериализации
+// настроек на каждый вызов: день записи спрашивают тысячи раз за перерисовку.
+const partsFormatters = new Map<string, Intl.DateTimeFormat>()
+
 function dateParts(date: Date, timeZone = appTimeZone()) {
-  const parts = cachedDateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(date)
-  return Object.fromEntries(parts.map((part) => [part.type, part.value])) as Record<string, string>
+  let formatter = partsFormatters.get(timeZone)
+  if (!formatter) {
+    formatter = new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
+    partsFormatters.set(timeZone, formatter)
+  }
+  const parts: Record<string, string> = {}
+  for (const part of formatter.formatToParts(date)) parts[part.type] = part.value
+  return parts
 }
 
 export function isoToLocalInput(iso: string, timeZone = appTimeZone()) {
@@ -161,9 +171,30 @@ export function localInputToIso(value: string, timeZone = appTimeZone()) {
   return new Date(guess).toISOString()
 }
 
-export function localDateKey(value: string | Date, timeZone = appTimeZone()) {
-  const parts = dateParts(typeof value === 'string' ? new Date(value) : value, timeZone)
+function dayOf(date: Date, timeZone: string) {
+  const parts = dateParts(date, timeZone)
   return `${parts.year}-${parts.month}-${parts.day}`
+}
+
+// День записи после любого изменения данных спрашивают по нескольку раз на каждую запись: фильтр и дни истории,
+// итоги, курсы, аналитика. Поэтому день строки со временем запоминается по паре «пояс + время» — смена пояса даёт
+// новый ключ. Чтобы память не росла без конца, запомненное сбрасывается целиком.
+const DAY_KEYS_LIMIT = 20_000
+const dayKeys = new Map<string, Map<string, string>>()
+let dayKeysCount = 0
+
+export function localDateKey(value: string | Date, timeZone = appTimeZone()) {
+  if (typeof value !== 'string') return dayOf(value, timeZone)
+  let zone = dayKeys.get(timeZone)
+  const known = zone?.get(value)
+  if (known !== undefined) return known
+  // Невалидная дата бросает здесь же, как и раньше, и ничего не запоминается.
+  const key = dayOf(new Date(value), timeZone)
+  if (dayKeysCount >= DAY_KEYS_LIMIT) { dayKeys.clear(); dayKeysCount = 0; zone = undefined }
+  if (!zone) { zone = new Map(); dayKeys.set(timeZone, zone) }
+  zone.set(value, key)
+  dayKeysCount += 1
+  return key
 }
 
 export function weekdayFromDateKey(key: string) {
