@@ -1,4 +1,4 @@
-import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react'
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { WorkspaceApiError as ApiError, getAnalytics, saveMemberSettings } from '../workspace-api'
 import { patchSettings } from '../settings'
 import type { SettingsPatch } from '../settings'
@@ -7,7 +7,7 @@ import { chartColors } from '../appearance'
 import { appTimeZone, cachedNumberFormat, convertExpense, countCalendarWeekdays, hasRate, localDateKey, monthDateRange, shiftDateKey, weekDateRange, weekdayFromDateKey, workspaceCurrency } from '../utils'
 import { expenseTagNames } from '../history'
 import { BREAKDOWN_REST, breakdownColors, categoryBreakdown, expenseGroupKeys } from '../breakdown'
-import { ChevronIcon, CurrencySheet, DragList, EditBlock, RemoveBadge, prefersReducedMotion, tap } from '../ui'
+import { ChevronIcon, CurrencySheet, DragList, EditBlock, RemoveBadge, prefersReducedMotion, tap, useHold } from '../ui'
 import type { Theme } from '../ui'
 import { formatAnalyticsAmount, formatCompactNumber, formatWeekRange, money, pluralRu } from '../format'
 import type { Bootstrap } from '../format'
@@ -21,7 +21,7 @@ export type { AnalyticsPeriod }
 export function AnalyticsView({ userId, workspaceId, bootstrap, setBootstrap = () => {}, theme, accent = 'sage', online, timeZone = appTimeZone(), blocks, period: savedPeriod, editing = false, onEditScreen = () => {}, onScreensChange = () => {} }: { userId: string; workspaceId: string; bootstrap: Bootstrap; setBootstrap?: React.Dispatch<React.SetStateAction<Bootstrap>>; theme: Theme; accent?: Accent; online: boolean; timeZone?: string
   /** Какие карточки человек оставил и в каком порядке, неделя или месяц — всё это помнит аккаунт. Карточки он
    *  убирает, возвращает и переставляет сам, в режиме «Настройка экрана» (`editing`). */
-  blocks?: BlockLayout; period?: AnalyticsPeriod; editing?: boolean; onEditScreen?: (screen: BlockScreen) => void; onScreensChange?: (patch: SettingsPatch<AccountSettings>) => void }) {
+  blocks?: BlockLayout; period?: AnalyticsPeriod; editing?: boolean; onEditScreen?: (screen: BlockScreen, how?: 'hold' | 'tap') => void; onScreensChange?: (patch: SettingsPatch<AccountSettings>) => void }) {
   // Валюта аналитики — выбранная человеком (её помнит аккаунт), а пока он не выбирал, валюта пространства,
   // в том числе после её смены в настройках.
   const target = bootstrap.settings?.analyticsCurrency || workspaceCurrency(bootstrap)
@@ -33,7 +33,7 @@ export function AnalyticsView({ userId, workspaceId, bootstrap, setBootstrap = (
     if (next !== (savedPeriod ?? 'week')) onScreensChange({ analyticsPeriod: next })
   }
   const analyticsBlocks = useMemo(() => screenBlocks('analytics', blocks), [blocks])
-  const pageRef = useRef<HTMLElement>(null)
+  const pageRef = useRef<HTMLElement | null>(null)
   // Свёрнутые карточки стоят сразу под шапкой, поэтому настройка открывается с начала страницы.
   useEffect(() => {
     if (!editing) return
@@ -158,12 +158,15 @@ export function AnalyticsView({ userId, workspaceId, bootstrap, setBootstrap = (
   const detailRow=({expense,date}:{expense:Expense;date:string},caption:string)=><div key={expense.id} className="legend-detail"><span><b>{detailDate(date)}</b>{caption}</span><span className="legend-value"><b>{money(expense.amountMinor,expense.currency,bootstrap.currencies)}</b>{expense.currency!==target&&<small>≈ {formatAnalyticsAmount(convertExpense(expense,target,bootstrap.currencies,bootstrap.rates),target)}</small>}</span></div>
   // Пустое пространство и пустой период — разные случаи: в первом человек ещё не знает, что тут вообще будет.
   const anyExpenses=bootstrap.expenses.some((expense)=>!expense.deletedAt)
+  // Удержание любой карточки открывает настройку экрана.
+  const holdRef=useHold(!editing&&anyExpenses?()=>onEditScreen('analytics','hold'):undefined,(target)=>Boolean(target.closest('.chart-card')))
+  const sectionRef=useCallback((node:HTMLElement|null)=>{pageRef.current=node;holdRef(node)},[holdRef])
   const emptyPeriod=anyExpenses?'В этом периоде ещё нет расходов':'Появится после первых трат: сколько за месяц и на что'
   const chartColor=chart.line
   const chartText=theme==='dark'?'#b3b3ae':'#73776f'
   const chartGrid=theme==='dark'?'rgba(255,255,255,.06)':'rgba(32,37,31,.06)'
   const statusLine=analyticsOffline?<>{analyticsError?'Не удалось обновить. ':''}Показаны сохранённые данные на {new Date(bootstrap.serverTime).toLocaleString('ru-RU')}{online&&<button type="button" onClick={()=>setRetryEpoch((value)=>value+1)}>Повторить</button>}</>:data.missingCurrencies.length?`Нет курса: ${data.missingCurrencies.join(', ')} — эти расходы не посчитаны`:null
-  return <section ref={pageRef} className={`page analytics${editing?' arranging':''}`}><div className={`analytics-progress${slowLoading?' on':''}`} aria-hidden="true"/><div className="analytics-fixed" inert={editing}><header className="page-header analytics-title"><div><p className="eyebrow">{focusedName??'Все расходы'}</p><h1>{cachedNumberFormat('ru-RU',{maximumFractionDigits:0}).format(shownTotal)}{hasForeign&&<button type="button" className="rate-info" aria-label="Как посчитана сумма" aria-expanded={rateInfo} onClick={()=>setRateInfo((value)=>!value)}>i</button>}</h1><p className="analytics-comparison">{formatAnalyticsAmount(shownPerDay,target)} в день · {data.expenseCount} {pluralRu(data.expenseCount,['операция','операции','операций'])}</p><p className="analytics-comparison">{comparisonLabel(total,previousTotal,partial,period)}</p></div><button className="currency-choice" onClick={()=>setCurrencySheet(true)}>{target}<ChevronIcon/></button></header>
+  return <section ref={sectionRef} className={`page analytics${editing?' arranging':''}`}><div className={`analytics-progress${slowLoading?' on':''}`} aria-hidden="true"/><div className="analytics-fixed" inert={editing}><header className="page-header analytics-title"><div><p className="eyebrow">{focusedName??'Все расходы'}</p><h1>{cachedNumberFormat('ru-RU',{maximumFractionDigits:0}).format(shownTotal)}{hasForeign&&<button type="button" className="rate-info" aria-label="Как посчитана сумма" aria-expanded={rateInfo} onClick={()=>setRateInfo((value)=>!value)}>i</button>}</h1><p className="analytics-comparison">{formatAnalyticsAmount(shownPerDay,target)} в день · {data.expenseCount} {pluralRu(data.expenseCount,['операция','операции','операций'])}</p><p className="analytics-comparison">{comparisonLabel(total,previousTotal,partial,period)}</p></div><button className="currency-choice" onClick={()=>setCurrencySheet(true)}>{target}<ChevronIcon/></button></header>
     {rateInfo&&hasForeign&&<p className="rate-caption" role="note">Расходы в других валютах пересчитаны в {target} по курсу на день покупки.</p>}
     <div className="analytics-period" role="group" aria-label="Период аналитики"><button type="button" aria-pressed={period==='week'} className={period==='week'?'selected':''} onClick={()=>setPeriod('week')}>Неделя</button><button type="button" aria-pressed={period==='month'} className={period==='month'?'selected':''} onClick={()=>setPeriod('month')}>Месяц</button></div>
     {period==='week'&&<div className="week-navigator"><button type="button" onClick={()=>setWeekOffset((value)=>value-1)} aria-label="Предыдущая неделя">‹</button><div><b>{weekOffset===0?'Текущая неделя':weekOffset===-1?'Прошлая неделя':'Выбранная неделя'}</b><span>{weekRange}</span></div><button type="button" onClick={()=>setWeekOffset((value)=>Math.min(0,value+1))} disabled={weekOffset===0} aria-label="Следующая неделя">›</button></div>}
@@ -174,7 +177,6 @@ export function AnalyticsView({ userId, workspaceId, bootstrap, setBootstrap = (
       :block.id==='tags'?(showTags&&<div key="tags" className={`chart-card${byTag.length?' split':''}`}><div><h2>Теги</h2><p>{tagId?'Только этот тег':categoryId?'В этой категории':period==='week'?'За неделю':'За месяц'}</p></div>{byTag.length?<><div className="donut-wrap"><Suspense fallback={<ChartSkeleton/>}><AnalyticsChart kind="doughnut" labels={byTag.map((x)=>x.label)} values={byTag.map((x)=>x.value)} colors={tagColors} target={target}/></Suspense><span>{formatCompactNumber(total)}</span></div><div className="legend tag-legend">{byTag.map((x,index)=>{const focused=tagId===x.id;const shown=allTagDetails?tagDetails:tagDetails.slice(0,LEGEND_DETAIL_LIMIT);return <div key={x.id} className={`legend-item${focused?' open':''}`}><button type="button" className="legend-row" aria-expanded={focused} onClick={()=>focusTag(x.id)}><i style={{background:tagColors[index]}}/><span>{x.label}</span><span className="legend-value"><b>{formatAnalyticsAmount(x.value,target)}</b><small className={focused?'ghost':undefined} aria-hidden={focused||undefined}>{Math.round(x.value/total*100)||0}%</small></span>{focused?<span className="legend-close" aria-hidden="true">×</span>:<ChevronIcon/>}</button>{focused&&<div className="legend-details">{tagDetails.length?<>{shown.map((item)=>detailRow(item,tagCaption(item.expense)))}{tagDetails.length>shown.length&&<button type="button" className="legend-more" onClick={()=>setAllTagDetails(true)}>Показать все · {tagDetails.length}</button>}</>:<p className="legend-empty">На этом устройстве нет записей с этим тегом за период.</p>}</div>}</div>})}{tagId&&<button type="button" className="legend-all" onClick={()=>focusTag(tagId)}>Все теги</button>}</div></>:<AnalyticsEmpty>{emptyPeriod}</AnalyticsEmpty>}</div>)
       :block.id==='weekdays'?(period==='month'&&<div key="weekdays" className="chart-card"><div><h2>По дням недели</h2><p>Средние траты за календарный день</p></div>{data.convertedCount?<div className="bar-chart"><Suspense fallback={<ChartSkeleton/>}><AnalyticsChart kind="bar" labels={['Пн','Вт','Ср','Чт','Пт','Сб','Вс']} values={weekdays} color={chartColor} target={target} textColor={chartText} gridColor={chartGrid}/></Suspense></div>:<AnalyticsEmpty>Недостаточно данных для сравнения</AnalyticsEmpty>}</div>)
       :null)}
-    {anyExpenses&&!editing&&<button type="button" className="screen-setup" onClick={()=>onEditScreen('analytics')}>Настроить экран</button>}
     {currencySheet && <CurrencySheet currencies={bootstrap.currencies} used={[...new Set(bootstrap.expenses.filter((item)=>!item.deletedAt).map((item)=>item.currency))]} selected={target} onClose={()=>setCurrencySheet(false)} onSelect={(code)=>{setBootstrap((data)=>({...data,settings:patchSettings(data.settings,{analyticsCurrency:code})}));saveMemberSettings(userId,workspaceId,{analyticsCurrency:code});setCurrencySheet(false)}}/>}
   </section>
 }

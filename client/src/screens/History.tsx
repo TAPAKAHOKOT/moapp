@@ -6,7 +6,7 @@ import type { AccountSettings, BlockLayout, Category, Currency, Expense, Tag } f
 import { appTimeZone, cachedDateTimeFormat, localDateKey, monthDateRange, shiftDateKey, weekdayFromDateKey, workspaceCurrency } from '../utils'
 import { HISTORY_PERIOD_LABELS, defaultHistoryPreferences, expenseTagNames, filterHistoryExpenses, historyTotals, parseHistoryPreferences } from '../history'
 import type { HistoryPeriod, HistoryPreferences } from '../history'
-import { CardMark, CategoryMark, ChevronIcon, EditBlock, LockIcon, MultiSelect, SearchIcon, Toast, TrashIcon, tap, useDialog, useOverflowHint, useToast } from '../ui'
+import { CardMark, CategoryMark, ChevronIcon, EditBlock, HOLD_MS, LockIcon, MultiSelect, SearchIcon, Toast, TrashIcon, tap, useDialog, useHold, useOverflowHint, useToast } from '../ui'
 import { formatAnalyticsAmount, formatDateRange, formatHistoryDate, money, pluralRu } from '../format'
 import type { Bootstrap } from '../format'
 import { sortTags } from '../tags'
@@ -75,7 +75,7 @@ function formatMonthYear(dateKey: string) {
 
 export const ROW_ACTION_WIDTH = 84
 
-export const LONG_PRESS_MS = 450
+export const LONG_PRESS_MS = HOLD_MS
 
 export const ROW_DRAG_START = 8
 
@@ -233,11 +233,11 @@ export const HistoryView = memo(function HistoryView({ userId, workspaceId, boot
   /** Календарь телефона: дни истории и итоги пересчитываются, когда пояс меняется. */
   timeZone?: string
   older?: HistoryOlder | null
-  /** Какие блоки «Истории» человек оставил на экране. Меняет их он сам в режиме «Настройка экрана» (`editing`), куда
-   *  ведёт «Настроить экран» внизу списка. */
+  /** Какие блоки «Истории» человек оставил на экране. Меняет их он сам в режиме «Настройка экрана» (`editing`): его
+   *  открывают значок в шапке и удержание блока над списком или даты дня. */
   blocks?: BlockLayout
   editing?: boolean
-  onEditScreen?: (screen: BlockScreen) => void
+  onEditScreen?: (screen: BlockScreen, how?: 'hold' | 'tap') => void
   onScreensChange?: (patch: SettingsPatch<AccountSettings>) => void
 }) {
   // Фильтры помнит аккаунт, строка поиска живёт, только пока приложение открыто.
@@ -252,7 +252,7 @@ export const HistoryView = memo(function HistoryView({ userId, workspaceId, boot
   const [voided, setVoided] = useState<Expense | null>(null)
   const [including, setIncluding] = useState(false)
   const { toast, notify, dismiss } = useToast()
-  const pageRef = useRef<HTMLElement>(null)
+  const pageRef = useRef<HTMLElement | null>(null)
   // Блоки «Истории» у каждого свои. Без блока фильтров фильтры не действуют: иначе убранный блок молча прятал бы
   // расходы. Сами фильтры не теряются и вернутся вместе с блоком.
   const historyBlocks = useMemo(() => screenBlocks('history', blocks), [blocks])
@@ -323,6 +323,9 @@ export const HistoryView = memo(function HistoryView({ userId, workspaceId, boot
     return { categoryMap, tags, activeExpenses, tagOptions, categoryOptions, currencyOptions, normalizedQuery, expenses, groups, totals, totalLabel, totalParts }
   }, [bootstrap, activeFilters, timeZone])
   const { categoryMap, tags, activeExpenses, tagOptions, categoryOptions, currencyOptions, normalizedQuery, expenses, groups, totals, totalLabel, totalParts } = derived
+  // Удержание блоков над списком и даты дня открывает настройку; у самих записей удержание — выбор нескольких.
+  const holdRef = useHold(!editing && activeExpenses.length > 0 ? () => onEditScreen('history', 'hold') : undefined, (target) => Boolean(target.closest('.history-toolbar, .history-date')))
+  const sectionRef = useCallback((node: HTMLElement | null) => { pageRef.current = node; holdRef(node) }, [holdRef])
   // Изменённые фильтры уходят в аккаунт; то, с чем экран открылся, заново не отправляется.
   const savedFilters = useRef(JSON.stringify({ ...filters, query: undefined }))
   useEffect(() => {
@@ -468,7 +471,7 @@ export const HistoryView = memo(function HistoryView({ userId, workspaceId, boot
     <span>{showTotal && totalLabel ? '· ' : ''}{countLabel}</span>
     {filtersActive && <button type="button" className="history-reset" onClick={resetFilters}>Сбросить</button>}
   </div>
-  return <section ref={pageRef} className={`page history-page${editing ? ' arranging' : ''}`}>
+  return <section ref={sectionRef} className={`page history-page${editing ? ' arranging' : ''}`}>
     {editing
       ? <div className="history-toolbar">
         <EditBlock {...editBlock('filters', true)}>{chips}{search}</EditBlock>
@@ -496,7 +499,6 @@ export const HistoryView = memo(function HistoryView({ userId, workspaceId, boot
     <div className={`history-list${selected.size ? ' selecting' : ''}`}>{groups.map(({ date, items, total }, index) => <div key={date} className="history-day"><div className="history-date"><span>{formatHistoryDate(date)}</span>{editing && index === 0 ? <EditBlock {...editBlock('day-totals')} className="day-totals-block"><b>{total ?? '—'}</b></EditBlock> : showDayTotals && total && <b>{total}</b>}</div>{items.map((expense) => <HistoryRow key={expense.id} expense={expense} category={categoryMap.get(expense.categoryId)} tags={tags} currencies={bootstrap.currencies} checked={selected.has(expense.id)} selecting={selected.size > 0} open={openRow === expense.id} disabled={deleting} inert={editing} onOpen={setOpenRow} onToggle={toggle} onEdit={editRow} onDelete={deleteRow} onVoided={setVoided}/>)}</div>)}</div>
     {older && (activeFilters.period === 'all' || activeFilters.period === 'range') && !selected.size && <div className="history-older" inert={editing}><span>{older.count === 1 ? 'Ещё одна запись' : `Ещё ${older.count} ${pluralRu(older.count, ['запись', 'записи', 'записей'])}`} до {formatMonthYear(older.since)}</span><button type="button" className="text-button" disabled={older.busy} onClick={older.load}>{older.busy ? 'Загружаем…' : 'Показать'}</button></div>}
     {!groups.length && <div className="list-empty" role="status" inert={editing}><span>{filtersActive ? 'Ничего не найдено' : 'История пока пуста'}</span><p>{filtersActive ? 'Измените фильтры или сбросьте их.' : 'Добавьте первый расход — он сразу появится здесь.'}</p>{!filtersActive && <button type="button" className="primary history-empty-action" onClick={createNew}>Добавить первый расход</button>}</div>}
-    {activeExpenses.length > 0 && !selected.size && !editing && <button type="button" className="screen-setup" onClick={() => onEditScreen('history')}>Настроить экран</button>}
     {calendar && <CalendarSheet
       from={filters.period === 'range' ? filters.from : ''}
       to={filters.period === 'range' ? filters.to : ''}

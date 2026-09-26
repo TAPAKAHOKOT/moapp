@@ -5,12 +5,13 @@ import { patchSettings } from '../settings'
 import type { SettingsPatch } from '../settings'
 import type { AccountSettings, BlockLayout, Category, Currency, Expense, ScreenOrder, Tag, WorkspaceSummary } from '../types'
 import { amountToMinor, applyKeypad, cachedNumberFormat, formatAmountInput, isoToLocalInput, localInputToIso, swipeDirection, workspaceCurrency } from '../utils'
-import { CategoryMark, ChevronIcon, CurrencySheet, GridIcon, Toast, TrashIcon, prefersReducedMotion, tap, useConfirm, useDialog, useToast } from '../ui'
+import { CategoryMark, ChevronIcon, CurrencySheet, GridIcon, Toast, TrashIcon, prefersReducedMotion, tap, useConfirm, useDialog, useHold, useToast } from '../ui'
 import { amountSize, formatEntryDate, formatShortWeekday, inputFromExpense } from '../format'
 import type { Bootstrap } from '../format'
 import { ExtrasRow, NoteSheet, TAG_COLORS, createTagOrReuse } from '../tags'
 import { categoryLayout } from '../screen-order'
 import { isShown, screenBlocks, toBlockLayout, toggleBlock } from '../screen-blocks'
+import type { BlockScreen } from '../screen-blocks'
 
 export const EMPTY_FORM = { amount: '', currency: 'RSD', note: '', occurredAt: '', tagIds: [] as string[], categoryId: '' }
 
@@ -155,17 +156,18 @@ export function EntryLowerPreview({ main, additional, tags, tagOrder, showNote =
   </>
 }
 
-export function EntryView({ userId, workspaceId, workspace, bootstrap, setBootstrap, currentId, setCurrentId, refreshPending, onDraftDirtyChange, active, newExpenseRequest = 0, blocks, editing = false, onScreensChange = () => {} }: {
+export function EntryView({ userId, workspaceId, workspace, bootstrap, setBootstrap, currentId, setCurrentId, refreshPending, onDraftDirtyChange, active, newExpenseRequest = 0, blocks, editing = false, onEditScreen = () => {}, onScreensChange = () => {} }: {
   userId: string
   workspaceId: string
   workspace: WorkspaceSummary
   bootstrap: Bootstrap; setBootstrap: React.Dispatch<React.SetStateAction<Bootstrap>>; currentId: string | null; setCurrentId: (id: string | null) => void; refreshPending: () => void; onDraftDirtyChange: (dirty: boolean) => void; active: boolean
   /** Счётчик просьб «к новому расходу» извне (повторный тап по вкладке «Расход»): каждое увеличение — один переезд к пустой карточке. */
   newExpenseRequest?: number
-  /** Какие блоки «Расхода» человек оставил на экране. Меняет их он сам в режиме «Настройка экрана» (`editing`),
-   *  куда ведёт «Мои экраны» в настройках; сумма, клавиатура, плитки и «Сохранить» в нём приглушены и не нажимаются. */
+  /** Какие блоки «Расхода» человек оставил на экране. Меняет их он сам в режиме «Настройка экрана» (`editing`): его
+   *  открывают значок в шапке, удержание плиток или ряда тегов и «Мои экраны» в настройках. */
   blocks?: BlockLayout
   editing?: boolean
+  onEditScreen?: (screen: BlockScreen, how?: 'hold' | 'tap') => void
   onScreensChange?: (patch: SettingsPatch<AccountSettings>) => void
 }) {
   const activeExpenses = useMemo(() => bootstrap.expenses.filter((item) => !item.deletedAt).sort((a, b) => b.occurredAt.localeCompare(a.occurredAt)), [bootstrap.expenses])
@@ -181,7 +183,10 @@ export function EntryView({ userId, workspaceId, workspace, bootstrap, setBootst
   const { confirm, confirmation } = useConfirm()
   const swipe = useRef<{ x: number; y: number; lastX: number; active: boolean; touchId: number | null } | null>(null)
   const suppressTouchPointerUp = useRef(false)
-  const entryRef = useRef<HTMLElement>(null)
+  const entryRef = useRef<HTMLElement | null>(null)
+  // Удержание плиток или ряда заметки и тегов открывает настройку экрана; клавиатура и карточка суммы — нет.
+  const holdRef = useHold(editing ? undefined : () => onEditScreen('entry', 'hold'), (target) => Boolean(target.closest('.entry-lower-live .categories, .entry-lower-live .extras-row')))
+  const sectionRef = useCallback((node: HTMLElement | null) => { entryRef.current = node; holdRef(node) }, [holdRef])
   const trackRef = useRef<HTMLDivElement>(null)
   const actionsRef = useRef<HTMLDivElement>(null)
   const lowerLiveRef = useRef<HTMLDivElement>(null)
@@ -493,6 +498,8 @@ export function EntryView({ userId, workspaceId, workspace, bootstrap, setBootst
   const swipeMoveTo = (clientX: number, clientY: number) => {
     const start = swipe.current
     if (!start) return false
+    // Удержание могло открыть настройку посреди касания: дальше палец расходы не листает.
+    if (editing) { swipe.current = null; return false }
     const dx = clientX - start.x
     const dy = clientY - start.y
     start.lastX = clientX
@@ -663,7 +670,7 @@ export function EntryView({ userId, workspaceId, workspace, bootstrap, setBootst
     return()=>window.removeEventListener('keydown',handle)
   },[active,editing,physicalKey])
   const publishTag = (tag: Tag) => setBootstrap((data) => ({ ...data, tags: [tag, ...(data.tags ?? []).filter((item) => item.id !== tag.id)] }))
-  return <section ref={entryRef} className={`entry-view${current ? ' editing' : ''}${saving ? ' saving' : ''}${editing ? ' arranging' : ''}`} aria-label="Ввод суммы" onPointerDown={swipeStart} onPointerMove={swipeMove} onPointerUpCapture={swipeEnd} onPointerCancel={swipeCancel}>
+  return <section ref={sectionRef} className={`entry-view${current ? ' editing' : ''}${saving ? ' saving' : ''}${editing ? ' arranging' : ''}`} aria-label="Ввод суммы" onPointerDown={swipeStart} onPointerMove={swipeMove} onPointerUpCapture={swipeEnd} onPointerCancel={swipeCancel}>
     <div className="swipe-area" inert={editing}>
       <div className="entry-track" ref={trackRef}>
         {olderFace && <div className="entry-card aside older" aria-hidden="true"><EntryCard face={olderFace}/></div>}

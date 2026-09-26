@@ -24,7 +24,7 @@ const activeKey = (userId: string) => `moapp:v2:active-workspace:${userId}`
 // Здесь — только память о разовых подсказках. Настройки человека живут в аккаунте (settings.ts).
 type WorkspacePreference = 'first-expense-toast'
 const workspacePreferenceKey = (userId: string, workspaceId: string, name: WorkspacePreference) => `moapp:v2:user:${userId}:workspace:${workspaceId}:${name}`
-type UserPreference = 'recovery-reminder'
+type UserPreference = 'recovery-reminder' | 'hold-hint'
 const userPreferenceKey = (userId: string, name: UserPreference) => `moapp:v2:user:${userId}:${name}`
 
 const storage = (): Storage | null => {
@@ -252,6 +252,10 @@ export async function forgetKnownProfile(online: boolean, session: SessionState 
 
 export function getWorkspacePreference(userId: string, workspaceId: string, name: WorkspacePreference): string | null { return storage()?.getItem(workspacePreferenceKey(userId, workspaceId, name)) ?? null }
 export function setWorkspacePreference(userId: string, workspaceId: string, name: WorkspacePreference, value: string): void { storage()?.setItem(workspacePreferenceKey(userId, workspaceId, name), value) }
+
+// Подсказку, что настройку экрана открывает и удержание блока, показываем один раз — пока человек сам так не сделал.
+export const holdHintSeen = (userId: string) => storage()?.getItem(userPreferenceKey(userId, 'hold-hint')) === '1'
+export function rememberHoldHint(userId: string): void { storage()?.setItem(userPreferenceKey(userId, 'hold-hint'), '1') }
 
 // Карточка «Сохраните ссылку доступа» над историей: помним, сколько раз её показали и когда нажали «Позже».
 // После пары показов она сворачивается в одну строку, «Позже» убирает её на неделю.

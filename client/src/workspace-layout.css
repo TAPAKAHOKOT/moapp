@@ -2587,17 +2587,24 @@ button.settings-row:disabled .settings-row-value {
   font-size: calc(14px * var(--text-scale));
 }
 
-/* Вход в настройку экрана с самого экрана — тихая строка в конце, чтобы не спорить с содержимым. */
-.screen-setup {
-  display: block;
-  min-height: 44px;
-  margin: 14px auto 6px;
-  padding: 0 16px;
-  border: 0;
-  background: none;
+/* Значок настройки экрана в шапке — тихий, того же цвета, что подписи. Удержание блоков тоже открывает настройку,
+   поэтому системное меню долгого касания на них не нужно. */
+.workspace-header .screen-edit-open {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 40px;
+  min-height: 40px;
+  padding: 0;
+  border-radius: 12px;
   color: var(--muted);
-  font-size: calc(12px * var(--text-scale));
-  font-weight: 600;
+}
+
+.entry-view,
+.history-toolbar,
+.history-date,
+.chart-card {
+  -webkit-touch-callout: none;
 }
 
 /* Режим «Настройка экрана». Основа экрана приглушена и не нажимается. Стоящий блок — в рамке с «−» в углу, убранный —

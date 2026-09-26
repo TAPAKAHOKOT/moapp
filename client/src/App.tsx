@@ -6,14 +6,14 @@ import { patchSettings } from './settings'
 import type { SettingsPatch } from './settings'
 import { DEFAULT_APPEARANCE, appearanceOf, applyAppearance, readAppearanceMirror, writeAppearanceMirror } from './appearance'
 import type { Appearance } from './appearance'
-import { REMINDER_COMPACT_AFTER, applyMembershipLoss, beginLogout, chooseCachedWorkspace, closeCapability, createAppState, createIdentityCoordinator, createLoggedOutState, forgetKnownProfile, hydrateAppState, openLegacyClaim, readReminderMemory, reminderSnoozed, setActiveWorkspace, settlePendingLogout, snoozeReminder, updateWorkspace, writeReminderMemory } from './app-state'
+import { REMINDER_COMPACT_AFTER, applyMembershipLoss, beginLogout, chooseCachedWorkspace, closeCapability, createAppState, createIdentityCoordinator, createLoggedOutState, forgetKnownProfile, holdHintSeen, hydrateAppState, openLegacyClaim, readReminderMemory, rememberHoldHint, reminderSnoozed, setActiveWorkspace, settlePendingLogout, snoozeReminder, updateWorkspace, writeReminderMemory } from './app-state'
 import type { AppState, ReminderMemory } from './app-state'
 import { createIdentityWithProbe, createWorkspaceWithProbe } from './access-flow'
 import { completeRotationSafely } from './recovery-flow'
 import { monitorServiceWorkerUpdates } from './service-worker-update'
 import type { AccountSettings, BybitCardStatus, CapabilityIntent, Expense, RecoveryPrepareResponse, SessionState, ThemePreference, WorkspaceMod } from './types'
 import type { BlockScreen } from './screen-blocks'
-import { ChevronIcon, Toast, prefersReducedMotion, tap, useConfirm, useInputModality, useOnlineStatus, useToast } from './ui'
+import { ArrangeIcon, ChevronIcon, Toast, prefersReducedMotion, tap, useConfirm, useInputModality, useOnlineStatus, useToast } from './ui'
 import type { Theme } from './ui'
 import { pluralRu } from './format'
 import type { Bootstrap } from './format'
@@ -212,9 +212,16 @@ export default function App({ capability = null }: { capability?: CapabilityInte
     setPagerState((previous)=>previous.workspaceId===workspaceId?{...previous,tab:next}:{workspaceId,tab:next,mounted:['entry']})
     startTransition(()=>setPagerState((previous)=>previous.workspaceId===workspaceId?{...previous,mounted:[...previous.mounted,...pagerTabsFor(next).filter((item)=>!previous.mounted.includes(item))]}:{workspaceId,tab:next,mounted:pagerTabsFor(next)}))
   },[])
-  // Настройку экрана открывают «Настроить экран» внизу самого экрана и «Мои экраны» в настройках — оттуда лента
+  // Настройку экрана открывают значок в шапке, удержание любого блока и «Мои экраны» в настройках — оттуда лента
   // сначала едет к нужной вкладке. Закрывают «Готово», Escape и переход на другую вкладку или в другое пространство.
-  const startEditing=useCallback((screen:BlockScreen)=>{setEditingScreen(screen);setTab(screen)},[setTab])
+  // Кто вошёл кнопкой, один раз узнаёт, что можно и удержанием.
+  const startEditing=useCallback((screen:BlockScreen,how:'hold'|'tap'='tap')=>{
+    setEditingScreen(screen);setTab(screen)
+    const current=stateRef.current.session
+    if(!current?.authenticated||holdHintSeen(current.user.id))return
+    rememberHoldHint(current.user.id)
+    if(how==='tap')setNotice('Экран можно настроить и удержанием любого блока')
+  },[setTab,setNotice])
   const stopEditing=useCallback(()=>setEditingScreen(null),[])
   useEffect(()=>{setEditingScreen((current)=>current&&current!==tab?null:current)},[tab])
   useEffect(()=>setEditingScreen(null),[state.activeWorkspaceId])
@@ -725,6 +732,8 @@ if(Math.abs(node.scrollLeft-pagerTarget.current)>1)node.scrollLeft=pagerTarget.c
   const bootstrap=runtime?.bootstrap
   const workspace=auth&&workspaceId?auth.workspaces.find((item)=>item.id===workspaceId):undefined
   if(!auth||!workspaceId||!workspace||!bootstrap)return <div className="splash"><div className="brand-mark">m</div><p role={runtime?.status==='error'?'alert':'status'}>{runtime?.status==='error'?'Не удалось открыть пространство':'Загружаем пространство…'}</p>{error&&<><p className="form-error" role="alert">{error}</p><button type="button" className="sheet-cancel" onClick={()=>void refresh(true)}>Повторить</button></>}</div>
+  // Значок настройки — на экранах из блоков. Историю и аналитику нечего настраивать, пока нет ни одной траты.
+  const arrangeable=tab==='entry'||((tab==='history'||tab==='analytics')&&hasExpenses)
   const stats=runtime.outbox
   const serverAvailable=online&&!runtime.offline
   const issueCount=stats.conflicts+stats.failed
@@ -738,9 +747,9 @@ if(Math.abs(node.scrollLeft-pagerTarget.current)>1)node.scrollLeft=pagerTarget.c
   return <div className="app-shell" key={workspaceId}>
     <header className={`workspace-header${editingScreen?' arranging':''}`}>{editingScreen
       ?<><div className="screen-edit-title"><b>Настройка экрана</b><small>Видно только вам</small></div><button type="button" ref={editDoneRef} className="screen-edit-done" onClick={stopEditing}>Готово</button></>
-      :<><button type="button" className="workspace-name-button" onClick={()=>setSwitchOpen(true)}><span>{workspace.name}</span><ChevronIcon/></button><div className="workspace-header-actions">{updateWaiting&&<button type="button" className="update-button" onClick={activateUpdate}>Обновить</button>}{syncPill}</div></>}</header>
+      :<><button type="button" className="workspace-name-button" onClick={()=>setSwitchOpen(true)}><span>{workspace.name}</span><ChevronIcon/></button><div className="workspace-header-actions">{updateWaiting&&<button type="button" className="update-button" onClick={activateUpdate}>Обновить</button>}{syncPill}{arrangeable&&<button type="button" className="screen-edit-open" aria-label="Настроить экран" onClick={()=>{tap(4);startEditing(tab as BlockScreen)}}><ArrangeIcon/></button>}</div></>}</header>
     <main className="pager" ref={pager} onScroll={onPagerScroll} onPointerDown={()=>{stopPagerAnimation();pagerTarget.current=null}} onTouchStart={()=>{stopPagerAnimation();pagerTarget.current=null}}>
-      <div className="page-slot" inert={tab!=='entry'} aria-hidden={tab!=='entry'}>{mountedTabs.includes('entry')&&<EntryView userId={auth.user.id} workspaceId={workspaceId} workspace={workspace} bootstrap={bootstrap} setBootstrap={setWorkspaceData} currentId={currentId} setCurrentId={setCurrentId} refreshPending={refreshPending} onDraftDirtyChange={setDraftDirty} active={tab==='entry'} newExpenseRequest={newExpenseRequest} blocks={auth.settings?.entryBlocks} editing={editingScreen==='entry'} onScreensChange={changeAccountSettings}/>}</div>
+      <div className="page-slot" inert={tab!=='entry'} aria-hidden={tab!=='entry'}>{mountedTabs.includes('entry')&&<EntryView userId={auth.user.id} workspaceId={workspaceId} workspace={workspace} bootstrap={bootstrap} setBootstrap={setWorkspaceData} currentId={currentId} setCurrentId={setCurrentId} refreshPending={refreshPending} onDraftDirtyChange={setDraftDirty} active={tab==='entry'} newExpenseRequest={newExpenseRequest} blocks={auth.settings?.entryBlocks} editing={editingScreen==='entry'} onEditScreen={startEditing} onScreensChange={changeAccountSettings}/>}</div>
       <div className="page-slot" inert={tab!=='history'} aria-hidden={tab!=='history'}>{mountedTabs.includes('history')&&<HistoryView userId={auth.user.id} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} edit={editExpense} createNew={createNewExpense} refreshPending={refreshPending} inbox={historyInbox} reminder={historyReminder} timeZone={timeZone} older={historyOlder} blocks={auth.settings?.historyBlocks} editing={editingScreen==='history'} onEditScreen={startEditing} onScreensChange={changeAccountSettings}/>}</div>
       <div className="page-slot" inert={tab!=='analytics'} aria-hidden={tab!=='analytics'}>{mountedTabs.includes('analytics')&&<AnalyticsView userId={auth.user.id} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} theme={theme} accent={appearance.accent} online={serverAvailable} timeZone={timeZone} blocks={auth.settings?.analyticsBlocks} period={auth.settings?.analyticsPeriod} editing={editingScreen==='analytics'} onEditScreen={startEditing} onScreensChange={changeAccountSettings}/>}</div>
       <div className="page-slot" inert={tab!=='settings'} aria-hidden={tab!=='settings'}>{mountedTabs.includes('settings')&&<SettingsView user={auth} workspace={workspace} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} pendingCount={stats.total} refreshPending={refreshPending} onLogout={()=>void logoutCurrent()} appearance={appearance} onAppearanceChange={changeAccountSettings} onEditScreen={startEditing} onSession={(next)=>hydrate(next,false,settingsIdentityEpoch)} online={serverAvailable} mods={mods} onOpenMods={()=>setModsOpen(true)} loadOlderExpenses={loadOlderExpenses}/>}</div>

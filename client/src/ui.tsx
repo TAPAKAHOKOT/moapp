@@ -354,6 +354,9 @@ export function CategoryMark({ category }: { category?: Pick<Category, 'color' |
 
 export const GridIcon = () => <i className="grid-icon" aria-hidden="true"><svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor"><rect x="1.5" y="1.5" width="5" height="5" rx="1.5"/><rect x="9.5" y="1.5" width="5" height="5" rx="1.5"/><rect x="1.5" y="9.5" width="5" height="5" rx="1.5"/><rect x="9.5" y="9.5" width="5" height="5" rx="1.5"/></svg></i>
 
+// Экран из блоков: значок настройки экрана в шапке.
+export const ArrangeIcon = () => <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="3.5" y="3.5" width="17" height="17" rx="3.5"/><path d="M3.5 10h17M12 10v10.5"/></svg>
+
 export const SearchIcon = () => <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/></svg>
 
 export const CardIcon = () => <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="3" y="5.5" width="18" height="13" rx="2.5"/><path d="M3 10h18M7 14.5h3"/></svg>
@@ -447,6 +450,68 @@ export const SignIcon = ({ plus = false }: { plus?: boolean }) => <svg viewBox="
 // «−» убирает с экрана, «+» ставит обратно.
 export function LayoutToggle({ shown, label, onToggle }: { shown: boolean; label: string; onToggle: () => void }) {
   return <button type="button" className={`layout-toggle${shown ? ' shown' : ''}`} aria-label={label} onClick={() => { tap(4); onToggle() }}><span aria-hidden="true"><SignIcon plus={!shown}/></span></button>
+}
+
+export const HOLD_MS = 450
+
+// Клик, который телефон присылает, когда палец отпускают после удержания, гасится на уровне окна: под пальцем к этому
+// моменту уже стоит другой экран, и клик мог бы попасть в его кнопку. Щит снимается вскоре после того, как палец отпущен.
+export function shieldNextClick() {
+  const swallow = (event: MouseEvent) => { event.preventDefault(); event.stopPropagation(); remove() }
+  const release = () => { setTimeout(remove, 400) }
+  const remove = () => {
+    clearTimeout(safety)
+    window.removeEventListener('click', swallow, true)
+    window.removeEventListener('touchend', release, true)
+    window.removeEventListener('pointerup', release, true)
+  }
+  const safety = setTimeout(remove, 4000)
+  window.addEventListener('click', swallow, true)
+  window.addEventListener('touchend', release, { capture: true, once: true })
+  window.addEventListener('pointerup', release, { capture: true, once: true })
+}
+
+// Удержание блока открывает настройку экрана, как на домашнем экране телефона. Палец должен стоять на месте: сдвиг
+// больше 8 px — это прокрутка или свайп. Слушатель один на контейнер, а `accept` решает, с чего удержание считается
+// (у записей истории своё удержание — выбор).
+export function useHold(onHold: (() => void) | undefined, accept: (target: Element) => boolean = () => true) {
+  const [node, setNode] = useState<HTMLElement | null>(null)
+  const latest = useRef({ onHold, accept })
+  latest.current = { onHold, accept }
+  useEffect(() => {
+    if (!node) return
+    let timer: ReturnType<typeof setTimeout> | undefined
+    let start: { x: number; y: number } | null = null
+    const cancel = () => { clearTimeout(timer); timer = undefined; start = null }
+    const begin = (x: number, y: number, target: EventTarget | null) => {
+      cancel()
+      if (!latest.current.onHold || !(target instanceof Element) || !latest.current.accept(target)) return
+      start = { x, y }
+      timer = setTimeout(() => {
+        timer = undefined
+        start = null
+        shieldNextClick()
+        tap(8)
+        latest.current.onHold?.()
+      }, HOLD_MS)
+    }
+    const move = (x: number, y: number) => { if (start && Math.hypot(x - start.x, y - start.y) > 8) cancel() }
+    const touchStart = (event: TouchEvent) => { const touch = event.touches[0]; if (event.touches.length !== 1 || !touch) cancel(); else begin(touch.clientX, touch.clientY, event.target) }
+    const touchMove = (event: TouchEvent) => { const touch = event.touches[0]; if (touch) move(touch.clientX, touch.clientY) }
+    const pointerDown = (event: PointerEvent) => { if (event.pointerType !== 'touch' && event.button === 0) begin(event.clientX, event.clientY, event.target) }
+    const pointerMove = (event: PointerEvent) => { if (event.pointerType !== 'touch') move(event.clientX, event.clientY) }
+    // Долгое касание в iOS и Android зовёт системное меню; пока идёт удержание, оно не нужно.
+    const contextMenu = (event: Event) => { if (start) event.preventDefault() }
+    const listeners: [string, EventListener, AddEventListenerOptions?][] = [
+      ['touchstart', touchStart as EventListener, { passive: true }], ['touchmove', touchMove as EventListener, { passive: true }],
+      ['touchend', cancel, { passive: true }], ['touchcancel', cancel, { passive: true }],
+      ['pointerdown', pointerDown as EventListener], ['pointermove', pointerMove as EventListener], ['pointerup', cancel], ['pointercancel', cancel],
+      ['contextmenu', contextMenu],
+    ]
+    for (const [type, listener, options] of listeners) node.addEventListener(type, listener, options)
+    return () => { cancel(); for (const [type, listener] of listeners) node.removeEventListener(type, listener) }
+  }, [node])
+  return setNode
 }
 
 /** «−» в углу блока в режиме «Настройка экрана». */

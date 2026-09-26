@@ -1470,6 +1470,14 @@ describe('personal «Расход»', () => {
 
 describe('screens made of blocks', () => {
   const spent = (id: string, categoryId: string, occurredAt: string, tagIds: string[] = []) => ({ id, amountMinor: 1_000, currency: 'RSD', categoryId, note: null, tagIds, occurredAt, createdAt: occurredAt, updatedAt: occurredAt, version: 1, deletedAt: null })
+  // Удержание пальцем или мышью: полсекунды на месте, потом отпустить.
+  const hold = (element: Element) => {
+    vi.useFakeTimers()
+    fireEvent.pointerDown(element, { pointerType: 'mouse', button: 0, clientX: 5, clientY: 5 })
+    act(() => vi.advanceTimersByTime(450))
+    fireEvent.pointerUp(element, { pointerType: 'mouse', clientX: 5, clientY: 5 })
+  }
+  const release = () => { act(() => vi.advanceTimersByTime(500)); vi.useRealTimers() }
   const titles = (container: HTMLElement) => [...container.querySelectorAll('.chart-card h2')].map((node) => node.textContent)
 
   it('leaves out the history blocks a person removed, and saved filters wait while their block is away', () => {
@@ -1485,7 +1493,6 @@ describe('screens made of blocks', () => {
     expect(container.querySelector('.history-total-line')).toBeNull()
     expect(container.querySelectorAll('.history-row')).toHaveLength(2)
     expect(container.querySelector('.history-date b')).not.toBeNull()
-    expect(screen.getByRole('button', { name: 'Настроить экран' })).not.toBeNull()
 
     // Фильтры вернулись вместе с блоком. Без «Итога» строка говорит только, сколько показано, и как сбросить.
     rerender(view({ shown: ['filters'], hidden: ['total', 'day-totals'] }))
@@ -1527,8 +1534,18 @@ describe('screens made of blocks', () => {
     const { container, rerender } = render(view(false))
 
     fireEvent.click(screen.getByRole('button', { name: 'Поиск' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Настроить экран' }))
-    expect(edit).toHaveBeenCalledWith('history')
+    // Удержание записи — это выбор записей, а не настройка экрана.
+    hold(container.querySelector('.history-row')!)
+    release()
+    expect(edit).not.toHaveBeenCalled()
+    expect(screen.getByRole('toolbar', { name: 'Выбранные расходы' })).not.toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Отмена' }))
+    // Удержание блока над списком открывает настройку, а клик, пришедший следом, не открывает выбор дат.
+    hold(screen.getByRole('button', { name: 'Период истории' }))
+    expect(edit).toHaveBeenCalledWith('history', 'hold')
+    fireEvent.click(screen.getByRole('button', { name: 'Период истории' }))
+    release()
+    expect(screen.queryByRole('dialog', { name: 'Период' })).toBeNull()
 
     rerender(view(true))
     expect(screen.queryByRole('button', { name: 'Настроить экран' })).toBeNull()
@@ -1559,6 +1576,7 @@ describe('screens made of blocks', () => {
     // Графиков нет, пока экран настраивают: карточки — плашки, «Теги» раскладка ещё не знала, и они стоят в конце.
     expect(titles(container)).toEqual([])
     expect(plates()).toEqual(['Динамика', 'Категории', 'Теги'])
+    expect(container.querySelector('.screen-setup')).toBeNull()
     expect(container.querySelector('.analytics-fixed')?.hasAttribute('inert')).toBe(true)
     expect(screen.queryByRole('button', { name: 'Настроить экран' })).toBeNull()
 
@@ -1589,6 +1607,30 @@ describe('screens made of blocks', () => {
     rerender(view({ shown: [], hidden: ['note', 'tags'] }))
     expect(screen.getByRole('button', { name: 'Вернуть «Заметка»' })).not.toBeNull()
     expect(screen.getByRole('button', { name: 'Вернуть «Теги»' })).not.toBeNull()
+  })
+
+  it('opens the setup when a card on «Аналитика» or the tiles on «Расход» are held', () => {
+    const edit = vi.fn()
+    const bootstrap = expenseBootstrap({ categories: personalCategories, expenses: [spent('a', 'products', new Date().toISOString())] })
+    const { container, unmount } = render(<AnalyticsView userId="user-a" workspaceId="workspace-a" bootstrap={bootstrap} theme="light" online={false} onEditScreen={edit}/>)
+    hold(container.querySelector('.analytics-period button')!)
+    release()
+    expect(edit).not.toHaveBeenCalled()
+    hold(container.querySelector('.chart-card')!)
+    release()
+    expect(edit).toHaveBeenLastCalledWith('analytics', 'hold')
+    unmount()
+
+    const entry = render(<EntryView userId="user-a" workspaceId="workspace-a" workspace={bootstrap.workspace} bootstrap={bootstrap} setBootstrap={vi.fn()} currentId={null} setCurrentId={vi.fn()} refreshPending={vi.fn()} onDraftDirtyChange={vi.fn()} active onEditScreen={edit}/>)
+    hold(entry.container.querySelector('.keypad button')!)
+    release()
+    expect(edit).toHaveBeenCalledTimes(1)
+    // Плитка после удержания не выбирается: клик, пришедший следом, гасится.
+    hold(within(entry.container.querySelector('.entry-lower-live')!).getByRole('button', { name: 'Продукты' }))
+    fireEvent.click(within(entry.container.querySelector('.entry-lower-live')!).getByRole('button', { name: 'Продукты' }))
+    release()
+    expect(edit).toHaveBeenLastCalledWith('entry', 'hold')
+    expect(within(entry.container.querySelector('.entry-lower-live')!).getByRole('button', { name: 'Продукты' }).getAttribute('aria-pressed')).toBe('false')
   })
 
   it('offers each screen in «Мои экраны» and opens the one picked right on it', () => {
@@ -2093,6 +2135,20 @@ describe('appearance in the account', () => {
     expect(screen.queryByRole('button', { name: 'Добавить заметку' })).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: 'Настройки' }))
     expect(row().textContent).toBe('Мои экраныубрано 1')
+  })
+
+  it('opens the setup from the header icon and tells once that holding a block works too', async () => {
+    await renderSignedInApp()
+    fireEvent.click(await screen.findByRole('button', { name: 'Настроить экран' }))
+    expect(screen.getByText('Настройка экрана')).not.toBeNull()
+    expect(await screen.findByText('Экран можно настроить и удержанием любого блока')).not.toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Готово' }))
+    // Историю без трат настраивать нечего — значка там нет.
+    fireEvent.click(screen.getByRole('button', { name: 'История' }))
+    expect(screen.queryByRole('button', { name: 'Настроить экран' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Расход' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Настроить экран' }))
+    expect(screen.getAllByText('Экран можно настроить и удержанием любого блока')).toHaveLength(1)
   })
 
   it('leaves the screen setup when the person goes to another tab', async () => {
