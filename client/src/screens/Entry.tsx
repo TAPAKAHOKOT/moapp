@@ -44,7 +44,22 @@ export function trackEasing(t: number) {
 
 // Вид карточки задаётся её содержимым, а не состоянием экрана: соседняя карточка сохранённого расхода
 // рисуется теми же правилами, что и живая, и в момент подмены ничего не меняет цвет и не сдвигается.
-export type CardFace = { kind: 'new' | 'edit'; title: string; date: string; amount: string; currency: string }
+export type CardFace = { kind: 'new' | 'edit'; title: string; date: React.ReactNode; amount: string; currency: string }
+
+// Время пустой карточки — «сейчас». «Расход» не перерисовывается вместе с приложением, поэтому подпись сама берёт
+// новое время, когда к приложению возвращаются (страница снова видна); поминутно она не тикает, как и раньше.
+// Перерисовывается только она и только если минута сменилась. Время сохранения берётся в момент сохранения.
+const subscribeReturn = (notify: () => void) => {
+  const visible = () => { if (document.visibilityState === 'visible') notify() }
+  document.addEventListener('visibilitychange', visible)
+  window.addEventListener('pageshow', notify)
+  return () => { document.removeEventListener('visibilitychange', visible); window.removeEventListener('pageshow', notify) }
+}
+const readNowLabel = () => formatEntryDate(isoToLocalInput(new Date().toISOString()))
+
+function NowLabel() {
+  return useSyncExternalStore(subscribeReturn, readNowLabel)
+}
 
 export function EntryCard({ face, onDate, onCurrency, disabled = false, limitHit = 0 }: { face: CardFace; onDate?: () => void; onCurrency?: () => void; disabled?: boolean; limitHit?: number }) {
   const inert = onCurrency ? undefined : -1
@@ -710,12 +725,12 @@ export const EntryView = memo(function EntryView({ userId, workspaceId, workspac
     }
   }, [])
 
-  const occurredLabel = formatEntryDate(form.occurredAt) || formatEntryDate(isoToLocalInput(new Date().toISOString()))
+  const occurredLabel = formatEntryDate(form.occurredAt) || <NowLabel/>
   const faceOf = (expense: Expense): CardFace => {
     const data = inputFromExpense(expense, bootstrap.currencies)
     return { kind: 'edit', title: 'Сохранённый расход', date: formatEntryDate(data.occurredAt), amount: data.amount, currency: data.currency }
   }
-  const blankFace = (amount: string, currency: string): CardFace => ({ kind: 'new', title: 'Новый расход', date: formatEntryDate(isoToLocalInput(new Date().toISOString())), amount, currency })
+  const blankFace = (amount: string, currency: string): CardFace => ({ kind: 'new', title: 'Новый расход', date: <NowLabel/>, amount, currency })
   const liveFace: CardFace = current
     ? { kind: 'edit', title: 'Сохранённый расход', date: occurredLabel, amount: form.amount, currency: form.currency }
     : { ...blankFace(form.amount, form.currency), date: occurredLabel }

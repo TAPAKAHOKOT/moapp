@@ -40,6 +40,7 @@ afterEach(() => {
   localStorage.clear()
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
+  vi.useRealTimers()
   workspaceApi.allowWorkspaceMutations(); workspaceApi.setSessionContext(null)
   for (const key of ['theme', 'accent', 'textSize', 'input']) delete document.documentElement.dataset[key]
 })
@@ -136,6 +137,21 @@ describe('renders on a tab switch', () => {
     for (const type of ['visibilitychange', 'focus', 'pageshow']) {
       act(() => { (type === 'visibilitychange' ? document : window).dispatchEvent(new Event(type)) })
     }
+    expect(appRenders).not.toHaveBeenCalled()
+  })
+
+  it('shows the current time on the blank card of «Расход» again when the app comes back, without redrawing the app', async () => {
+    // Понедельник, 10:00 по Белграду (тесты идут в Europe/Belgrade, летом UTC+2).
+    vi.setSystemTime(new Date('2026-08-10T08:00:00.000Z'))
+    const { appRenders } = await renderApp()
+    const time = () => document.querySelector('.entry-card:not(.aside) .date-chip span')?.textContent
+    expect(time()).toBe('пн · 10 августа 2026, 10:00')
+
+    // Приложение два часа пролежало в фоне; его снова открыли — страница видна.
+    vi.setSystemTime(new Date('2026-08-10T10:00:00.000Z'))
+    appRenders.mockClear()
+    act(() => { document.dispatchEvent(new Event('visibilitychange')) })
+    expect(time()).toBe('пн · 10 августа 2026, 12:00')
     expect(appRenders).not.toHaveBeenCalled()
   })
 
