@@ -750,7 +750,10 @@ export default function App({ capability = null }: { capability?: CapabilityInte
     if(node?.clientWidth&&pagerTarget.current===null){
       const workspaceId=stateRef.current.activeWorkspaceId
       const visible=pagerTabsAt(node.scrollLeft,node.clientWidth,navigationTabs)
-      setPagerState((previous)=>{
+      // Когда все страницы, которых касается лента, уже стоят, состояние не трогаем: setState с тем же значением сразу
+      // после другого рендера стоил бы приложению лишнего рендера на каждый свайп.
+      const shown=pagerStateRef.current
+      if(shown.workspaceId!==workspaceId||visible.some((item)=>!shown.mounted.includes(item)))setPagerState((previous)=>{
         if(previous.workspaceId!==workspaceId)return {workspaceId,tab:'entry',mounted:visible}
         // Страницы не размонтируются, пока открыто это пространство: повторное монтирование мигает и заново грузит аналитику.
         const mounted=[...previous.mounted,...visible.filter((item)=>!previous.mounted.includes(item))]

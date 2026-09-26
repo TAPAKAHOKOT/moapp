@@ -99,6 +99,22 @@ describe('renders on a tab switch', () => {
     }
   })
 
+  it('renders the app once when a swipe of the pager lands on the next tab', async () => {
+    const { appRenders } = await renderApp()
+    for (const name of TABS) await tap(name)
+    expect(screen.getByRole('button', { name: 'Расход' }).getAttribute('aria-current')).toBe('page')
+
+    // Палец увёл ленту на страницу вправо: браузер присылает scroll, через 90 мс таймер смотрит, где она встала.
+    appRenders.mockClear()
+    const pager = document.querySelector<HTMLElement>('.pager')!
+    fireEvent.pointerDown(pager)
+    pager.scrollLeft = 390
+    fireEvent.scroll(pager)
+    await act(() => new Promise((done) => setTimeout(done, 120)))
+    expect(screen.getByRole('button', { name: 'История' }).getAttribute('aria-current')).toBe('page')
+    expect(appRenders).toHaveBeenCalledTimes(1)
+  })
+
   it('leaves «Настройки» and «Аналитика» alone while other tabs are picked', async () => {
     const { settingsRenders } = await renderApp()
     for (const name of TABS) await tap(name)
