@@ -383,38 +383,84 @@ export function ListSheet({ title, onClose, dismissible = true, children }: { ti
 
 export type DragAxis = 'x' | 'y' | 'grid'
 
+type Slot = { id: string; rect: DOMRect }
+
+// Где встанут элементы в новом порядке: столбик, ряд или строки с переносом — по их настоящим размерам и отступам.
+function flowPositions(order: string[], slots: Slot[], axis: DragAxis, gap: { row: number; column: number }) {
+  const rectOf = new Map(slots.map((slot) => [slot.id, slot.rect]))
+  const first = slots[0]!.rect
+  const left = Math.min(...slots.map((slot) => slot.rect.left))
+  const right = Math.max(...slots.map((slot) => slot.rect.right))
+  const positions = new Map<string, { x: number; y: number }>()
+  let x = axis === 'y' ? first.left : left
+  let y = first.top
+  let rowHeight = 0
+  for (const id of order) {
+    const rect = rectOf.get(id)!
+    if (axis === 'y') { positions.set(id, { x: rect.left, y }); y += rect.height + gap.row; continue }
+    if (axis === 'grid' && x > left && x + rect.width > right + 1) { x = left; y += rowHeight + gap.row; rowHeight = 0 }
+    positions.set(id, { x, y: axis === 'x' ? rect.top : y })
+    x += rect.width + gap.column
+    rowHeight = Math.max(rowHeight, rect.height)
+  }
+  return positions
+}
+
 // Порядок меняется перетаскиванием: за ручку ≡ в списке, за саму плитку или тег в ряду, стрелками с клавиатуры.
-// Поднятый элемент едет за пальцем, остальные расступаются. Новое место считается по раскладке на момент, когда
-// элемент подняли: соседи разного размера (клавиатура и плитки) иначе перескакивали бы туда-обратно под пальцем.
+// Поднятый элемент едет за пальцем, соседи сдвигаются туда, где встанут. Порядок в DOM за время жеста не меняется:
+// перенос узла снимает с него захват указателя, и на iPhone жест мог оборваться. Новый порядок уходит один раз, когда
+// палец отпущен. Место считается по раскладке на момент подъёма, поэтому соседи разного размера не скачут туда-обратно.
 // Элемент поднимается, когда палец сдвинулся на несколько пикселей, — простое касание его не трогает.
 // На iOS ручке нужен touch-action: none, иначе Safari отдаёт жест прокрутке и обрывает указатель.
 export function useDragOrder<T extends { id: string }>({ items, axis = 'y', disabled = false, onReorder }: { items: T[]; axis?: DragAxis; disabled?: boolean; onReorder: (ids: string[]) => void }) {
-  const [order, setOrder] = useState<string[] | null>(null)
-  const [drag, setDrag] = useState<{ id: string; x: number; y: number } | null>(null)
+  const [drag, setDrag] = useState<{ id: string; index: number; x: number; y: number } | null>(null)
   const listRef = useRef<HTMLDivElement>(null)
   // Сам жест живёт в рефах: палец могут отпустить раньше, чем React перерисует поднятый элемент.
   const pressed = useRef<{ id: string; x: number; y: number; grabX: number; grabY: number } | null>(null)
   const lifting = useRef(false)
-  const orderRef = useRef<string[] | null>(null)
-  const slots = useRef(new Map<string, DOMRect>())
-  const shown = order ? order.map((id) => items.find((item) => item.id === id)).filter((item): item is T => Boolean(item)) : items
-  const nodes = () => Array.from(listRef.current?.querySelectorAll<HTMLElement>('[data-drag-id]') ?? [])
+  const target = useRef<number | null>(null)
+  const slots = useRef<Slot[]>([])
+  const gap = useRef({ row: 0, column: 0 })
+  // Только свои элементы: в блоке «Плитки» внутри списка блоков есть свои перетаскиваемые плитки.
+  const nodes = () => Array.from(listRef.current?.querySelectorAll<HTMLElement>(':scope > [data-drag-id]') ?? [])
   const nodeOf = (id: string) => nodes().find((node) => node.dataset.dragId === id) ?? null
-  // Поднятый элемент уже стоит на новом месте в раскладке, поэтому сдвиг считается от этой позиции.
+  const orderAt = (id: string, index: number) => {
+    const ids = slots.current.map((slot) => slot.id).filter((other) => other !== id)
+    return [...ids.slice(0, index), id, ...ids.slice(index)]
+  }
+  const clear = () => { for (const node of nodes()) node.style.transform = '' }
+  const reset = () => {
+    pressed.current = null
+    lifting.current = false
+    target.current = null
+    clear()
+    setDrag(null)
+  }
   useLayoutEffect(() => {
     const grab = pressed.current
-    if (!drag || !grab) return
-    const node = nodeOf(drag.id)
-    const list = listRef.current
-    if (!node || !list) return
-    const box = list.getBoundingClientRect()
-    const dx = axis === 'y' ? 0 : drag.x - (box.left + node.offsetLeft + grab.grabX)
-    const dy = axis === 'x' ? 0 : drag.y - (box.top + node.offsetTop + grab.grabY)
-    node.style.transform = `translate(${dx}px, ${dy}px)`
-  }, [drag, order])
+    if (!drag || !grab || !slots.current.length) return
+    const positions = flowPositions(orderAt(drag.id, drag.index), slots.current, axis, gap.current)
+    for (const slot of slots.current) {
+      const node = nodeOf(slot.id)
+      if (!node) continue
+      if (slot.id === drag.id) {
+        const dx = axis === 'y' ? 0 : drag.x - slot.rect.left - grab.grabX
+        const dy = axis === 'x' ? 0 : drag.y - slot.rect.top - grab.grabY
+        node.style.transform = `translate(${dx}px, ${dy}px)`
+      } else {
+        const to = positions.get(slot.id)!
+        node.style.transform = `translate(${to.x - slot.rect.left}px, ${to.y - slot.rect.top}px)`
+      }
+    }
+  }, [drag])
+  // Список пропал посреди жеста (настройку закрыли вторым пальцем или Escape): жест забывается целиком, иначе поднятый
+  // элемент ждал бы следующего раза, а простое касание сохранило бы брошенный порядок.
+  useLayoutEffect(() => {
+    if (!listRef.current && (pressed.current || drag)) reset()
+  })
   const indexAt = (id: string, x: number, y: number) => {
     let index = 0
-    for (const [other, rect] of slots.current) {
+    for (const { id: other, rect } of slots.current) {
       if (other === id) continue
       const passed = axis === 'y' ? y > rect.top + rect.height / 2
         : axis === 'x' ? x > rect.left + rect.width / 2
@@ -428,6 +474,8 @@ export function useDragOrder<T extends { id: string }>({ items, axis = 'y', disa
     const node = nodeOf(id)
     if (!node) return
     event.currentTarget.setPointerCapture?.(event.pointerId)
+    lifting.current = false
+    target.current = null
     const rect = node.getBoundingClientRect()
     pressed.current = { id, x: event.clientX, y: event.clientY, grabX: event.clientX - rect.left, grabY: event.clientY - rect.top }
   }
@@ -437,27 +485,22 @@ export function useDragOrder<T extends { id: string }>({ items, axis = 'y', disa
     if (!lifting.current) {
       if (Math.hypot(event.clientX - grab.x, event.clientY - grab.y) < 4) return
       lifting.current = true
-      slots.current = new Map(nodes().map((node) => [node.dataset.dragId!, node.getBoundingClientRect()]))
+      slots.current = nodes().map((node) => ({ id: node.dataset.dragId!, rect: node.getBoundingClientRect() }))
+      const style = listRef.current ? getComputedStyle(listRef.current) : null
+      gap.current = { row: parseFloat(style?.rowGap ?? '') || 0, column: parseFloat(style?.columnGap ?? '') || 0 }
     }
     const index = indexAt(grab.id, event.clientX, event.clientY)
-    const current = orderRef.current
-    const without = (current ?? items.map((item) => item.id)).filter((id) => id !== grab.id)
-    const next = [...without.slice(0, index), grab.id, ...without.slice(index)]
-    if (!current || next.some((id, at) => id !== current[at])) { orderRef.current = next; setOrder(next) }
-    setDrag({ id: grab.id, x: event.clientX, y: event.clientY })
+    target.current = index
+    setDrag({ id: grab.id, index, x: event.clientX, y: event.clientY })
   }
   const end = (commit: boolean) => {
     const grab = pressed.current
     const lifted = lifting.current
-    const next = orderRef.current
-    pressed.current = null
-    lifting.current = false
-    orderRef.current = null
+    const index = target.current
     if (!grab) return
-    const node = nodeOf(grab.id)
-    if (node) node.style.transform = ''
-    setDrag(null); setOrder(null)
-    if (commit && lifted && next && next.some((id, at) => id !== items[at]?.id)) onReorder(next)
+    const next = lifted && index !== null ? orderAt(grab.id, index) : null
+    reset()
+    if (commit && next && next.some((id, at) => id !== items[at]?.id)) onReorder(next)
   }
   const keyMove = (event: React.KeyboardEvent, id: string) => {
     const back = axis === 'y' ? event.key === 'ArrowUp' : event.key === 'ArrowUp' || event.key === 'ArrowLeft'
@@ -466,13 +509,13 @@ export function useDragOrder<T extends { id: string }>({ items, axis = 'y', disa
     event.preventDefault()
     const ids = items.map((item) => item.id)
     const index = ids.indexOf(id)
-    const target = index + (back ? -1 : 1)
-    if (index < 0 || target < 0 || target >= ids.length) return
-    ;[ids[index], ids[target]] = [ids[target]!, ids[index]!]
+    const to = index + (back ? -1 : 1)
+    if (index < 0 || to < 0 || to >= ids.length) return
+    ;[ids[index], ids[to]] = [ids[to]!, ids[index]!]
     onReorder(ids)
   }
   const handle = (id: string) => ({ onPointerDown: (event: React.PointerEvent<HTMLElement>) => start(event, id), onPointerMove: move, onPointerUp: () => end(true), onPointerCancel: () => end(false) })
-  return { shown, listRef, lifted: drag?.id ?? null, handle, keyMove }
+  return { shown: items, listRef, lifted: drag?.id ?? null, handle, keyMove }
 }
 
 // Список с ручкой ≡ у каждой строки — вместо двух стрелок на строку.

@@ -1729,7 +1729,11 @@ describe('screens made of blocks', () => {
       { ...spent('g', 'fun', at(1)), voidedAt: at(1) }, spent('h', 'fun', at(2)), spent('i', 'fun', at(3)),
       spent('j', 'products', at(1), ['tag-0']), spent('k', 'products', at(2), ['tag-0']), spent('l', 'products', at(3), ['tag-0']), spent('m', 'products', at(4), ['tag-0']),
     ]
-    expect(usualExpenses(expenses, now).map((item) => [item.categoryId, item.tagIds, item.count])).toEqual([['products', ['tag-0'], 4], ['products', [], 3]])
+    expect(usualExpenses(expenses, personalCategories, personalTags, now).map((item) => [item.categoryId, item.tagIds, item.count])).toEqual([['products', ['tag-0'], 4], ['products', [], 3]])
+    // Скрытую категорию подставить нельзя, удалённый тег отпадает, и траты с ним и без него — уже одна и та же.
+    const hiddenProducts = personalCategories.map((category) => category.id === 'products' ? { ...category, archivedAt: at(1) } : category)
+    expect(usualExpenses(expenses, hiddenProducts, personalTags, now)).toEqual([])
+    expect(usualExpenses(expenses, personalCategories, [], now).map((item) => [item.categoryId, item.tagIds, item.count])).toEqual([['products', [], 7]])
   })
 
   it('adds «Темп», «Крупные траты» and «Календарь» cards to analytics', () => {
@@ -1745,6 +1749,14 @@ describe('screens made of blocks', () => {
     const cells = container.querySelectorAll('.calendar-heat.small > span')
     expect(cells.length % 7).toBe(0)
     expect(container.querySelector('.calendar-heat.small > span.today')).not.toBeNull()
+  })
+
+  it('says so when the period\'s records are not on the phone yet instead of claiming there were none', () => {
+    const tomorrow = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10)
+    const bootstrap = expenseBootstrap({ categories: personalCategories, olderExpenses: 12, expensesSince: tomorrow })
+    const { container } = render(<AnalyticsView userId="user-a" workspaceId="workspace-a" bootstrap={bootstrap} theme="light" online={false} blocks={{ shown: ['top', 'pace'], hidden: ['trend', 'categories', 'tags', 'weekdays'] }}/>)
+    expect(container.textContent).toContain('ещё не загружены на телефон')
+    expect(container.querySelector('.pace-compare')).toBeNull()
   })
 
   it('offers each screen in «Мои экраны» and opens the one picked right on it', () => {
@@ -2257,6 +2269,8 @@ describe('appearance in the account', () => {
     expect(screen.getByText('Настройка экрана')).not.toBeNull()
     expect(await screen.findByText('Экран можно настроить и удержанием любого блока')).not.toBeNull()
     fireEvent.click(screen.getByRole('button', { name: 'Готово' }))
+    // «Готово» исчезает — фокус возвращается на значок, которым настройку открывают.
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Настроить экран' })))
     // Историю без трат настраивать нечего — значка там нет.
     fireEvent.click(screen.getByRole('button', { name: 'История' }))
     expect(screen.queryByRole('button', { name: 'Настроить экран' })).toBeNull()

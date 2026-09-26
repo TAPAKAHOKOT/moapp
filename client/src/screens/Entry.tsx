@@ -190,13 +190,16 @@ export function TodayLine({ bootstrap }: { bootstrap: Bootstrap }) {
 export type UsualExpense = { key: string; categoryId: string; amountMinor: number; currency: string; tagIds: string[]; count: number; last: string }
 
 // «Как обычно»: траты, которые за последние три месяца повторились хотя бы трижды, — та же категория, сумма, валюта
-// и теги. Самые частые первыми, не больше четырёх.
-export function usualExpenses(expenses: Expense[], now = Date.now()): UsualExpense[] {
+// и теги. Самые частые первыми, не больше четырёх. Скрытую категорию подставить нельзя (сервер такой расход не
+// примет), а удалённые теги просто отпадают.
+export function usualExpenses(expenses: Expense[], categories: Category[], tags: Tag[], now = Date.now()): UsualExpense[] {
   const since = now - 90 * 86_400_000
+  const live = new Set(categories.filter((category) => !category.archivedAt).map((category) => category.id))
+  const known = new Set(tags.map((tag) => tag.id))
   const groups = new Map<string, UsualExpense>()
   for (const expense of expenses) {
-    if (expense.deletedAt || expense.voidedAt || Date.parse(expense.occurredAt) < since) continue
-    const tagIds = [...(expense.tagIds ?? [])].sort()
+    if (expense.deletedAt || expense.voidedAt || !live.has(expense.categoryId) || Date.parse(expense.occurredAt) < since) continue
+    const tagIds = [...new Set(expense.tagIds ?? [])].filter((id) => known.has(id)).sort()
     const key = [expense.categoryId, expense.amountMinor, expense.currency, tagIds.join(',')].join('|')
     const group = groups.get(key) ?? { key, categoryId: expense.categoryId, amountMinor: expense.amountMinor, currency: expense.currency, tagIds, count: 0, last: '' }
     group.count += 1
@@ -747,7 +750,7 @@ export function EntryView({ userId, workspaceId, workspace, bootstrap, setBootst
   },[active,editing,physicalKey])
   const publishTag = (tag: Tag) => setBootstrap((data) => ({ ...data, tags: [tag, ...(data.tags ?? []).filter((item) => item.id !== tag.id)] }))
   const saveRow = <div className="entry-save" inert={editing}><button type="button" className="primary" disabled={!save.canSave || saving} onClick={() => void submitExpense()}>{saving ? 'Сохраняем…' : save.label}</button>{current && <button type="button" className={`sheet-cancel${dirty && !saving ? '' : ' ghost'}`} disabled={!dirty || saving} aria-hidden={!dirty || saving} tabIndex={dirty && !saving ? undefined : -1} onClick={cancelEdit}>Отменить</button>}</div>
-  const usualItems = useMemo(() => usualExpenses(bootstrap.expenses), [bootstrap.expenses])
+  const usualItems = useMemo(() => usualExpenses(bootstrap.expenses, bootstrap.categories, bootstrap.tags ?? []), [bootstrap.expenses, bootstrap.categories, bootstrap.tags])
   const pickUsual = (item: UsualExpense) => {
     tap(6)
     const decimals = bootstrap.currencies.find((currency) => currency.code === item.currency)?.decimals ?? 2

@@ -222,17 +222,21 @@ export default function App({ capability = null }: { capability?: CapabilityInte
     rememberHoldHint(current.user.id)
     if(how==='tap')setNotice('Экран можно настроить и удержанием любого блока')
   },[setTab,setNotice])
-  const stopEditing=useCallback(()=>setEditingScreen(null),[])
+  // Кнопка «Готово» исчезает вместе с настройкой, поэтому фокус возвращается на значок, которым настройку открывают.
+  const stopEditing=useCallback(()=>{
+    setEditingScreen(null)
+    requestAnimationFrame(()=>document.querySelector<HTMLElement>('.screen-edit-open')?.focus({preventScroll:true}))
+  },[])
   useEffect(()=>{setEditingScreen((current)=>current&&current!==tab?null:current)},[tab])
   useEffect(()=>setEditingScreen(null),[state.activeWorkspaceId])
   useEffect(()=>{
     if(!editingScreen)return
     // Кнопка, которой вошли в настройку, исчезает вместе с обычным видом, поэтому фокус переходит на «Готово».
     const frame=requestAnimationFrame(()=>editDoneRef.current?.focus({preventScroll:true}))
-    const escape=(event:KeyboardEvent)=>{if(event.key==='Escape'&&!document.querySelector('[aria-modal="true"]'))setEditingScreen(null)}
+    const escape=(event:KeyboardEvent)=>{if(event.key==='Escape'&&!document.querySelector('[aria-modal="true"]'))stopEditing()}
     window.addEventListener('keydown',escape)
     return()=>{cancelAnimationFrame(frame);window.removeEventListener('keydown',escape)}
-  },[editingScreen])
+  },[editingScreen,stopEditing])
   const capabilityRef=useRef(capability)
   const monitor=useRef<ReturnType<typeof monitorServiceWorkerUpdates> | undefined>(undefined)
   const coordinator=useRef<ReturnType<typeof createIdentityCoordinator> | null>(null)
