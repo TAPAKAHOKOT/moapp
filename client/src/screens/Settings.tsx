@@ -456,8 +456,9 @@ export function SettingsView({ user, workspace, workspaceId, bootstrap, setBoots
   const addedMods=mods?.filter((mod)=>mod.added)??[]
   const modsNeedAttention=addedMods.some((mod)=>mod.state?.status==='error')
   const modsValue=mods===null?(online?'…':'нужна сеть'):modsNeedAttention?'нужно обновить':addedMods.length?String(addedMods.length):'нет'
-  // «−» убирает с «Расхода» за «Ещё», «+» ставит обратно в конец ряда; ≡ меняет порядок внутри группы.
-  const layoutToggle=(name:string,shown:boolean,move:()=>void)=><button type="button" className={`layout-toggle${shown?' shown':''}`} aria-label={shown?`Убрать «${name}» с «Расхода»`:`Поставить «${name}» на «Расход»`} onClick={()=>{tap(4);move()}}><span aria-hidden="true">{shown?'−':'+'}</span></button>
+  // «−» убирает с «Расхода» за «Ещё», «+» ставит обратно в конец ряда; ≡ меняет порядок внутри группы. Знаки нарисованы:
+  // символы шрифта сидят на строке текста, и в Safari на iPhone уезжали из центра круга.
+  const layoutToggle=(name:string,shown:boolean,move:()=>void)=><button type="button" className={`layout-toggle${shown?' shown':''}`} aria-label={shown?`Убрать «${name}» с «Расхода»`:`Поставить «${name}» на «Расход»`} onClick={()=>{tap(4);move()}}><span aria-hidden="true"><svg viewBox="0 0 12 12" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><path d={shown?'M2.5 6h7':'M2.5 6h7M6 2.5v7'}/></svg></span></button>
   const categoryRow=(shown:boolean)=>(category:Category)=><>
     {layoutToggle(category.name,shown,()=>saveLayout('categoryOrder',shown?moveToMore(categoryTiles,category.id):moveToShown(categoryTiles,category.id)))}
     <CategoryMark category={category}/>

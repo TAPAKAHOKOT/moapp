@@ -2527,9 +2527,10 @@ button.settings-row:disabled .settings-row-value {
   border-radius: 50%;
   background: var(--soft);
   color: var(--sage);
-  font-size: 17px;
-  font-weight: 700;
-  line-height: 1;
+}
+
+.layout-toggle svg {
+  display: block;
 }
 
 .layout-toggle.shown span {
