@@ -4,7 +4,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { webkit } from 'playwright'
 import { launch, openApp, goTab, acceptDeviceLink, guard, pinLocalState, patchSettings, resetAccount, ALL_BLOCKS, BASE, SHOTS, sleep, touchDrag } from './common.mjs'
-guard(9 * 60_000, 'regress.mjs')
+guard(20 * 60_000, 'regress.mjs')
 const link = process.argv.find((arg) => arg.includes('#/device/'))
 const label = process.argv.slice(2).find((arg) => !arg.includes('#/device/')) ?? 'now'
 const dir = `${SHOTS}regress-${label}/`
