@@ -2587,43 +2587,7 @@ button.settings-row:disabled .settings-row-value {
   font-size: calc(14px * var(--text-scale));
 }
 
-/* «Мои экраны»: строки блоков с «−» или «+», названием и подсказкой; убранные блоки приглушены и идут после стоящих. */
-.blocks-list .drag-row {
-  grid-template-columns: 32px minmax(0, 1fr) 44px;
-}
-
-.block-name {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-  padding: 8px 0;
-}
-
-.block-name b {
-  color: var(--ink);
-  font-size: calc(13px * var(--text-scale));
-  font-weight: 600;
-}
-
-.block-name small {
-  color: var(--muted);
-  font-size: calc(11px * var(--text-scale));
-  line-height: 1.35;
-}
-
-.drag-row.off .block-name b {
-  color: var(--muted);
-}
-
-.blocks-fixed {
-  margin: 6px 4px 12px;
-  color: var(--text-tertiary);
-  font-size: calc(11px * var(--text-scale));
-  line-height: 1.4;
-}
-
-/* Вход в «Мои экраны» с самого экрана — тихая строка в конце, чтобы не спорить с содержимым. */
+/* Вход в настройку экрана с самого экрана — тихая строка в конце, чтобы не спорить с содержимым. */
 .screen-setup {
   display: block;
   min-height: 44px;
@@ -2634,4 +2598,306 @@ button.settings-row:disabled .settings-row-value {
   color: var(--muted);
   font-size: calc(12px * var(--text-scale));
   font-weight: 600;
+}
+
+/* Режим «Настройка экрана». Основа экрана приглушена и не нажимается. Стоящий блок — в рамке с «−» в углу, убранный —
+   пунктирная заготовка «+ Название» на своём месте. Без переходов: смена режима — не анимация. */
+.workspace-header.arranging {
+  gap: 12px;
+}
+
+.workspace-header .screen-edit-title {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 1px;
+}
+
+.screen-edit-title b {
+  font-size: calc(13px * var(--text-scale));
+  font-weight: 800;
+}
+
+.screen-edit-title small {
+  color: var(--muted);
+  font-size: calc(11px * var(--text-scale));
+  font-weight: 500;
+}
+
+.workspace-header .screen-edit-done {
+  flex: 0 0 auto;
+  min-height: 38px;
+  padding: 0 18px;
+  border-radius: 999px;
+  background: var(--sage);
+  color: var(--on-ink);
+  font-weight: 750;
+}
+
+.edit-block {
+  position: relative;
+  border-radius: 12px;
+  outline: 1.5px solid color-mix(in srgb, var(--sage) 45%, transparent);
+  outline-offset: 5px;
+}
+
+.edit-block-body {
+  min-width: 0;
+}
+
+/* Сам круг «−» маленький, а нажимается область 36 px вокруг него. */
+.edit-remove {
+  position: absolute;
+  z-index: 3;
+  top: -26px;
+  left: -22px;
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ink);
+}
+
+.edit-remove span {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--card);
+  box-shadow: 0 0 0 1px var(--control-line), 0 1px 4px rgb(0 0 0 / 14%);
+}
+
+.edit-slot {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  min-height: 40px;
+  padding: 6px 12px 6px 8px;
+  border: 1.5px dashed var(--control-line);
+  border-radius: 12px;
+  background: transparent;
+  color: var(--muted);
+  font-size: calc(12px * var(--text-scale));
+  font-weight: 600;
+  letter-spacing: normal;
+  text-align: left;
+  text-transform: none;
+}
+
+.edit-slot:active {
+  background: var(--soft);
+}
+
+.edit-sign {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--soft);
+  color: var(--sage);
+}
+
+.edit-slot-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.edit-slot-text b {
+  overflow: hidden;
+  color: inherit;
+  font-size: inherit;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.edit-slot-text small {
+  color: var(--text-tertiary);
+  font-size: calc(11px * var(--text-scale));
+  font-weight: 500;
+  line-height: 1.3;
+}
+
+:root[data-theme="dark"] .edit-remove span {
+  background: #2d2e2e;
+}
+
+:root[data-theme="dark"] .edit-sign {
+  background: var(--card);
+}
+
+/* «История»: блоки над списком стоят чуть свободнее, чтобы рамкам и «−» было где поместиться у края экрана. */
+.history-page.arranging .history-toolbar {
+  gap: 24px;
+  padding: 26px 22px 0;
+}
+
+.history-page.arranging .history-list {
+  margin-top: 28px;
+}
+
+/* Заготовка во всю ширину стоит там же, где рамка стоящего блока. */
+.history-page.arranging .history-toolbar .edit-slot {
+  width: calc(100% + 13px);
+  margin: 0 -6.5px;
+}
+
+.history-page.arranging .history-date {
+  align-items: center;
+}
+
+.history-page.arranging :is(.history-inbox, .history-older, .list-empty),
+.history-page.arranging .history-day:first-child > :not(.history-date),
+.history-page.arranging .history-day:first-child .history-date > span,
+.history-page.arranging .history-day ~ .history-day {
+  opacity: .38;
+}
+
+.history-date .edit-slot {
+  width: auto;
+  min-height: 30px;
+  padding: 3px 12px 3px 4px;
+  border-radius: 999px;
+}
+
+.history-date .edit-block .edit-remove {
+  left: -30px;
+}
+
+/* «Аналитика»: карточки свёрнуты в плашки со значком, «−» и ≡; убранные ждут внизу пунктиром. */
+.analytics.arranging .analytics-fixed {
+  opacity: .38;
+}
+
+.edit-cards {
+  margin: 22px 22px 0;
+}
+
+.edit-card-list .drag-row {
+  position: relative;
+  grid-template-columns: 36px minmax(0, 1fr) 44px;
+  gap: 12px;
+  min-height: 64px;
+  margin-bottom: 16px;
+  padding-left: 14px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: var(--card);
+}
+
+.edit-card-list .drag-row.lifted {
+  border-color: var(--line);
+  border-radius: 18px;
+}
+
+:root[data-theme="dark"] .edit-card-list .drag-row,
+:root[data-theme="dark"] .edit-card-list .drag-row.lifted {
+  background: var(--card);
+}
+
+.edit-card-list .edit-remove {
+  top: -22px;
+  left: -18px;
+}
+
+.block-icon {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 11px;
+  background: var(--soft);
+  color: var(--sage);
+}
+
+.block-name {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  padding: 10px 0;
+}
+
+.block-name b {
+  color: var(--ink);
+  font-size: calc(13px * var(--text-scale));
+  font-weight: 650;
+}
+
+.block-name small {
+  color: var(--muted);
+  font-size: calc(11px * var(--text-scale));
+  line-height: 1.35;
+}
+
+.edit-slot.edit-card {
+  gap: 12px;
+  min-height: 64px;
+  margin-bottom: 16px;
+  padding: 10px 14px;
+  border-radius: 18px;
+}
+
+/* «+» убранной карточки стоит на месте значка, чтобы названия шли одной колонкой. */
+.edit-slot.edit-card .edit-sign {
+  width: 36px;
+  height: 36px;
+  border-radius: 11px;
+}
+
+/* «Расход»: сумма, клавиатура, плитки и «Сохранить» приглушены; заметка и теги — блоки в ряду под плитками. */
+.entry-view.arranging :is(.swipe-area, .keypad, .categories, .entry-save) {
+  opacity: .38;
+}
+
+/* У кнопок над суммой прозрачность уже задана в style — приглушаем фильтром поверх неё. */
+.entry-view.arranging .entry-actions {
+  filter: opacity(.38);
+}
+
+.extras-row.editing {
+  gap: 16px;
+  padding: 24px 8px 2px;
+}
+
+.extras-row.editing .edit-block {
+  border-radius: 999px;
+}
+
+.extras-row.editing .note-block {
+  flex: 0 0 auto;
+  max-width: 46%;
+}
+
+.extras-row.editing .tags-block {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.extras-row.editing .edit-block-body {
+  display: flex;
+  overflow: hidden;
+  border-radius: 999px;
+}
+
+.extras-row.editing .edit-block-body > * {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.extras-row.editing .edit-slot {
+  width: auto;
+  min-height: 30px;
+  padding: 3px 12px 3px 4px;
+  border-radius: 999px;
 }

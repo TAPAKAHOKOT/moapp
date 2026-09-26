@@ -2,14 +2,15 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { WorkspaceApiError as ApiError, saveMemberSettings, submitExpenseOperation } from '../workspace-api'
 import { getWorkspacePreference, setWorkspacePreference } from '../app-state'
 import { patchSettings } from '../settings'
-import type { BlockLayout, Category, Currency, Expense, ScreenOrder, Tag, WorkspaceSummary } from '../types'
+import type { SettingsPatch } from '../settings'
+import type { AccountSettings, BlockLayout, Category, Currency, Expense, ScreenOrder, Tag, WorkspaceSummary } from '../types'
 import { amountToMinor, applyKeypad, cachedNumberFormat, formatAmountInput, isoToLocalInput, localInputToIso, swipeDirection, workspaceCurrency } from '../utils'
 import { CategoryMark, ChevronIcon, CurrencySheet, GridIcon, Toast, TrashIcon, prefersReducedMotion, tap, useConfirm, useDialog, useToast } from '../ui'
 import { amountSize, formatEntryDate, formatShortWeekday, inputFromExpense } from '../format'
 import type { Bootstrap } from '../format'
 import { ExtrasRow, NoteSheet, TAG_COLORS, createTagOrReuse } from '../tags'
 import { categoryLayout } from '../screen-order'
-import { isShown, screenBlocks } from '../screen-blocks'
+import { isShown, screenBlocks, toBlockLayout, toggleBlock } from '../screen-blocks'
 
 export const EMPTY_FORM = { amount: '', currency: 'RSD', note: '', occurredAt: '', tagIds: [] as string[], categoryId: '' }
 
@@ -96,9 +97,9 @@ export function DateSheet({ value, onClose, onPick }: { value: string; onClose: 
   </div>
 }
 
-export const Keypad = memo(function Keypad({ onKey, disabled = false }: { onKey: (key: string) => void; disabled?: boolean }) {
+export const Keypad = memo(function Keypad({ onKey, disabled = false, inert = false }: { onKey: (key: string) => void; disabled?: boolean; inert?: boolean }) {
   const press = (key: string) => { tap(); onKey(key) }
-  return <div className="keypad" aria-label="Клавиатура суммы">{['1','2','3','4','5','6','7','8','9',',','0','⌫'].map((key) => <button
+  return <div className="keypad" aria-label="Клавиатура суммы" inert={inert}>{['1','2','3','4','5','6','7','8','9',',','0','⌫'].map((key) => <button
     key={key}
     type="button"
     disabled={disabled}
@@ -140,7 +141,7 @@ export function saveButtonLabel({ amount, currency, categoryId, editing, dirty, 
 export function CategoryTiles({ main, additional, selectedId, disabled = false, inert = false, onPick, onMore }: { main: Category[]; additional: Category[]; selectedId: string | null; disabled?: boolean; inert?: boolean; onPick?: (category: Category) => void; onMore?: () => void }) {
   const other = selectedId && !main.some((item) => item.id === selectedId) ? additional.find((item) => item.id === selectedId) ?? null : null
   const tabIndex = inert ? -1 : undefined
-  return <div className="categories"><div className="main-categories">
+  return <div className="categories" inert={inert}><div className="main-categories">
     {main.map((category) => <button type="button" key={category.id} disabled={disabled} tabIndex={tabIndex} aria-pressed={category.id === selectedId} className={category.id === selectedId ? 'selected' : undefined} onClick={() => onPick?.(category)}><CategoryMark category={category}/><span>{category.name}</span></button>)}
     {additional.length > 0 && <button type="button" disabled={disabled} tabIndex={tabIndex} aria-pressed={Boolean(other)} className={other ? 'selected' : undefined} onClick={onMore}>{other ? <CategoryMark category={other}/> : <GridIcon/>}<span>{other ? other.name : `Ещё ${additional.length}`}</span></button>}
   </div></div>
@@ -154,15 +155,18 @@ export function EntryLowerPreview({ main, additional, tags, tagOrder, showNote =
   </>
 }
 
-export function EntryView({ userId, workspaceId, workspace, bootstrap, setBootstrap, currentId, setCurrentId, refreshPending, onDraftDirtyChange, active, newExpenseRequest = 0, blocks }: {
+export function EntryView({ userId, workspaceId, workspace, bootstrap, setBootstrap, currentId, setCurrentId, refreshPending, onDraftDirtyChange, active, newExpenseRequest = 0, blocks, editing = false, onScreensChange = () => {} }: {
   userId: string
   workspaceId: string
   workspace: WorkspaceSummary
   bootstrap: Bootstrap; setBootstrap: React.Dispatch<React.SetStateAction<Bootstrap>>; currentId: string | null; setCurrentId: (id: string | null) => void; refreshPending: () => void; onDraftDirtyChange: (dirty: boolean) => void; active: boolean
   /** Счётчик просьб «к новому расходу» извне (повторный тап по вкладке «Расход»): каждое увеличение — один переезд к пустой карточке. */
   newExpenseRequest?: number
-  /** Какие блоки «Расхода» человек оставил на экране («Мои экраны»). */
+  /** Какие блоки «Расхода» человек оставил на экране. Меняет их он сам в режиме «Настройка экрана» (`editing`),
+   *  куда ведёт «Мои экраны» в настройках; сумма, клавиатура, плитки и «Сохранить» в нём приглушены и не нажимаются. */
   blocks?: BlockLayout
+  editing?: boolean
+  onScreensChange?: (patch: SettingsPatch<AccountSettings>) => void
 }) {
   const activeExpenses = useMemo(() => bootstrap.expenses.filter((item) => !item.deletedAt).sort((a, b) => b.occurredAt.localeCompare(a.occurredAt)), [bootstrap.expenses])
   const currentIndex = currentId ? activeExpenses.findIndex((item) => item.id === currentId) : -1
@@ -480,7 +484,8 @@ export function EntryView({ userId, workspaceId, workspace, bootstrap, setBootst
 
   const swipeStartAt = (clientX: number, clientY: number, touchId: number | null = null) => {
     // Пока лента доезжает до соседа, новый жест перехватывать нельзя: подмена карточки дёрнет её из-под пальца.
-    if (committing.current || saving || categorySheet || currencySheet || dateSheet || noteSheet) return false
+    // Пока экран настраивают, расходы не листаются.
+    if (editing || committing.current || saving || categorySheet || currencySheet || dateSheet || noteSheet) return false
     swipe.current = { x: clientX, y: clientY, lastX: clientX, active: false, touchId }
     return true
   }
@@ -620,6 +625,7 @@ export function EntryView({ userId, workspaceId, workspace, bootstrap, setBootst
   const entryBlocks = screenBlocks('entry', blocks)
   const showNote = isShown(entryBlocks, 'note')
   const showTags = isShown(entryBlocks, 'tags')
+  const toggleExtra = (id: 'note' | 'tags') => onScreensChange({ entryBlocks: toBlockLayout(toggleBlock(entryBlocks, id)) })
   const selectedCategoryId = form.categoryId || null
   const dirty = current ? JSON.stringify(form) !== JSON.stringify(inputFromExpense(current, bootstrap.currencies)) : formHasContent(form)
   const save = saveButtonLabel({ amount: form.amount, currency: form.currency, categoryId: selectedCategoryId, editing: Boolean(current), dirty, currencies: bootstrap.currencies })
@@ -651,30 +657,30 @@ export function EntryView({ userId, workspaceId, workspace, bootstrap, setBootst
     key(value)
   }
   useEffect(()=>{
-    if(!active)return
+    if(!active||editing)return
     const handle=(event:KeyboardEvent)=>physicalKey(event)
     window.addEventListener('keydown',handle)
     return()=>window.removeEventListener('keydown',handle)
-  },[active,physicalKey])
+  },[active,editing,physicalKey])
   const publishTag = (tag: Tag) => setBootstrap((data) => ({ ...data, tags: [tag, ...(data.tags ?? []).filter((item) => item.id !== tag.id)] }))
-  return <section ref={entryRef} className={`entry-view${current ? ' editing' : ''}${saving ? ' saving' : ''}`} aria-label="Ввод суммы" onPointerDown={swipeStart} onPointerMove={swipeMove} onPointerUpCapture={swipeEnd} onPointerCancel={swipeCancel}>
-    <div className="swipe-area">
+  return <section ref={entryRef} className={`entry-view${current ? ' editing' : ''}${saving ? ' saving' : ''}${editing ? ' arranging' : ''}`} aria-label="Ввод суммы" onPointerDown={swipeStart} onPointerMove={swipeMove} onPointerUpCapture={swipeEnd} onPointerCancel={swipeCancel}>
+    <div className="swipe-area" inert={editing}>
       <div className="entry-track" ref={trackRef}>
         {olderFace && <div className="entry-card aside older" aria-hidden="true"><EntryCard face={olderFace}/></div>}
         <div className="entry-card"><EntryCard face={liveFace} disabled={saving} limitHit={limitHit} onDate={() => setDateSheet(true)} onCurrency={() => setCurrencySheet(true)}/></div>
         {newerFace && <div className="entry-card aside newer" aria-hidden="true"><EntryCard face={newerFace}/></div>}
       </div>
     </div>
-    <div ref={actionsRef} className="entry-actions" style={ENTRY_ACTIONS_HIDDEN} inert={!current} aria-hidden={!current}>
+    <div ref={actionsRef} className="entry-actions" style={ENTRY_ACTIONS_HIDDEN} inert={!current || editing} aria-hidden={!current}>
       <button type="button" className="entry-new" disabled={saving || !current || jumpingNew} onClick={() => void startNew()} aria-label="Новый расход">Новый</button>
       <button type="button" className="icon-danger entry-delete" disabled={saving || !current || jumpingNew} onClick={() => void remove()} aria-label="Удалить расход"><TrashIcon/></button>
     </div>
-    <Keypad onKey={key} disabled={saving}/>
+    <Keypad onKey={key} disabled={saving} inert={editing}/>
     <div className="entry-lower">
     <div ref={lowerLiveRef} className="entry-lower-live">
-    <CategoryTiles main={main} additional={additional} selectedId={selectedCategoryId} disabled={saving} onPick={chooseCategory} onMore={() => setCategorySheet(true)}/>
-    <ExtrasRow tags={bootstrap.tags ?? []} order={tagOrder} showNote={showNote} showTags={showTags} selected={form.tagIds} note={form.note} disabled={saving} online={navigator.onLine} onChange={(tagIds) => setForm((value) => ({ ...value, tagIds }))} onNote={() => setNoteSheet(true)} onCreate={(name) => createTagOrReuse(workspaceId, name, TAG_COLORS[(bootstrap.tags ?? []).length % TAG_COLORS.length] ?? null, publishTag)}/>
-    <div className="entry-save"><button type="button" className="primary" disabled={!save.canSave || saving} onClick={() => void submitExpense()}>{saving ? 'Сохраняем…' : save.label}</button>{current && <button type="button" className={`sheet-cancel${dirty && !saving ? '' : ' ghost'}`} disabled={!dirty || saving} aria-hidden={!dirty || saving} tabIndex={dirty && !saving ? undefined : -1} onClick={cancelEdit}>Отменить</button>}</div>
+    <CategoryTiles main={main} additional={additional} selectedId={selectedCategoryId} disabled={saving} inert={editing} onPick={chooseCategory} onMore={() => setCategorySheet(true)}/>
+    <ExtrasRow tags={bootstrap.tags ?? []} order={tagOrder} showNote={showNote} showTags={showTags} edit={editing ? toggleExtra : undefined} selected={form.tagIds} note={form.note} disabled={saving} online={navigator.onLine} onChange={(tagIds) => setForm((value) => ({ ...value, tagIds }))} onNote={() => setNoteSheet(true)} onCreate={(name) => createTagOrReuse(workspaceId, name, TAG_COLORS[(bootstrap.tags ?? []).length % TAG_COLORS.length] ?? null, publishTag)}/>
+    <div className="entry-save" inert={editing}><button type="button" className="primary" disabled={!save.canSave || saving} onClick={() => void submitExpense()}>{saving ? 'Сохраняем…' : save.label}</button>{current && <button type="button" className={`sheet-cancel${dirty && !saving ? '' : ' ghost'}`} disabled={!dirty || saving} aria-hidden={!dirty || saving} tabIndex={dirty && !saving ? undefined : -1} onClick={cancelEdit}>Отменить</button>}</div>
     </div>
     {swipePreview && <div ref={lowerPreviewRef} className="entry-lower-preview" aria-hidden="true" inert><EntryLowerPreview main={main} additional={additional} tags={bootstrap.tags ?? []} tagOrder={tagOrder} showNote={showNote} showTags={showTags} state={swipePreview}/></div>}
     </div>

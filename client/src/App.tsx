@@ -12,6 +12,7 @@ import { createIdentityWithProbe, createWorkspaceWithProbe } from './access-flow
 import { completeRotationSafely } from './recovery-flow'
 import { monitorServiceWorkerUpdates } from './service-worker-update'
 import type { AccountSettings, BybitCardStatus, CapabilityIntent, Expense, RecoveryPrepareResponse, SessionState, ThemePreference, WorkspaceMod } from './types'
+import type { BlockScreen } from './screen-blocks'
 import { ChevronIcon, Toast, prefersReducedMotion, tap, useConfirm, useInputModality, useOnlineStatus, useToast } from './ui'
 import type { Theme } from './ui'
 import { pluralRu } from './format'
@@ -167,6 +168,9 @@ export default function App({ capability = null }: { capability?: CapabilityInte
   const [issuesOpen,setIssuesOpen]=useState(false)
   const [reviewOpen,setReviewOpen]=useState(false)
   const [modsOpen,setModsOpen]=useState(false)
+  // Режим «Настройка экрана»: блоки этого экрана убираются и возвращаются прямо на нём, остальное приглушено.
+  const [editingScreen,setEditingScreen]=useState<BlockScreen|null>(null)
+  const editDoneRef=useRef<HTMLButtonElement>(null)
   // Моды пространства вместе с состоянием ключа Bybit: их показывают строка «Моды» в настройках и страница модов.
   const [modsRuntime,setModsRuntime]=useState<{workspaceId:string;mods:WorkspaceMod[]}|null>(null)
   // Очередь разбора общая для карт: Bybit подкладывает операции сам, выписка Т‑Банка — после загрузки файла.
@@ -208,6 +212,20 @@ export default function App({ capability = null }: { capability?: CapabilityInte
     setPagerState((previous)=>previous.workspaceId===workspaceId?{...previous,tab:next}:{workspaceId,tab:next,mounted:['entry']})
     startTransition(()=>setPagerState((previous)=>previous.workspaceId===workspaceId?{...previous,mounted:[...previous.mounted,...pagerTabsFor(next).filter((item)=>!previous.mounted.includes(item))]}:{workspaceId,tab:next,mounted:pagerTabsFor(next)}))
   },[])
+  // Настройку экрана открывают «Настроить экран» внизу самого экрана и «Мои экраны» в настройках — оттуда лента
+  // сначала едет к нужной вкладке. Закрывают «Готово», Escape и переход на другую вкладку или в другое пространство.
+  const startEditing=useCallback((screen:BlockScreen)=>{setEditingScreen(screen);setTab(screen)},[setTab])
+  const stopEditing=useCallback(()=>setEditingScreen(null),[])
+  useEffect(()=>{setEditingScreen((current)=>current&&current!==tab?null:current)},[tab])
+  useEffect(()=>setEditingScreen(null),[state.activeWorkspaceId])
+  useEffect(()=>{
+    if(!editingScreen)return
+    // Кнопка, которой вошли в настройку, исчезает вместе с обычным видом, поэтому фокус переходит на «Готово».
+    const frame=requestAnimationFrame(()=>editDoneRef.current?.focus({preventScroll:true}))
+    const escape=(event:KeyboardEvent)=>{if(event.key==='Escape'&&!document.querySelector('[aria-modal="true"]'))setEditingScreen(null)}
+    window.addEventListener('keydown',escape)
+    return()=>{cancelAnimationFrame(frame);window.removeEventListener('keydown',escape)}
+  },[editingScreen])
   const capabilityRef=useRef(capability)
   const monitor=useRef<ReturnType<typeof monitorServiceWorkerUpdates> | undefined>(undefined)
   const coordinator=useRef<ReturnType<typeof createIdentityCoordinator> | null>(null)
@@ -718,12 +736,14 @@ if(Math.abs(node.scrollLeft-pagerTarget.current)>1)node.scrollLeft=pagerTarget.c
       ?<button type="button" className="sync-status offline" onClick={()=>{void probeServer();setWorkspaceReloadEpoch((value)=>value+1)}} aria-label={`Нет связи с сервером${queuedCount?`, ${queuedCount} ${pluralRu(queuedCount,['изменение ждёт','изменения ждут','изменений ждут'])} отправки`:''}. Проверить связь`}><span>Офлайн{queuedCount?` · ${queuedCount} ${queuedCount===1?'ждёт':'ждут'}`:''}</span>{queuedCount?<i/>:null}</button>
       :stats.total?<div className="sync-status" role="status" aria-live="polite"><span>Отправляем · {stats.total}</span><i/></div>:null
   return <div className="app-shell" key={workspaceId}>
-    <header className="workspace-header"><button type="button" className="workspace-name-button" onClick={()=>setSwitchOpen(true)}><span>{workspace.name}</span><ChevronIcon/></button><div className="workspace-header-actions">{updateWaiting&&<button type="button" className="update-button" onClick={activateUpdate}>Обновить</button>}{syncPill}</div></header>
+    <header className={`workspace-header${editingScreen?' arranging':''}`}>{editingScreen
+      ?<><div className="screen-edit-title"><b>Настройка экрана</b><small>Видно только вам</small></div><button type="button" ref={editDoneRef} className="screen-edit-done" onClick={stopEditing}>Готово</button></>
+      :<><button type="button" className="workspace-name-button" onClick={()=>setSwitchOpen(true)}><span>{workspace.name}</span><ChevronIcon/></button><div className="workspace-header-actions">{updateWaiting&&<button type="button" className="update-button" onClick={activateUpdate}>Обновить</button>}{syncPill}</div></>}</header>
     <main className="pager" ref={pager} onScroll={onPagerScroll} onPointerDown={()=>{stopPagerAnimation();pagerTarget.current=null}} onTouchStart={()=>{stopPagerAnimation();pagerTarget.current=null}}>
-      <div className="page-slot" inert={tab!=='entry'} aria-hidden={tab!=='entry'}>{mountedTabs.includes('entry')&&<EntryView userId={auth.user.id} workspaceId={workspaceId} workspace={workspace} bootstrap={bootstrap} setBootstrap={setWorkspaceData} currentId={currentId} setCurrentId={setCurrentId} refreshPending={refreshPending} onDraftDirtyChange={setDraftDirty} active={tab==='entry'} newExpenseRequest={newExpenseRequest} blocks={auth.settings?.entryBlocks}/>}</div>
-      <div className="page-slot" inert={tab!=='history'} aria-hidden={tab!=='history'}>{mountedTabs.includes('history')&&<HistoryView userId={auth.user.id} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} edit={editExpense} createNew={createNewExpense} refreshPending={refreshPending} inbox={historyInbox} reminder={historyReminder} timeZone={timeZone} older={historyOlder} blocks={auth.settings?.historyBlocks} onScreensChange={changeAccountSettings}/>}</div>
-      <div className="page-slot" inert={tab!=='analytics'} aria-hidden={tab!=='analytics'}>{mountedTabs.includes('analytics')&&<AnalyticsView userId={auth.user.id} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} theme={theme} accent={appearance.accent} online={serverAvailable} timeZone={timeZone} blocks={auth.settings?.analyticsBlocks} period={auth.settings?.analyticsPeriod} onScreensChange={changeAccountSettings}/>}</div>
-      <div className="page-slot" inert={tab!=='settings'} aria-hidden={tab!=='settings'}>{mountedTabs.includes('settings')&&<SettingsView user={auth} workspace={workspace} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} pendingCount={stats.total} refreshPending={refreshPending} onLogout={()=>void logoutCurrent()} appearance={appearance} onAppearanceChange={changeAccountSettings} onAccountSettingsChange={changeAccountSettings} onSession={(next)=>hydrate(next,false,settingsIdentityEpoch)} online={serverAvailable} mods={mods} onOpenMods={()=>setModsOpen(true)} loadOlderExpenses={loadOlderExpenses}/>}</div>
+      <div className="page-slot" inert={tab!=='entry'} aria-hidden={tab!=='entry'}>{mountedTabs.includes('entry')&&<EntryView userId={auth.user.id} workspaceId={workspaceId} workspace={workspace} bootstrap={bootstrap} setBootstrap={setWorkspaceData} currentId={currentId} setCurrentId={setCurrentId} refreshPending={refreshPending} onDraftDirtyChange={setDraftDirty} active={tab==='entry'} newExpenseRequest={newExpenseRequest} blocks={auth.settings?.entryBlocks} editing={editingScreen==='entry'} onScreensChange={changeAccountSettings}/>}</div>
+      <div className="page-slot" inert={tab!=='history'} aria-hidden={tab!=='history'}>{mountedTabs.includes('history')&&<HistoryView userId={auth.user.id} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} edit={editExpense} createNew={createNewExpense} refreshPending={refreshPending} inbox={historyInbox} reminder={historyReminder} timeZone={timeZone} older={historyOlder} blocks={auth.settings?.historyBlocks} editing={editingScreen==='history'} onEditScreen={startEditing} onScreensChange={changeAccountSettings}/>}</div>
+      <div className="page-slot" inert={tab!=='analytics'} aria-hidden={tab!=='analytics'}>{mountedTabs.includes('analytics')&&<AnalyticsView userId={auth.user.id} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} theme={theme} accent={appearance.accent} online={serverAvailable} timeZone={timeZone} blocks={auth.settings?.analyticsBlocks} period={auth.settings?.analyticsPeriod} editing={editingScreen==='analytics'} onEditScreen={startEditing} onScreensChange={changeAccountSettings}/>}</div>
+      <div className="page-slot" inert={tab!=='settings'} aria-hidden={tab!=='settings'}>{mountedTabs.includes('settings')&&<SettingsView user={auth} workspace={workspace} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} pendingCount={stats.total} refreshPending={refreshPending} onLogout={()=>void logoutCurrent()} appearance={appearance} onAppearanceChange={changeAccountSettings} onEditScreen={startEditing} onSession={(next)=>hydrate(next,false,settingsIdentityEpoch)} online={serverAvailable} mods={mods} onOpenMods={()=>setModsOpen(true)} loadOlderExpenses={loadOlderExpenses}/>}</div>
     </main>
     <nav className="bottom-nav" aria-label="Основная навигация">{navigationTabs.map((item)=><button type="button" key={item.id} aria-current={tab===item.id?'page':undefined} aria-label={item.id==='history'&&reviewCount?`История: ${reviewCount} операций с карты ждут разбора`:item.label} className={tab===item.id?'active':''} onClick={()=>{if(tab!==item.id)tap(4);else if(item.id==='entry'&&currentId)setNewExpenseRequest((value)=>value+1);setTab(item.id)}}><span><NavIcon tab={item.id}/>{item.id==='history'&&reviewCount>0&&<b className="nav-badge">{reviewCount>99?'99+':reviewCount}</b>}</span><small>{item.label}</small></button>)}</nav>
     {modsOpen&&<ModsOverlay onClose={()=>setModsOpen(false)}><ModsView workspaceId={workspaceId} mods={mods} online={serverAvailable} onMods={updateMods} onBybitStatus={updateBybitStatus} onBybitSynced={reloadWorkspaceData} onStatementImported={(pendingCount)=>{updateQueueCount(pendingCount);reloadWorkspaceData()}} onOpenReview={openReview}/></ModsOverlay>}

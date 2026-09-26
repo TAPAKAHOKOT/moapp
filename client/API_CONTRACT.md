@@ -170,8 +170,14 @@ a block in neither list — added to the app later — stands on the screen at t
 | «Аналитика» (reorderable) | `trend`, `categories`, `tags`, `weekdays` (month only) | the total and the period switch |
 
 Without the `filters` block the saved history filters do not apply (they return with the block). Without the `categories` or
-`tags` card the analytics focus on a category or tag does not apply. Settings → «Мои экраны» edits all three screens;
-«Настроить экран» at the bottom of «История» and «Аналитика» edits that screen.
+`tags` card the analytics focus on a category or tag does not apply.
+
+A screen is arranged right on it, in the «Настройка экрана» mode: «Настроить экран» at the bottom of «История» and
+«Аналитика» opens it, and Settings → «Мои экраны» picks a screen (the only way to «Расход»; «История» and «Аналитика»
+wait for the first expense). The header becomes «Настройка экрана · Готово», the fixed part of the screen is dimmed and
+inert, a standing block gets a frame with «−» in its corner, and a removed block stays in its place as a dashed
+«+ name» that brings it back. Analytics cards fold into plates that «−» removes and ≡ reorders; removed ones wait at the
+bottom. Each tap is saved at once; «Готово», Escape or another tab leaves the mode.
 
 ## Expense routes and synchronization
 

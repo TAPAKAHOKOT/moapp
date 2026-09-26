@@ -13,8 +13,8 @@ export const backgroundLocks = new Map<HTMLElement, BackgroundLock>()
 export function lockDialogBackground(node: HTMLElement) {
   const existing = backgroundLocks.get(node)
   if (existing) { existing.count += 1; return }
-  backgroundLocks.set(node, { count: 1, inert: node.inert, ariaHidden: node.getAttribute('aria-hidden') })
-  node.inert = true
+  backgroundLocks.set(node, { count: 1, inert: node.hasAttribute('inert'), ariaHidden: node.getAttribute('aria-hidden') })
+  node.setAttribute('inert', '')
   node.setAttribute('aria-hidden', 'true')
 }
 
@@ -23,10 +23,15 @@ export function unlockDialogBackground(node: HTMLElement) {
   if (!lock) return
   lock.count -= 1
   if (lock.count > 0) return
-  node.inert = lock.inert
-  if (lock.ariaHidden === null) node.removeAttribute('aria-hidden')
-  else node.setAttribute('aria-hidden', lock.ariaHidden)
   backgroundLocks.delete(node)
+  // Пока шторка была открыта, React мог сам поменять эти атрибуты: выбор в шторке «Мои экраны» тем же рендером
+  // переключает вкладку и снимает inert со своей страницы. Прежнее значение возвращается, только если там всё ещё то,
+  // что поставила шторка, — иначе страница осталась бы ненажимаемой.
+  if (node.hasAttribute('inert') && !lock.inert) node.removeAttribute('inert')
+  if (node.getAttribute('aria-hidden') === 'true' && lock.ariaHidden !== 'true') {
+    if (lock.ariaHidden === null) node.removeAttribute('aria-hidden')
+    else node.setAttribute('aria-hidden', lock.ariaHidden)
+  }
 }
 
 // Кольцо фокуса нужно при работе с клавиатуры. После закрытия шторки фокус возвращается на кнопку программно,
@@ -369,6 +374,98 @@ export function ListSheet({ title, onClose, dismissible = true, children }: { ti
     <div className="sheet-handle"/><div className="sheet-title"><h2 id={titleId}>{title}</h2><button type="button" className="icon-button" data-dialog-initial-focus disabled={!dismissible} onClick={onClose} aria-label="Закрыть">×</button></div>
     {children}
   </section></div>
+}
+
+// Порядок в списке меняется перетаскиванием за ручку ≡ (или стрелками с клавиатуры) — вместо двух стрелок на каждую строку.
+// На iOS ручке нужен touch-action: none, иначе Safari отдаёт жест прокрутке и обрывает указатель.
+export function DragList<T extends { id: string }>({ items, disabled = false, className, onReorder, render }: { items: T[]; disabled?: boolean; className?: string; onReorder: (ids: string[]) => void; render: (item: T) => React.ReactNode }) {
+  const [order, setOrder] = useState<string[] | null>(null)
+  const [drag, setDrag] = useState<{ id: string; pointerY: number } | null>(null)
+  const listRef = useRef<HTMLDivElement>(null)
+  const grabOffset = useRef(0)
+  const shown = order ? order.map((id) => items.find((item) => item.id === id)).filter((item): item is T => Boolean(item)) : items
+  const rowOf = (id: string) => Array.from(listRef.current?.querySelectorAll<HTMLElement>('[data-drag-id]') ?? []).find((row) => row.dataset.dragId === id) ?? null
+  // Поднятая строка следует за пальцем; её место в списке уже поменялось, поэтому сдвиг считается от новой позиции в раскладке.
+  useLayoutEffect(() => {
+    if (!drag) return
+    const row = rowOf(drag.id)
+    const list = listRef.current
+    if (!row || !list) return
+    row.style.transform = `translateY(${drag.pointerY - (list.getBoundingClientRect().top + row.offsetTop + grabOffset.current)}px)`
+  }, [drag, order])
+  const start = (event: React.PointerEvent<HTMLElement>, id: string) => {
+    if (disabled || event.button !== 0) return
+    const row = rowOf(id)
+    if (!row) return
+    event.currentTarget.setPointerCapture?.(event.pointerId)
+    grabOffset.current = event.clientY - row.getBoundingClientRect().top
+    setOrder(items.map((item) => item.id))
+    setDrag({ id, pointerY: event.clientY })
+  }
+  const move = (event: React.PointerEvent) => {
+    if (!drag) return
+    const rows = Array.from(listRef.current?.querySelectorAll<HTMLElement>('[data-drag-id]') ?? []).filter((row) => row.dataset.dragId !== drag.id)
+    // Новая позиция — число чужих строк, середину которых палец уже прошёл.
+    let index = 0
+    for (const row of rows) { const rect = row.getBoundingClientRect(); if (event.clientY > rect.top + rect.height / 2) index += 1 }
+    setOrder((current) => {
+      if (!current) return current
+      const without = current.filter((id) => id !== drag.id)
+      const next = [...without.slice(0, index), drag.id, ...without.slice(index)]
+      return next.every((id, at) => id === current[at]) ? current : next
+    })
+    setDrag({ id: drag.id, pointerY: event.clientY })
+  }
+  const end = (commit: boolean) => {
+    if (!drag) return
+    const row = rowOf(drag.id)
+    if (row) row.style.transform = ''
+    const next = order
+    setDrag(null); setOrder(null)
+    if (commit && next && next.some((id, at) => id !== items[at]?.id)) onReorder(next)
+  }
+  const keyMove = (event: React.KeyboardEvent, id: string) => {
+    const direction = event.key === 'ArrowUp' ? -1 : event.key === 'ArrowDown' ? 1 : 0
+    if (!direction || disabled) return
+    event.preventDefault()
+    const ids = items.map((item) => item.id)
+    const index = ids.indexOf(id)
+    const target = index + direction
+    if (index < 0 || target < 0 || target >= ids.length) return
+    ;[ids[index], ids[target]] = [ids[target]!, ids[index]!]
+    onReorder(ids)
+  }
+  return <div ref={listRef} className={`drag-list${className ? ` ${className}` : ''}${drag ? ' dragging' : ''}`}>{shown.map((item) => <div key={item.id} data-drag-id={item.id} className={`drag-row${drag?.id === item.id ? ' lifted' : ''}`}>
+    {render(item)}
+    {items.length > 1 && <span className="drag-handle" role="button" tabIndex={disabled ? -1 : 0} aria-label="Перетащить, чтобы изменить порядок" aria-disabled={disabled} onPointerDown={(event) => start(event, item.id)} onPointerMove={move} onPointerUp={() => end(true)} onPointerCancel={() => end(false)} onKeyDown={(event) => keyMove(event, item.id)}>≡</span>}
+  </div>)}</div>
+}
+
+// Знаки «−» и «+» нарисованы: символы шрифта сидят на строке текста и в Safari на iPhone уезжали из центра круга.
+export const SignIcon = ({ plus = false }: { plus?: boolean }) => <svg viewBox="0 0 12 12" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true"><path d={plus ? 'M2.5 6h7M6 2.5v7' : 'M2.5 6h7'}/></svg>
+
+// «−» убирает с экрана, «+» ставит обратно.
+export function LayoutToggle({ shown, label, onToggle }: { shown: boolean; label: string; onToggle: () => void }) {
+  return <button type="button" className={`layout-toggle${shown ? ' shown' : ''}`} aria-label={label} onClick={() => { tap(4); onToggle() }}><span aria-hidden="true"><SignIcon plus={!shown}/></span></button>
+}
+
+/** «−» в углу блока в режиме «Настройка экрана». */
+export function RemoveBadge({ name, onRemove }: { name: string; onRemove: () => void }) {
+  return <button type="button" className="edit-remove" aria-label={`Убрать «${name}»`} onClick={() => { tap(4); onRemove() }}><span aria-hidden="true"><SignIcon/></span></button>
+}
+
+// Блок в режиме «Настройка экрана». Стоящий виден как есть, но не нажимается: вокруг рамка, в углу «−». Убранный
+// остаётся на своём месте пунктирной заготовкой «+ Название» — по ней он и возвращается.
+export function EditBlock({ name, hint, shown, onToggle, className, children }: { name: string; hint?: string; shown: boolean; onToggle: () => void; className?: string; children?: React.ReactNode }) {
+  const classes = (base: string) => className ? `${base} ${className}` : base
+  if (!shown) return <button type="button" className={classes('edit-slot')} aria-label={`Вернуть «${name}»`} onClick={() => { tap(4); onToggle() }}>
+    <span className="edit-sign" aria-hidden="true"><SignIcon plus/></span>
+    <span className="edit-slot-text"><b>{name}</b>{hint && <small>{hint}</small>}</span>
+  </button>
+  return <div className={classes('edit-block')}>
+    <div className="edit-block-body" inert>{children}</div>
+    <RemoveBadge name={name} onRemove={onToggle}/>
+  </div>
 }
 
 // Одно поле с кнопкой «Сохранить»: имена и названия правятся одинаково, без сохранения «после выхода из поля».

@@ -7,20 +7,21 @@ import { chartColors } from '../appearance'
 import { appTimeZone, cachedNumberFormat, convertExpense, countCalendarWeekdays, hasRate, localDateKey, monthDateRange, shiftDateKey, weekDateRange, weekdayFromDateKey, workspaceCurrency } from '../utils'
 import { expenseTagNames } from '../history'
 import { BREAKDOWN_REST, breakdownColors, categoryBreakdown, expenseGroupKeys } from '../breakdown'
-import { ChevronIcon, CurrencySheet, prefersReducedMotion, tap } from '../ui'
+import { ChevronIcon, CurrencySheet, DragList, EditBlock, RemoveBadge, prefersReducedMotion, tap } from '../ui'
 import type { Theme } from '../ui'
 import { formatAnalyticsAmount, formatCompactNumber, formatWeekRange, money, pluralRu } from '../format'
 import type { Bootstrap } from '../format'
-import { isShown, screenBlocks } from '../screen-blocks'
-import { ScreenBlocksSheet } from './Settings'
+import { hideBlock, isShown, reorderBlocks, screenBlocks, showBlock, toBlockLayout } from '../screen-blocks'
+import type { BlockScreen, Blocks } from '../screen-blocks'
 
 export const AnalyticsChart = lazy(() => import('../AnalyticsCharts'))
 
 export type { AnalyticsPeriod }
 
-export function AnalyticsView({ userId, workspaceId, bootstrap, setBootstrap = () => {}, theme, accent = 'sage', online, timeZone = appTimeZone(), blocks, period: savedPeriod, onScreensChange = () => {} }: { userId: string; workspaceId: string; bootstrap: Bootstrap; setBootstrap?: React.Dispatch<React.SetStateAction<Bootstrap>>; theme: Theme; accent?: Accent; online: boolean; timeZone?: string
-  /** Какие карточки человек оставил и в каком порядке, неделя или месяц — всё это помнит аккаунт. */
-  blocks?: BlockLayout; period?: AnalyticsPeriod; onScreensChange?: (patch: SettingsPatch<AccountSettings>) => void }) {
+export function AnalyticsView({ userId, workspaceId, bootstrap, setBootstrap = () => {}, theme, accent = 'sage', online, timeZone = appTimeZone(), blocks, period: savedPeriod, editing = false, onEditScreen = () => {}, onScreensChange = () => {} }: { userId: string; workspaceId: string; bootstrap: Bootstrap; setBootstrap?: React.Dispatch<React.SetStateAction<Bootstrap>>; theme: Theme; accent?: Accent; online: boolean; timeZone?: string
+  /** Какие карточки человек оставил и в каком порядке, неделя или месяц — всё это помнит аккаунт. Карточки он
+   *  убирает, возвращает и переставляет сам, в режиме «Настройка экрана» (`editing`). */
+  blocks?: BlockLayout; period?: AnalyticsPeriod; editing?: boolean; onEditScreen?: (screen: BlockScreen) => void; onScreensChange?: (patch: SettingsPatch<AccountSettings>) => void }) {
   // Валюта аналитики — выбранная человеком (её помнит аккаунт), а пока он не выбирал, валюта пространства,
   // в том числе после её смены в настройках.
   const target = bootstrap.settings?.analyticsCurrency || workspaceCurrency(bootstrap)
@@ -32,7 +33,13 @@ export function AnalyticsView({ userId, workspaceId, bootstrap, setBootstrap = (
     if (next !== (savedPeriod ?? 'week')) onScreensChange({ analyticsPeriod: next })
   }
   const analyticsBlocks = useMemo(() => screenBlocks('analytics', blocks), [blocks])
-  const [blocksSheet, setBlocksSheet] = useState(false)
+  const pageRef = useRef<HTMLElement>(null)
+  // Свёрнутые карточки стоят сразу под шапкой, поэтому настройка открывается с начала страницы.
+  useEffect(() => {
+    if (!editing) return
+    const slot = pageRef.current?.closest<HTMLElement>('.page-slot')
+    if (slot) slot.scrollTop = 0
+  }, [editing])
   const [weekOffset, setWeekOffset] = useState(0)
   const [monthOffset, setMonthOffset] = useState(0)
   // Фокус на категории: тап по строке легенды сужает всё выше до неё и раскрывает её записи, второй тап возвращает всё.
@@ -156,24 +163,44 @@ export function AnalyticsView({ userId, workspaceId, bootstrap, setBootstrap = (
   const chartText=theme==='dark'?'#b3b3ae':'#73776f'
   const chartGrid=theme==='dark'?'rgba(255,255,255,.06)':'rgba(32,37,31,.06)'
   const statusLine=analyticsOffline?<>{analyticsError?'Не удалось обновить. ':''}Показаны сохранённые данные на {new Date(bootstrap.serverTime).toLocaleString('ru-RU')}{online&&<button type="button" onClick={()=>setRetryEpoch((value)=>value+1)}>Повторить</button>}</>:data.missingCurrencies.length?`Нет курса: ${data.missingCurrencies.join(', ')} — эти расходы не посчитаны`:null
-  return <section className="page analytics"><div className={`analytics-progress${slowLoading?' on':''}`} aria-hidden="true"/><header className="page-header analytics-title"><div><p className="eyebrow">{focusedName??'Все расходы'}</p><h1>{cachedNumberFormat('ru-RU',{maximumFractionDigits:0}).format(shownTotal)}{hasForeign&&<button type="button" className="rate-info" aria-label="Как посчитана сумма" aria-expanded={rateInfo} onClick={()=>setRateInfo((value)=>!value)}>i</button>}</h1><p className="analytics-comparison">{formatAnalyticsAmount(shownPerDay,target)} в день · {data.expenseCount} {pluralRu(data.expenseCount,['операция','операции','операций'])}</p><p className="analytics-comparison">{comparisonLabel(total,previousTotal,partial,period)}</p></div><button className="currency-choice" onClick={()=>setCurrencySheet(true)}>{target}<ChevronIcon/></button></header>
+  return <section ref={pageRef} className={`page analytics${editing?' arranging':''}`}><div className={`analytics-progress${slowLoading?' on':''}`} aria-hidden="true"/><div className="analytics-fixed" inert={editing}><header className="page-header analytics-title"><div><p className="eyebrow">{focusedName??'Все расходы'}</p><h1>{cachedNumberFormat('ru-RU',{maximumFractionDigits:0}).format(shownTotal)}{hasForeign&&<button type="button" className="rate-info" aria-label="Как посчитана сумма" aria-expanded={rateInfo} onClick={()=>setRateInfo((value)=>!value)}>i</button>}</h1><p className="analytics-comparison">{formatAnalyticsAmount(shownPerDay,target)} в день · {data.expenseCount} {pluralRu(data.expenseCount,['операция','операции','операций'])}</p><p className="analytics-comparison">{comparisonLabel(total,previousTotal,partial,period)}</p></div><button className="currency-choice" onClick={()=>setCurrencySheet(true)}>{target}<ChevronIcon/></button></header>
     {rateInfo&&hasForeign&&<p className="rate-caption" role="note">Расходы в других валютах пересчитаны в {target} по курсу на день покупки.</p>}
     <div className="analytics-period" role="group" aria-label="Период аналитики"><button type="button" aria-pressed={period==='week'} className={period==='week'?'selected':''} onClick={()=>setPeriod('week')}>Неделя</button><button type="button" aria-pressed={period==='month'} className={period==='month'?'selected':''} onClick={()=>setPeriod('month')}>Месяц</button></div>
     {period==='week'&&<div className="week-navigator"><button type="button" onClick={()=>setWeekOffset((value)=>value-1)} aria-label="Предыдущая неделя">‹</button><div><b>{weekOffset===0?'Текущая неделя':weekOffset===-1?'Прошлая неделя':'Выбранная неделя'}</b><span>{weekRange}</span></div><button type="button" onClick={()=>setWeekOffset((value)=>Math.min(0,value+1))} disabled={weekOffset===0} aria-label="Следующая неделя">›</button></div>}
     {period==='month'&&<div className="week-navigator"><button type="button" onClick={()=>setMonthOffset((value)=>value-1)} aria-label="Предыдущий месяц">‹</button><div><b>{monthOffset===0?'Текущий месяц':monthOffset===-1?'Прошлый месяц':'Выбранный месяц'}</b><span>{monthLabel}</span></div><button type="button" onClick={()=>setMonthOffset((value)=>Math.min(0,value+1))} disabled={monthOffset===0} aria-label="Следующий месяц">›</button></div>}
-    {statusLine&&<div className={`rate-caption${analyticsOffline?' cached':''}`} role="status">{statusLine}</div>}
-    {analyticsBlocks.shown.map((block)=>block.id==='trend'?<div key="trend" className="chart-card"><div><h2>Динамика</h2><p>{period==='week'?'Понедельник — воскресенье':'По дням выбранного месяца'}</p></div>{data.convertedCount?<div className="line-chart"><Suspense fallback={<ChartSkeleton/>}><AnalyticsChart kind="line" labels={days.map((d)=>new Date(`${d}T12:00`).toLocaleDateString('ru-RU',period==='week'?{weekday:'short'}:{day:'numeric',month:'short'}))} values={byDay} color={chartColor} fillColor={chart.fill} pointRadius={period==='week'?3:0} target={target} textColor={chartText} gridColor={chartGrid} maxTicksLimit={period==='week'?7:6}/></Suspense></div>:<AnalyticsEmpty>{data.expenseCount?'Нет курса для выбранной валюты':emptyPeriod}</AnalyticsEmpty>}</div>
+    {statusLine&&<div className={`rate-caption${analyticsOffline?' cached':''}`} role="status">{statusLine}</div>}</div>
+    {editing?<AnalyticsBlocksEditor blocks={analyticsBlocks} onChange={(next)=>onScreensChange({analyticsBlocks:toBlockLayout(next)})}/>:analyticsBlocks.shown.map((block)=>block.id==='trend'?<div key="trend" className="chart-card"><div><h2>Динамика</h2><p>{period==='week'?'Понедельник — воскресенье':'По дням выбранного месяца'}</p></div>{data.convertedCount?<div className="line-chart"><Suspense fallback={<ChartSkeleton/>}><AnalyticsChart kind="line" labels={days.map((d)=>new Date(`${d}T12:00`).toLocaleDateString('ru-RU',period==='week'?{weekday:'short'}:{day:'numeric',month:'short'}))} values={byDay} color={chartColor} fillColor={chart.fill} pointRadius={period==='week'?3:0} target={target} textColor={chartText} gridColor={chartGrid} maxTicksLimit={period==='week'?7:6}/></Suspense></div>:<AnalyticsEmpty>{data.expenseCount?'Нет курса для выбранной валюты':emptyPeriod}</AnalyticsEmpty>}</div>
       :block.id==='categories'?<div key="categories" className={`chart-card${byCategory.length?' split':''}`}><div><h2>Категории</h2><p>{categoryId?'Только эта категория':tagId?`Только ${focusedTagLabel}`:period==='week'?'За неделю':'За месяц'}</p></div>{byCategory.length?<><div className="donut-wrap"><Suspense fallback={<ChartSkeleton/>}><AnalyticsChart kind="doughnut" labels={donut.map((x)=>x.name)} values={donut.map((x)=>x.value)} colors={donut.map((x)=>x.color)} target={target}/></Suspense><span>{formatCompactNumber(total)}</span></div><div className="legend">{byCategory.map((x)=>{const focused=categoryId===x.categoryId;const rows=focused?categoryDetails.filter(({expense})=>inGroup(expense)):[];const shown=allDetails?rows:rows.slice(0,LEGEND_DETAIL_LIMIT);return <div key={x.categoryId} className={`legend-item${focused?' open':''}`}><button type="button" className="legend-row" aria-expanded={focused} onClick={()=>focus(x.categoryId)}><i style={{background:x.color||'#a9afa5'}}/><span>{x.name}</span><span className="legend-value"><b>{formatAnalyticsAmount(x.value,target)}</b><small className={focused?'ghost':undefined} aria-hidden={focused||undefined}>{Math.round(x.value/total*100)||0}%</small></span>{focused?<span className="legend-close" aria-hidden="true">×</span>:<ChevronIcon/>}</button>{focused&&<div className="legend-details">{groups.length>0&&<div className="legend-groups" role="group" aria-label="Из чего сложилась категория">{groups.map((group,index)=><button key={group.key} type="button" className={`legend-group${activeGroup===group.key?' selected':''}${activeGroup&&activeGroup!==group.key?' dim':''}`} aria-pressed={activeGroup===group.key} onClick={()=>pickGroup(group.key)}><i style={{background:groupColors[index]}}/><span>{group.label}{group.count>1&&<small> · {group.count}</small>}</span><span className="legend-value"><b>{formatAnalyticsAmount(group.value,target)}</b><small>{Math.round(group.value/(groupTotal||1)*100)}%</small></span></button>)}</div>}{rows.length?<>{shown.map((item)=>detailRow(item,detailCaption(item.expense)))}{rows.length>shown.length&&<button type="button" className="legend-more" onClick={()=>setAllDetails(true)}>Показать все · {rows.length}</button>}</>:<p className="legend-empty">На этом устройстве нет записей этой категории за период.</p>}</div>}</div>})}{categoryId&&<button type="button" className="legend-all" onClick={()=>focus(categoryId)}>Все категории</button>}</div></>:<AnalyticsEmpty>{emptyPeriod}</AnalyticsEmpty>}</div>
       :block.id==='tags'?(showTags&&<div key="tags" className={`chart-card${byTag.length?' split':''}`}><div><h2>Теги</h2><p>{tagId?'Только этот тег':categoryId?'В этой категории':period==='week'?'За неделю':'За месяц'}</p></div>{byTag.length?<><div className="donut-wrap"><Suspense fallback={<ChartSkeleton/>}><AnalyticsChart kind="doughnut" labels={byTag.map((x)=>x.label)} values={byTag.map((x)=>x.value)} colors={tagColors} target={target}/></Suspense><span>{formatCompactNumber(total)}</span></div><div className="legend tag-legend">{byTag.map((x,index)=>{const focused=tagId===x.id;const shown=allTagDetails?tagDetails:tagDetails.slice(0,LEGEND_DETAIL_LIMIT);return <div key={x.id} className={`legend-item${focused?' open':''}`}><button type="button" className="legend-row" aria-expanded={focused} onClick={()=>focusTag(x.id)}><i style={{background:tagColors[index]}}/><span>{x.label}</span><span className="legend-value"><b>{formatAnalyticsAmount(x.value,target)}</b><small className={focused?'ghost':undefined} aria-hidden={focused||undefined}>{Math.round(x.value/total*100)||0}%</small></span>{focused?<span className="legend-close" aria-hidden="true">×</span>:<ChevronIcon/>}</button>{focused&&<div className="legend-details">{tagDetails.length?<>{shown.map((item)=>detailRow(item,tagCaption(item.expense)))}{tagDetails.length>shown.length&&<button type="button" className="legend-more" onClick={()=>setAllTagDetails(true)}>Показать все · {tagDetails.length}</button>}</>:<p className="legend-empty">На этом устройстве нет записей с этим тегом за период.</p>}</div>}</div>})}{tagId&&<button type="button" className="legend-all" onClick={()=>focusTag(tagId)}>Все теги</button>}</div></>:<AnalyticsEmpty>{emptyPeriod}</AnalyticsEmpty>}</div>)
       :block.id==='weekdays'?(period==='month'&&<div key="weekdays" className="chart-card"><div><h2>По дням недели</h2><p>Средние траты за календарный день</p></div>{data.convertedCount?<div className="bar-chart"><Suspense fallback={<ChartSkeleton/>}><AnalyticsChart kind="bar" labels={['Пн','Вт','Ср','Чт','Пт','Сб','Вс']} values={weekdays} color={chartColor} target={target} textColor={chartText} gridColor={chartGrid}/></Suspense></div>:<AnalyticsEmpty>Недостаточно данных для сравнения</AnalyticsEmpty>}</div>)
       :null)}
-    {anyExpenses&&<button type="button" className="screen-setup" onClick={()=>setBlocksSheet(true)}>Настроить экран</button>}
-    {blocksSheet&&<ScreenBlocksSheet screens={['analytics']} settings={{analyticsBlocks:blocks}} onChange={onScreensChange} onClose={()=>setBlocksSheet(false)}/>}
+    {anyExpenses&&!editing&&<button type="button" className="screen-setup" onClick={()=>onEditScreen('analytics')}>Настроить экран</button>}
     {currencySheet && <CurrencySheet currencies={bootstrap.currencies} used={[...new Set(bootstrap.expenses.filter((item)=>!item.deletedAt).map((item)=>item.currency))]} selected={target} onClose={()=>setCurrencySheet(false)} onSelect={(code)=>{setBootstrap((data)=>({...data,settings:patchSettings(data.settings,{analyticsCurrency:code})}));saveMemberSettings(userId,workspaceId,{analyticsCurrency:code});setCurrencySheet(false)}}/>}
   </section>
 }
 
 export const LEGEND_DETAIL_LIMIT=8
+
+// Значки свёрнутых карточек: по ним карточку узнают, пока графики спрятаны на время настройки.
+const BLOCK_ICONS:Record<string,React.ReactNode>={
+  trend:<path d="M3 14l4.2-4.2 3.3 3 6.5-6.8"/>,
+  categories:<><circle cx="10" cy="10" r="6.5"/><path d="M10 3.5V10l4.6 4.6"/></>,
+  tags:<><path d="M3.5 4.3v4.9c0 .3.1.5.3.7l6.6 6.6c.4.4 1 .4 1.4 0l4.6-4.6c.4-.4.4-1 0-1.4L9.8 3.8c-.2-.2-.4-.3-.7-.3H4.3c-.4 0-.8.4-.8.8z"/><circle cx="7" cy="7" r=".9" fill="currentColor" stroke="none"/></>,
+  weekdays:<path d="M4.5 16.5v-5M8.2 16.5v-9M11.8 16.5v-6.5M15.5 16.5v-11"/>,
+}
+
+// Режим «Настройка экрана»: карточки свёрнуты в плашки — значок, название и что в ней. «−» в углу убирает карточку,
+// ≡ переставляет, убранные ждут внизу пунктиром и возвращаются в конец по касанию.
+export function AnalyticsBlocksEditor({blocks,onChange}:{blocks:Blocks;onChange:(next:Blocks)=>void}) {
+  return <div className="edit-cards" role="group" aria-label="Карточки аналитики">
+    <DragList className="edit-card-list" items={blocks.shown} onReorder={(ids)=>onChange(reorderBlocks(blocks,ids))} render={(block)=><>
+      <span className="block-icon" aria-hidden="true"><svg viewBox="0 0 20 20" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">{BLOCK_ICONS[block.id]}</svg></span>
+      <span className="block-name"><b>{block.name}</b><small>{block.hint}</small></span>
+      <RemoveBadge name={block.name} onRemove={()=>onChange(hideBlock(blocks,block.id))}/>
+    </>}/>
+    {blocks.hidden.map((block)=><EditBlock key={block.id} name={block.name} hint={block.hint} shown={false} className="edit-card" onToggle={()=>onChange(showBlock(blocks,block.id))}/>)}
+  </div>
+}
 
 export function AnalyticsEmpty({children}:{children:string}) {
   return <div className="analytics-empty"><span>⌁</span><p>{children}</p></div>

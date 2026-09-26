@@ -383,6 +383,7 @@ describe('history discovery', () => {
     expect(screen.queryByRole('searchbox')).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: 'Поиск' }))
     const search = screen.getByRole('searchbox')
+    expect(document.activeElement).toBe(search)
     fireEvent.change(search, { target: { value: 'полка' } })
     expect(screen.getByRole('button', { name: /Продукты/ })).not.toBeNull()
     fireEvent.change(search, { target: { value: 'вс' } })
@@ -1517,25 +1518,105 @@ describe('screens made of blocks', () => {
     expect(container.querySelector('.entry-lower-live .extras-row')).toBeNull()
   })
 
-  it('removes and returns blocks in «Мои экраны», and only analytics cards change places', () => {
+  it('arranges «История» right on it: blocks in a frame with «−», removed ones wait in their place', () => {
+    const at = '2026-09-20T10:00:00.000Z'
+    const bootstrap = expenseBootstrap({ categories: personalCategories, expenses: [spent('a', 'products', at), spent('b', 'home', '2026-09-19T10:00:00.000Z')] })
+    const change = vi.fn()
+    const edit = vi.fn()
+    const view = (editing: boolean) => <HistoryView userId="user-a" workspaceId="workspace-a" bootstrap={bootstrap} setBootstrap={vi.fn()} edit={vi.fn()} createNew={vi.fn()} refreshPending={vi.fn()} blocks={{ shown: ['filters', 'day-totals'], hidden: ['total'] }} editing={editing} onEditScreen={edit} onScreensChange={change}/>
+    const { container, rerender } = render(view(false))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Поиск' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Настроить экран' }))
+    expect(edit).toHaveBeenCalledWith('history')
+
+    rerender(view(true))
+    expect(screen.queryByRole('button', { name: 'Настроить экран' })).toBeNull()
+    // Сумма дня настраивается один раз, у первого дня; строки видны, но не нажимаются.
+    expect(screen.getAllByRole('button', { name: 'Убрать «Суммы по дням»' })).toHaveLength(1)
+    expect(container.querySelectorAll('.history-expense[inert]')).toHaveLength(2)
+    expect(container.querySelector('.history-page.arranging')).not.toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Вернуть «Итог»' }))
+    expect(change).toHaveBeenLastCalledWith({ historyBlocks: { shown: ['filters', 'day-totals', 'total'], hidden: [] } })
+    fireEvent.click(screen.getByRole('button', { name: 'Убрать «Фильтры и поиск»' }))
+    expect(change).toHaveBeenLastCalledWith({ historyBlocks: { shown: ['day-totals'], hidden: ['filters', 'total'] } })
+    fireEvent.click(screen.getByRole('button', { name: 'Убрать «Суммы по дням»' }))
+    expect(change).toHaveBeenLastCalledWith({ historyBlocks: { shown: ['filters'], hidden: ['day-totals', 'total'] } })
+
+    // Открытый поиск возвращается вместе с обычным видом, но клавиатуру сам не открывает.
+    ;(document.activeElement as HTMLElement | null)?.blur()
+    rerender(view(false))
+    expect(screen.getByRole('searchbox')).not.toBe(document.activeElement)
+  })
+
+  it('folds the analytics cards into plates that are removed, returned and moved', () => {
+    const change = vi.fn()
+    const bootstrap = expenseBootstrap({ categories: personalCategories, tags: personalTags, expenses: [spent('a', 'products', new Date().toISOString(), ['tag-0'])] })
+    const { container } = render(<AnalyticsView userId="user-a" workspaceId="workspace-a" bootstrap={bootstrap} theme="light" online={false} blocks={{ shown: ['trend', 'categories'], hidden: ['weekdays'] }} editing onScreensChange={change}/>)
+    const plates = () => [...container.querySelectorAll('.edit-card-list .block-name b')].map((node) => node.textContent)
+
+    // Графиков нет, пока экран настраивают: карточки — плашки, «Теги» раскладка ещё не знала, и они стоят в конце.
+    expect(titles(container)).toEqual([])
+    expect(plates()).toEqual(['Динамика', 'Категории', 'Теги'])
+    expect(container.querySelector('.analytics-fixed')?.hasAttribute('inert')).toBe(true)
+    expect(screen.queryByRole('button', { name: 'Настроить экран' })).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Убрать «Категории»' }))
+    expect(change).toHaveBeenLastCalledWith({ analyticsBlocks: { shown: ['trend', 'tags'], hidden: ['categories', 'weekdays'] } })
+    fireEvent.click(screen.getByRole('button', { name: 'Вернуть «По дням недели»' }))
+    expect(change).toHaveBeenLastCalledWith({ analyticsBlocks: { shown: ['trend', 'categories', 'tags', 'weekdays'], hidden: [] } })
+    fireEvent.keyDown(screen.getAllByRole('button', { name: /Перетащить/ })[1]!, { key: 'ArrowUp' })
+    expect(change).toHaveBeenLastCalledWith({ analyticsBlocks: { shown: ['categories', 'trend', 'tags'], hidden: ['weekdays'] } })
+  })
+
+  it('arranges the note and the tags under the tiles and leaves the rest of «Расход» alone', () => {
+    const change = vi.fn()
+    const bootstrap = expenseBootstrap({ tags: personalTags })
+    const view = (blocks: { shown: string[]; hidden: string[] }) => <EntryView userId="user-a" workspaceId="workspace-a" workspace={bootstrap.workspace} bootstrap={bootstrap} setBootstrap={vi.fn()} currentId={null} setCurrentId={vi.fn()} refreshPending={vi.fn()} onDraftDirtyChange={vi.fn()} active blocks={blocks} editing onScreensChange={change}/>
+    const { container, rerender } = render(view({ shown: ['tags'], hidden: ['note'] }))
+
+    for (const part of ['.swipe-area', '.keypad', '.entry-lower-live .categories', '.entry-save']) expect(container.querySelector(part)?.hasAttribute('inert')).toBe(true)
+    fireEvent.keyDown(window, { key: '5' })
+    expect(screen.getByLabelText('Сумма').textContent).toBe('0')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Вернуть «Заметка»' }))
+    expect(change).toHaveBeenLastCalledWith({ entryBlocks: { shown: ['tags', 'note'], hidden: [] } })
+    fireEvent.click(screen.getByRole('button', { name: 'Убрать «Теги»' }))
+    expect(change).toHaveBeenLastCalledWith({ entryBlocks: { shown: [], hidden: ['tags', 'note'] } })
+
+    // Без обоих блоков обычный «Расход» остаётся без ряда, а в настройке ряд стоит двумя заготовками.
+    rerender(view({ shown: [], hidden: ['note', 'tags'] }))
+    expect(screen.getByRole('button', { name: 'Вернуть «Заметка»' })).not.toBeNull()
+    expect(screen.getByRole('button', { name: 'Вернуть «Теги»' })).not.toBeNull()
+  })
+
+  it('offers each screen in «Мои экраны» and opens the one picked right on it', () => {
     vi.spyOn(workspaceApi, 'listMembers').mockResolvedValue({ members: [] })
     vi.spyOn(workspaceApi, 'listSessions').mockResolvedValue({ sessions: [] })
     vi.spyOn(workspaceApi, 'listInvitations').mockResolvedValue({ invitations: [] })
-    const change = vi.fn()
-    const workspace = expenseBootstrap().workspace
-    const user: AuthenticatedSession = { ...authSession(true, { historyBlocks: { shown: ['filters', 'day-totals'], hidden: ['total'] } }), workspaces: [workspace] }
-    render(<SettingsView user={user} workspace={workspace} workspaceId={workspace.id} bootstrap={expenseBootstrap()} setBootstrap={vi.fn()} pendingCount={0} refreshPending={vi.fn()} onLogout={vi.fn()} onSession={vi.fn()} online onAccountSettingsChange={change}/>)
+    const edit = vi.fn()
+    const bootstrap = expenseBootstrap({ expenses: [spent('a', 'products', '2026-09-20T10:00:00.000Z')] })
+    const user: AuthenticatedSession = { ...authSession(true, { historyBlocks: { shown: ['filters', 'day-totals'], hidden: ['total'] } }), workspaces: [bootstrap.workspace] }
+    const view = (data: WorkspaceBootstrap) => <SettingsView user={user} workspace={data.workspace} workspaceId={data.workspace.id} bootstrap={data} setBootstrap={vi.fn()} pendingCount={0} refreshPending={vi.fn()} onLogout={vi.fn()} onSession={vi.fn()} online onEditScreen={edit}/>
+    const { rerender } = render(view(bootstrap))
 
     expect(screen.getByRole('button', { name: /^Мои экраны/ }).textContent).toBe('Мои экраныубрано 1')
     fireEvent.click(screen.getByRole('button', { name: /^Мои экраны/ }))
     const sheet = screen.getByRole('dialog', { name: 'Мои экраны' })
-    fireEvent.click(within(sheet).getByRole('button', { name: 'Вернуть «Итог» на экран «История»' }))
-    expect(change).toHaveBeenLastCalledWith({ historyBlocks: { shown: ['filters', 'day-totals', 'total'], hidden: [] } })
-    fireEvent.click(within(sheet).getByRole('button', { name: 'Убрать «Заметка» с экрана «Расход»' }))
-    expect(change).toHaveBeenLastCalledWith({ entryBlocks: { shown: ['tags'], hidden: ['note'] } })
-    expect(within(within(sheet).getByRole('region', { name: 'Экран «Аналитика»' })).getAllByRole('button', { name: /Перетащить/ })).toHaveLength(4)
-    expect(within(within(sheet).getByRole('region', { name: 'Экран «История»' })).queryByRole('button', { name: /Перетащить/ })).toBeNull()
+    expect(within(sheet).getAllByRole('button', { name: /^(Расход|История|Аналитика)/ }).map((row) => row.textContent)).toEqual(['Расходвсё на месте', 'Историяубрано 1', 'Аналитикавсё на месте'])
     expect(sheet.textContent).toContain('Видно только вам')
+    fireEvent.click(within(sheet).getByRole('button', { name: /^История/ }))
+    expect(edit).toHaveBeenCalledWith('history')
+    expect(screen.queryByRole('dialog', { name: 'Мои экраны' })).toBeNull()
+
+    // Пока трат нет, в истории и аналитике нечего настраивать.
+    rerender(view(expenseBootstrap()))
+    fireEvent.click(screen.getByRole('button', { name: /^Мои экраны/ }))
+    const empty = screen.getByRole('dialog', { name: 'Мои экраны' })
+    expect((within(empty).getByRole('button', { name: /^Аналитика/ }) as HTMLButtonElement).disabled).toBe(true)
+    expect(within(empty).getByRole('button', { name: /^Аналитика/ }).textContent).toBe('Аналитикапосле первых трат')
+    expect((within(empty).getByRole('button', { name: /^Расход/ }) as HTMLButtonElement).disabled).toBe(false)
   })
 })
 
@@ -1708,20 +1789,37 @@ describe('workspace onboarding controls', () => {
   it('restores shared background state when stacked dialogs unmount together', async () => {
     const outside = document.createElement('button')
     outside.textContent = 'Фоновое действие'
-    const originalInert = outside.inert
     document.body.append(outside)
     const view = render(<>
       <CreateWorkspaceSheet existing onClose={vi.fn()} onCreate={vi.fn().mockResolvedValue(undefined)}/>
       <WorkspaceSwitcher active="a" onCreate={vi.fn()} onSelect={vi.fn()} runtimes={{}} items={[{ id: 'a', name: 'A', role: 'owner', version: 1, joinedAt: '' }]}/>
     </>)
     expect(await screen.findAllByRole('dialog', { hidden: true })).toHaveLength(2)
-    expect(outside.inert).toBe(true)
+    expect(outside.hasAttribute('inert')).toBe(true)
 
     view.unmount()
 
-    expect(outside.inert).toBe(originalInert)
+    expect(outside.hasAttribute('inert')).toBe(false)
     expect(outside.getAttribute('aria-hidden')).toBeNull()
     outside.remove()
+  })
+
+  it('keeps what the app changed in the background while a sheet was open', async () => {
+    // Страница, которая была закрыта, пока шторка открыта, стала текущей: шторка не должна вернуть ей прежний inert.
+    const page = document.createElement('div')
+    page.setAttribute('inert', '')
+    page.setAttribute('aria-hidden', 'true')
+    document.body.append(page)
+    const view = render(<WorkspaceSwitcher active="a" onCreate={vi.fn()} onSelect={vi.fn()} runtimes={{}} items={[{ id: 'a', name: 'A', role: 'owner', version: 1, joinedAt: '' }]}/>)
+    expect(await screen.findByRole('dialog', { hidden: true })).not.toBeNull()
+    page.removeAttribute('inert')
+    page.setAttribute('aria-hidden', 'false')
+
+    view.unmount()
+
+    expect(page.hasAttribute('inert')).toBe(false)
+    expect(page.getAttribute('aria-hidden')).toBe('false')
+    page.remove()
   })
 
   it('confirms the link by itself once it is copied and hides «Позже» in blocking mode', async () => {
@@ -1908,13 +2006,13 @@ const authSession = (recoveryConfigured: boolean, settings: AccountSettings = {}
 
 // Целое приложение в jsdom: сеть и офлайн-хранилище подменены. Сервер доступен: неудачный запрос из прошлого теста
 // мог оставить в модуле пометку «сервер недоступен», поэтому сначала её снимает удачная проверка связи.
-async function renderSignedInApp({ recoveryConfigured = true, mods = [] as WorkspaceMod[], settings = {} as AccountSettings } = {}) {
+async function renderSignedInApp({ recoveryConfigured = true, mods = [] as WorkspaceMod[], settings = {} as AccountSettings, bootstrap = expenseBootstrap() } = {}) {
   const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => new Response(null, { status: 204 }))
   vi.stubGlobal('fetch', fetchMock)
   await workspaceApi.probeServer()
   let loggedOut = false
   vi.spyOn(workspaceApi, 'getSession').mockImplementation(async () => loggedOut ? guest : authSession(recoveryConfigured, settings))
-  vi.spyOn(workspaceApi, 'getBootstrap').mockResolvedValue({ data: expenseBootstrap(), offline: false })
+  vi.spyOn(workspaceApi, 'getBootstrap').mockResolvedValue({ data: bootstrap, offline: false })
   vi.spyOn(workspaceApi, 'syncAllWorkspaces').mockResolvedValue(undefined)
   vi.spyOn(workspaceApi, 'listMods').mockResolvedValue(mods)
   vi.spyOn(workspaceApi, 'getCardQueueStatus').mockResolvedValue({ pendingCount: 0 })
@@ -1974,22 +2072,42 @@ describe('appearance in the account', () => {
     expect([root.dataset.accent, root.dataset.textSize]).toEqual([undefined, undefined])
   })
 
-  it('takes a block off a screen from «Мои экраны» at once and keeps the change in the account', async () => {
+  it('arranges «Расход» right on it from «Мои экраны» and keeps the change in the account', async () => {
     const { fetchMock } = await renderSignedInApp()
     fireEvent.click(await screen.findByRole('button', { name: 'Настройки' }))
     const row = () => within(screen.getByRole('group', { name: 'Профиль' })).getByRole('button', { name: /^Мои экраны/ })
     expect(row().textContent).toBe('Мои экранывсё на месте')
     fireEvent.click(row())
-    const sheet = screen.getByRole('dialog', { name: 'Мои экраны' })
-    fireEvent.click(within(sheet).getByRole('button', { name: 'Убрать «Динамика» с экрана «Аналитика»' }))
-    fireEvent.click(within(sheet).getByRole('button', { name: 'Готово' }))
+    fireEvent.click(within(screen.getByRole('dialog', { name: 'Мои экраны' })).getByRole('button', { name: /^Расход/ }))
+
+    // Лента уехала на «Расход», шапка стала полосой настройки; сохранение и клавиатура приглушены.
+    expect(screen.getByRole('button', { name: 'Расход' }).getAttribute('aria-current')).toBe('page')
+    expect(screen.getByText('Настройка экрана')).not.toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Убрать «Заметка»' }))
     await waitFor(() => expect(fetchMock.mock.calls.some(([url, init]) => url === '/api/me/settings' && init?.method === 'PATCH'
-      && init.body === JSON.stringify({ settings: { analyticsBlocks: { shown: ['categories', 'tags', 'weekdays'], hidden: ['trend'] } } }))).toBe(true))
+      && init.body === JSON.stringify({ settings: { entryBlocks: { shown: ['tags'], hidden: ['note'] } } }))).toBe(true))
+    fireEvent.click(screen.getByRole('button', { name: 'Готово' }))
+
+    expect(screen.queryByText('Настройка экрана')).toBeNull()
+    expect(screen.getByRole('button', { name: 'Дом' })).not.toBeNull()
+    expect(screen.queryByRole('button', { name: 'Добавить заметку' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Настройки' }))
     expect(row().textContent).toBe('Мои экраныубрано 1')
+  })
+
+  it('leaves the screen setup when the person goes to another tab', async () => {
+    await renderSignedInApp({ bootstrap: expenseBootstrap({ expenses: [{ id: 'a', amountMinor: 1_000, currency: 'RSD', categoryId: 'products', note: null, tagIds: [], occurredAt: '2026-08-09T10:00:00.000Z', createdAt: '2026-08-09T10:00:00.000Z', updatedAt: '2026-08-09T10:00:00.000Z', version: 1, deletedAt: null }] }) })
+    fireEvent.click(await screen.findByRole('button', { name: 'История' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Настроить экран' }))
+    expect(screen.getByText('Настройка экрана')).not.toBeNull()
+    expect(screen.getByRole('button', { name: 'Убрать «Итог»' })).not.toBeNull()
 
     fireEvent.click(screen.getByRole('button', { name: 'Аналитика' }))
-    expect(await screen.findByRole('heading', { name: 'Категории' })).not.toBeNull()
-    expect(screen.queryByRole('heading', { name: 'Динамика' })).toBeNull()
+    expect(screen.queryByText('Настройка экрана')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Убрать «Итог»' })).toBeNull()
+    fireEvent.click(await screen.findByRole('button', { name: 'Настроить экран' }))
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(screen.queryByText('Настройка экрана')).toBeNull()
   })
 })
 

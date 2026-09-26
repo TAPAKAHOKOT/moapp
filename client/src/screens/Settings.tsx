@@ -1,24 +1,23 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { QRCodeSVG } from 'qrcode.react'
 import { WorkspaceApiError as ApiError, changeWorkspaceCurrency, createCategory, createDeviceLink, createInvitation, createTag, deleteTag, getSession, leaveWorkspace, listInvitations, listMembers, listSessions, prepareInitialOrManualRecovery, removeMember, renameWorkspace, revokeInvitation, revokeSession, saveMemberSettings, transferOwnership, updateCategory, updateProfile, updateTag } from '../workspace-api'
 import { clearWorkspaceOfflineData } from '../workspace-offline'
 import { patchSettings } from '../settings'
-import type { SettingsPatch } from '../settings'
 import { ACCENTS, DEFAULT_APPEARANCE, TEXT_SIZES, accentInfo } from '../appearance'
 import type { Appearance } from '../appearance'
 import { completeRotationSafely } from '../recovery-flow'
-import type { AccountSettings, AuthenticatedSession, Category, Expense, RecoveryPrepareResponse, SessionState, Tag, ThemePreference, WorkspaceMod, WorkspaceSummary } from '../types'
+import type { AuthenticatedSession, Category, Expense, RecoveryPrepareResponse, SessionState, Tag, ThemePreference, WorkspaceMod, WorkspaceSummary } from '../types'
 import { PINNED_CURRENCIES, lastEmoji, localDateKey, workspaceCurrency } from '../utils'
 import { buildHistoryCsv } from '../history'
-import { CategoryMark, ChevronIcon, CurrencySheet, ListSheet, TextSheet, Toast, copyText, tap, useConfirm, useDialog, useToast } from '../ui'
+import { CategoryMark, ChevronIcon, CurrencySheet, DragList, LayoutToggle, ListSheet, TextSheet, Toast, copyText, tap, useConfirm, useDialog, useToast } from '../ui'
 import type { SelectOption } from '../ui'
 import { formatLinkLifetime, formatRelativeTime } from '../format'
 import type { Bootstrap } from '../format'
 import { TAG_COLORS, TAG_COLOR_NAMES, TagEditor } from '../tags'
 import { ROOMY_TILES, categoryLayout, moveToMore, moveToShown, reorderGroup, tagLayout, toScreenOrder } from '../screen-order'
 import type { Layout } from '../screen-order'
-import { BLOCK_SCREENS, SCREENS, blocksOf, hiddenBlockCount, hideBlock, reorderBlocks, showBlock, toBlockLayout } from '../screen-blocks'
-import type { BlockInfo, BlockScreen, Blocks } from '../screen-blocks'
+import { BLOCK_SCREENS, SCREENS, blocksOf, hiddenBlockCount } from '../screen-blocks'
+import type { BlockScreen } from '../screen-blocks'
 import { RecoverySave } from './Access'
 
 // Ссылка приглашения или подключения: на телефоне главное действие — «Поделиться», сам URL человеку читать не нужно
@@ -271,78 +270,7 @@ export function AccessSettings({ user, workspace, bootstrap, setBootstrap, pendi
   </>
 }
 
-// Порядок в списке меняется перетаскиванием за ручку ≡ (или стрелками с клавиатуры) — вместо двух стрелок на каждую строку.
-// На iOS ручке нужен touch-action: none, иначе Safari отдаёт жест прокрутке и обрывает указатель.
-export function DragList<T extends { id: string }>({ items, disabled = false, className, onReorder, render }: { items: T[]; disabled?: boolean; className?: string; onReorder: (ids: string[]) => void; render: (item: T) => React.ReactNode }) {
-  const [order, setOrder] = useState<string[] | null>(null)
-  const [drag, setDrag] = useState<{ id: string; pointerY: number } | null>(null)
-  const listRef = useRef<HTMLDivElement>(null)
-  const grabOffset = useRef(0)
-  const shown = order ? order.map((id) => items.find((item) => item.id === id)).filter((item): item is T => Boolean(item)) : items
-  const rowOf = (id: string) => Array.from(listRef.current?.querySelectorAll<HTMLElement>('[data-drag-id]') ?? []).find((row) => row.dataset.dragId === id) ?? null
-  // Поднятая строка следует за пальцем; её место в списке уже поменялось, поэтому сдвиг считается от новой позиции в раскладке.
-  useLayoutEffect(() => {
-    if (!drag) return
-    const row = rowOf(drag.id)
-    const list = listRef.current
-    if (!row || !list) return
-    row.style.transform = `translateY(${drag.pointerY - (list.getBoundingClientRect().top + row.offsetTop + grabOffset.current)}px)`
-  }, [drag, order])
-  const start = (event: React.PointerEvent<HTMLElement>, id: string) => {
-    if (disabled || event.button !== 0) return
-    const row = rowOf(id)
-    if (!row) return
-    event.currentTarget.setPointerCapture?.(event.pointerId)
-    grabOffset.current = event.clientY - row.getBoundingClientRect().top
-    setOrder(items.map((item) => item.id))
-    setDrag({ id, pointerY: event.clientY })
-  }
-  const move = (event: React.PointerEvent) => {
-    if (!drag) return
-    const rows = Array.from(listRef.current?.querySelectorAll<HTMLElement>('[data-drag-id]') ?? []).filter((row) => row.dataset.dragId !== drag.id)
-    // Новая позиция — число чужих строк, середину которых палец уже прошёл.
-    let index = 0
-    for (const row of rows) { const rect = row.getBoundingClientRect(); if (event.clientY > rect.top + rect.height / 2) index += 1 }
-    setOrder((current) => {
-      if (!current) return current
-      const without = current.filter((id) => id !== drag.id)
-      const next = [...without.slice(0, index), drag.id, ...without.slice(index)]
-      return next.every((id, at) => id === current[at]) ? current : next
-    })
-    setDrag({ id: drag.id, pointerY: event.clientY })
-  }
-  const end = (commit: boolean) => {
-    if (!drag) return
-    const row = rowOf(drag.id)
-    if (row) row.style.transform = ''
-    const next = order
-    setDrag(null); setOrder(null)
-    if (commit && next && next.some((id, at) => id !== items[at]?.id)) onReorder(next)
-  }
-  const keyMove = (event: React.KeyboardEvent, id: string) => {
-    const direction = event.key === 'ArrowUp' ? -1 : event.key === 'ArrowDown' ? 1 : 0
-    if (!direction || disabled) return
-    event.preventDefault()
-    const ids = items.map((item) => item.id)
-    const index = ids.indexOf(id)
-    const target = index + direction
-    if (index < 0 || target < 0 || target >= ids.length) return
-    ;[ids[index], ids[target]] = [ids[target]!, ids[index]!]
-    onReorder(ids)
-  }
-  return <div ref={listRef} className={`drag-list${className ? ` ${className}` : ''}${drag ? ' dragging' : ''}`}>{shown.map((item) => <div key={item.id} data-drag-id={item.id} className={`drag-row${drag?.id === item.id ? ' lifted' : ''}`}>
-    {render(item)}
-    {items.length > 1 && <span className="drag-handle" role="button" tabIndex={disabled ? -1 : 0} aria-label="Перетащить, чтобы изменить порядок" aria-disabled={disabled} onPointerDown={(event) => start(event, item.id)} onPointerMove={move} onPointerUp={() => end(true)} onPointerCancel={() => end(false)} onKeyDown={(event) => keyMove(event, item.id)}>≡</span>}
-  </div>)}</div>
-}
-
 export type { ThemePreference }
-
-// «−» убирает с экрана, «+» ставит обратно. Знаки нарисованы: символы шрифта сидят на строке текста
-// и в Safari на iPhone уезжали из центра круга.
-export function LayoutToggle({ shown, label, onToggle }: { shown: boolean; label: string; onToggle: () => void }) {
-  return <button type="button" className={`layout-toggle${shown ? ' shown' : ''}`} aria-label={label} onClick={() => { tap(4); onToggle() }}><span aria-hidden="true"><svg viewBox="0 0 12 12" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><path d={shown ? 'M2.5 6h7' : 'M2.5 6h7M6 2.5v7'}/></svg></span></button>
-}
 
 export const THEME_OPTIONS: SelectOption[] = [{ value: 'system', label: 'Как в системе' }, { value: 'light', label: 'Светлая' }, { value: 'dark', label: 'Тёмная' }]
 
@@ -369,38 +297,6 @@ export function AppearanceSheet({ appearance, onChange, onClose }: { appearance:
   </ListSheet>
 }
 
-// Какие блоки стоят на экранах: «−» убирает блок, «+» возвращает его в конец экрана, ≡ в аналитике меняет порядок.
-// Из настроек открываются все экраны сразу («Мои экраны»), с самого экрана — только он. Меняется сразу и только у
-// самого человека, на любом его устройстве.
-export function ScreenBlocksSheet({ screens = BLOCK_SCREENS, settings, onChange, onClose }: { screens?: BlockScreen[]; settings?: AccountSettings; onChange: (patch: SettingsPatch<AccountSettings>) => void; onClose: () => void }) {
-  const single = screens.length === 1 ? SCREENS[screens[0]!] : null
-  return <ListSheet title={single ? `Экран «${single.title}»` : 'Мои экраны'} onClose={onClose}>
-    {screens.map((screen) => {
-      const info = SCREENS[screen]
-      const blocks = blocksOf(screen, settings)
-      const save = (next: Blocks) => {
-        const patch: SettingsPatch<AccountSettings> = {}
-        patch[info.setting] = toBlockLayout(next)
-        onChange(patch)
-      }
-      const row = (block: BlockInfo, shown: boolean) => <>
-        <LayoutToggle shown={shown} label={shown ? `Убрать «${block.name}» с экрана «${info.title}»` : `Вернуть «${block.name}» на экран «${info.title}»`} onToggle={() => save(shown ? hideBlock(blocks, block.id) : showBlock(blocks, block.id))}/>
-        <span className="block-name"><b>{block.name}</b><small>{block.hint}</small></span>
-      </>
-      return <section key={screen} className="blocks-section" aria-label={`Экран «${info.title}»`}>
-        {!single && <h3>{info.title}</h3>}
-        {info.reorder
-          ? <DragList className="blocks-list" items={blocks.shown} onReorder={(ids) => save(reorderBlocks(blocks, ids))} render={(block) => row(block, true)}/>
-          : <div className="drag-list blocks-list">{blocks.shown.map((block) => <div key={block.id} className="drag-row">{row(block, true)}</div>)}</div>}
-        {blocks.hidden.length > 0 && <div className="drag-list blocks-list">{blocks.hidden.map((block) => <div key={block.id} className="drag-row off">{row(block, false)}</div>)}</div>}
-        <p className="blocks-fixed">{info.fixed}</p>
-      </section>
-    })}
-    <p className="sheet-copy">Видно только вам — на любом вашем устройстве.</p>
-    <button type="button" className="primary sheet-action" onClick={onClose}>Готово</button>
-  </ListSheet>
-}
-
 // Экспорт CSV живёт в настройках: это действие раз в квартал, а не при каждом просмотре истории.
 export function exportHistoryCsv(bootstrap: Bootstrap) {
   const expenses = bootstrap.expenses.filter((item) => !item.deletedAt).sort((left, right) => right.occurredAt.localeCompare(left.occurredAt))
@@ -422,7 +318,7 @@ export type SettingsSheet = 'categories' | 'tags' | 'appearance' | 'screens' | n
 // Настройки — плоский список в три группы: «что это за пространство», «кто я и как у меня выглядит приложение»
 // (это живёт в аккаунте и едет на любое устройство), «что на этом телефоне». Без сегментов и вложенных заголовков:
 // строка = одно понятие, всё, что требует экрана, открывается шитом.
-export function SettingsView({ user, workspace, workspaceId, bootstrap, setBootstrap, pendingCount, refreshPending, onLogout, appearance=DEFAULT_APPEARANCE, onAppearanceChange=()=>{}, onAccountSettingsChange=()=>{}, onSession, online, mods=null, onOpenMods=()=>{}, loadOlderExpenses }: { user: AuthenticatedSession; workspace:WorkspaceSummary; workspaceId:string; bootstrap:Bootstrap; setBootstrap:React.Dispatch<React.SetStateAction<Bootstrap>>; pendingCount:number; refreshPending:()=>void;onLogout:()=>void;appearance?:Appearance;onAppearanceChange?:(patch:Partial<Appearance>)=>void;onAccountSettingsChange?:(patch:SettingsPatch<AccountSettings>)=>void;onSession:(session:SessionState)=>Promise<void>;online:boolean;mods?:WorkspaceMod[]|null;onOpenMods?:()=>void;loadOlderExpenses?:()=>Promise<Expense[]> }) {
+export function SettingsView({ user, workspace, workspaceId, bootstrap, setBootstrap, pendingCount, refreshPending, onLogout, appearance=DEFAULT_APPEARANCE, onAppearanceChange=()=>{}, onEditScreen=()=>{}, onSession, online, mods=null, onOpenMods=()=>{}, loadOlderExpenses }: { user: AuthenticatedSession; workspace:WorkspaceSummary; workspaceId:string; bootstrap:Bootstrap; setBootstrap:React.Dispatch<React.SetStateAction<Bootstrap>>; pendingCount:number; refreshPending:()=>void;onLogout:()=>void;appearance?:Appearance;onAppearanceChange?:(patch:Partial<Appearance>)=>void;onEditScreen?:(screen:BlockScreen)=>void;onSession:(session:SessionState)=>Promise<void>;online:boolean;mods?:WorkspaceMod[]|null;onOpenMods?:()=>void;loadOlderExpenses?:()=>Promise<Expense[]> }) {
   const [sheet,setSheet]=useState<SettingsSheet>(null)
   const [editing,setEditing]=useState<Category|null>(null)
   const [adding,setAdding]=useState(false)
@@ -498,6 +394,7 @@ export function SettingsView({ user, workspace, workspaceId, bootstrap, setBoots
   const modsNeedAttention=addedMods.some((mod)=>mod.state?.status==='error')
   const modsValue=mods===null?(online?'…':'нужна сеть'):modsNeedAttention?'нужно обновить':addedMods.length?String(addedMods.length):'нет'
   const hiddenBlocks=hiddenBlockCount(user.settings)
+  const hasExpenses=bootstrap.expenses.some((expense)=>!expense.deletedAt)
   // «−» убирает с «Расхода» за «Ещё», «+» ставит обратно в конец ряда; ≡ меняет порядок внутри группы.
   const layoutToggle=(name:string,shown:boolean,move:()=>void)=><LayoutToggle shown={shown} label={shown?`Убрать «${name}» с «Расхода»`:`Поставить «${name}» на «Расход»`} onToggle={move}/>
   const categoryRow=(shown:boolean)=>(category:Category)=><>
@@ -555,7 +452,15 @@ export function SettingsView({ user, workspace, workspaceId, bootstrap, setBoots
       <button type="button" className="primary sheet-action" disabled={!online} onClick={()=>setAddingTag(true)}>Новый тег</button>
     </ListSheet>}
     {sheet==='appearance'&&<AppearanceSheet appearance={appearance} onChange={onAppearanceChange} onClose={()=>setSheet(null)}/>}
-    {sheet==='screens'&&<ScreenBlocksSheet settings={user.settings} onChange={onAccountSettingsChange} onClose={()=>setSheet(null)}/>}
+    {sheet==='screens'&&<ListSheet title="Мои экраны" onClose={()=>setSheet(null)}>
+      <div className="settings-rows">{BLOCK_SCREENS.map((screen)=>{
+        const hidden=blocksOf(screen,user.settings).hidden.length
+        // Историю и аналитику нечего настраивать, пока нет ни одной траты: их блоки появляются вместе с записями.
+        const waiting=screen!=='entry'&&!hasExpenses
+        return <SettingsRow key={screen} label={SCREENS[screen].title} value={waiting?'после первых трат':hidden?`убрано ${hidden}`:'всё на месте'} disabled={waiting} onClick={()=>{setSheet(null);onEditScreen(screen)}}/>
+      })}</div>
+      <p className="sheet-copy">Экран откроется в режиме настройки: «−» убирает блок, пунктир возвращает. Видно только вам — на любом вашем устройстве.</p>
+    </ListSheet>}
     {(editing||adding)&&<CategoryEditor category={editing} workspaceName={workspace.name} onClose={()=>{setEditing(null);setAdding(false)}} onSave={save}/>}
     {(editingTag||addingTag)&&<TagEditor tag={editingTag} onClose={()=>{setEditingTag(null);setAddingTag(false)}} onSave={saveTag} onDelete={editingTag?()=>removeTag(editingTag):undefined}/>}
     {notice&&<Toast toast={notice} onDismiss={hideNotice}/>}

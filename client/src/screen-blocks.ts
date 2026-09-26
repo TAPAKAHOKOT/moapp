@@ -1,9 +1,10 @@
 import type { AccountSettings, BlockLayout } from './types'
 
 /*
- * Экраны из блоков. Что стоит на «Расходе», «Истории» и «Аналитике», решает сам человек: убирает блок, возвращает его
- * и в аналитике переставляет. Раскладка живёт в аккаунте и одна на все пространства. Основа экрана не убирается:
- * без неё экран теряет смысл. Кто ничего не трогал, видит все блоки в исходном порядке — экраны как раньше.
+ * Экраны из блоков. Что стоит на «Расходе», «Истории» и «Аналитике», решает сам человек прямо на экране, в режиме
+ * «Настройка экрана»: убирает блок, возвращает его и в аналитике переставляет. Раскладка живёт в аккаунте и одна на все
+ * пространства. Основа экрана не убирается: без неё экран теряет смысл. Кто ничего не трогал, видит все блоки
+ * в исходном порядке — экраны как раньше.
  */
 
 export type BlockScreen = 'entry' | 'history' | 'analytics'
@@ -13,34 +14,28 @@ export type BlockInfo = { id: string; name: string; hint: string }
 type ScreenInfo = {
   title: string
   setting: 'entryBlocks' | 'historyBlocks' | 'analyticsBlocks'
-  /** Можно ли менять порядок: на «Расходе» и в «Истории» у блоков своё место. */
-  reorder: boolean
-  /** Что на экране есть всегда. */
-  fixed: string
   blocks: BlockInfo[]
 }
 
 export const SCREENS: Readonly<Record<BlockScreen, ScreenInfo>> = {
   entry: {
-    title: 'Расход', setting: 'entryBlocks', reorder: false,
-    fixed: 'Сумма, клавиатура, плитки и «Сохранить» — всегда на месте.',
+    title: 'Расход', setting: 'entryBlocks',
     blocks: [
       { id: 'note', name: 'Заметка', hint: 'кнопка «＋ Заметка» под плитками' },
       { id: 'tags', name: 'Теги', hint: 'ряд тегов под плитками' },
     ],
   },
   history: {
-    title: 'История', setting: 'historyBlocks', reorder: false,
-    fixed: 'Список расходов и напоминания — всегда на месте.',
+    title: 'История', setting: 'historyBlocks',
     blocks: [
-      { id: 'filters', name: 'Фильтры и поиск', hint: 'даты, категории, валюты и теги над списком' },
-      { id: 'total', name: 'Итог', hint: 'сумма и число записей над списком' },
+      { id: 'filters', name: 'Фильтры и поиск', hint: 'даты, категории, валюты и теги' },
+      { id: 'total', name: 'Итог', hint: 'сумма и число записей' },
       { id: 'day-totals', name: 'Суммы по дням', hint: 'сколько потрачено за день, рядом с датой' },
     ],
   },
+  // Карточки аналитики переставляются; на «Расходе» и в «Истории» у каждого блока своё место.
   analytics: {
-    title: 'Аналитика', setting: 'analyticsBlocks', reorder: true,
-    fixed: 'Сумма за период и выбор недели или месяца — всегда на месте.',
+    title: 'Аналитика', setting: 'analyticsBlocks',
     blocks: [
       { id: 'trend', name: 'Динамика', hint: 'график трат по дням' },
       { id: 'categories', name: 'Категории', hint: 'круг и список категорий' },
@@ -51,6 +46,8 @@ export const SCREENS: Readonly<Record<BlockScreen, ScreenInfo>> = {
 }
 
 export const BLOCK_SCREENS = Object.keys(SCREENS) as BlockScreen[]
+
+export const blockInfo = (screen: BlockScreen, id: string) => SCREENS[screen].blocks.find((block) => block.id === id)!
 
 export type Blocks = { shown: BlockInfo[]; hidden: BlockInfo[] }
 
@@ -89,6 +86,8 @@ export function showBlock(blocks: Blocks, id: string): Blocks {
   const block = blocks.hidden.find((item) => item.id === id)
   return block ? { shown: [...blocks.shown, block], hidden: blocks.hidden.filter((item) => item !== block) } : blocks
 }
+
+export const toggleBlock = (blocks: Blocks, id: string) => isShown(blocks, id) ? hideBlock(blocks, id) : showBlock(blocks, id)
 
 export function reorderBlocks(blocks: Blocks, ids: string[]): Blocks {
   const rank = new Map(ids.map((id, index) => [id, index]))

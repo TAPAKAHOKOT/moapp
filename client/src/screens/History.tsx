@@ -6,13 +6,13 @@ import type { AccountSettings, BlockLayout, Category, Currency, Expense, Tag } f
 import { appTimeZone, cachedDateTimeFormat, localDateKey, monthDateRange, shiftDateKey, weekdayFromDateKey, workspaceCurrency } from '../utils'
 import { HISTORY_PERIOD_LABELS, defaultHistoryPreferences, expenseTagNames, filterHistoryExpenses, historyTotals, parseHistoryPreferences } from '../history'
 import type { HistoryPeriod, HistoryPreferences } from '../history'
-import { CardMark, CategoryMark, ChevronIcon, LockIcon, MultiSelect, SearchIcon, Toast, TrashIcon, tap, useDialog, useOverflowHint, useToast } from '../ui'
+import { CardMark, CategoryMark, ChevronIcon, EditBlock, LockIcon, MultiSelect, SearchIcon, Toast, TrashIcon, tap, useDialog, useOverflowHint, useToast } from '../ui'
 import { formatAnalyticsAmount, formatDateRange, formatHistoryDate, money, pluralRu } from '../format'
 import type { Bootstrap } from '../format'
 import { sortTags } from '../tags'
 import { categoryLayout, inOrder } from '../screen-order'
-import { isShown, screenBlocks } from '../screen-blocks'
-import { ScreenBlocksSheet } from './Settings'
+import { blockInfo, isShown, screenBlocks, toBlockLayout, toggleBlock } from '../screen-blocks'
+import type { BlockScreen } from '../screen-blocks'
 
 // Календарь для фильтра истории: первый тап — начало, второй — конец; один день — два тапа по одной дате.
 // Нативный <input type="date"> в iOS Safari закрывался сразу после открытия, поэтому даты выбираются в шите.
@@ -89,8 +89,10 @@ type RowGesture = { x: number; y: number; touchId: number | null; dragging: bool
 
 const usesNativeTouch = () => typeof window !== 'undefined' && 'ontouchstart' in window
 
-export const HistoryRow = memo(function HistoryRow({ expense, category, tags, currencies, checked, selecting, open, disabled, onOpen, onToggle, onEdit, onDelete, onVoided }: {
+export const HistoryRow = memo(function HistoryRow({ expense, category, tags, currencies, checked, selecting, open, disabled, inert = false, onOpen, onToggle, onEdit, onDelete, onVoided }: {
   expense: Expense; category?: Category; tags: Tag[]; currencies: Currency[]; checked: boolean; selecting: boolean; open: boolean; disabled: boolean
+  /** Пока экран настраивают, строки видны, но не нажимаются. */
+  inert?: boolean
   onOpen: (id: string | null) => void; onToggle: (id: string) => void; onEdit: (id: string) => void; onDelete: (expense: Expense) => void; onVoided?: (expense: Expense) => void
 }) {
   const root = useRef<HTMLDivElement>(null)
@@ -200,7 +202,7 @@ export const HistoryRow = memo(function HistoryRow({ expense, category, tags, cu
   const tagList = expense.tagIds?.length ? tags.filter((tag) => expense.tagIds?.includes(tag.id)) : []
   const categoryName = category?.name || 'Скрытая категория'
   const details = [expense.note, tagList.map((tag) => `#${tag.name}`).join(' ')].filter(Boolean).join(' · ')
-  return <div ref={root} className={`history-expense${checked ? ' selected' : ''}${open ? ' open' : ''}${dragOffset !== null ? ' dragging' : ''}`} onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={pointerEnd} onPointerCancel={pointerEnd}>
+  return <div ref={root} className={`history-expense${checked ? ' selected' : ''}${open ? ' open' : ''}${dragOffset !== null ? ' dragging' : ''}`} inert={inert} onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={pointerEnd} onPointerCancel={pointerEnd}>
     <div className="history-swipe" style={{ transform: translate ? `translateX(${translate}px)` : undefined, transition: dragOffset === null ? undefined : 'none', willChange: dragOffset === null ? undefined : 'transform' }}>
       <label className="expense-check" aria-label={`Выбрать расход ${categoryName}`}><input type="checkbox" tabIndex={selecting ? 0 : -1} checked={checked} onChange={() => onToggle(expense.id)}/><span/></label>
       <button type="button" className={`history-row${expense.voidedAt ? ' voided' : ''}`} aria-pressed={selecting ? checked : undefined} onClick={click}><CategoryMark category={category}/><span><b>{categoryName}</b>{details && <small>{details}</small>}</span><strong>{money(expense.amountMinor,expense.currency,currencies)}</strong>{expense.voidedAt && <em className="voided-badge" aria-label="Платёж не прошёл, не учитывается">{expense.voidReason?.kind === 'reversed' ? 'Возврат' : 'Не прошёл'}</em>}</button>
@@ -218,7 +220,7 @@ export type HistoryOlder = { count: number; since: string; busy: boolean; load: 
 
 // Вкладка не размонтируется, пока открыто пространство, поэтому она не должна перерисовываться от чужих
 // изменений состояния приложения — только от своих данных и колбэков (все они стабильны у родителя).
-export const HistoryView = memo(function HistoryView({ userId, workspaceId, bootstrap, setBootstrap, edit, createNew, refreshPending, inbox = null, reminder = null, timeZone = appTimeZone(), older = null, blocks, onScreensChange = () => {} }: {
+export const HistoryView = memo(function HistoryView({ userId, workspaceId, bootstrap, setBootstrap, edit, createNew, refreshPending, inbox = null, reminder = null, timeZone = appTimeZone(), older = null, blocks, editing = false, onEditScreen = () => {}, onScreensChange = () => {} }: {
   userId: string
   workspaceId: string
   bootstrap: Bootstrap
@@ -231,8 +233,11 @@ export const HistoryView = memo(function HistoryView({ userId, workspaceId, boot
   /** Календарь телефона: дни истории и итоги пересчитываются, когда пояс меняется. */
   timeZone?: string
   older?: HistoryOlder | null
-  /** Какие блоки «Истории» человек оставил на экране, и как это поменять («Настроить экран»). */
+  /** Какие блоки «Истории» человек оставил на экране. Меняет их он сам в режиме «Настройка экрана» (`editing`), куда
+   *  ведёт «Настроить экран» внизу списка. */
   blocks?: BlockLayout
+  editing?: boolean
+  onEditScreen?: (screen: BlockScreen) => void
   onScreensChange?: (patch: SettingsPatch<AccountSettings>) => void
 }) {
   // Фильтры помнит аккаунт, строка поиска живёт, только пока приложение открыто.
@@ -246,8 +251,8 @@ export const HistoryView = memo(function HistoryView({ userId, workspaceId, boot
   const [showParts, setShowParts] = useState(false)
   const [voided, setVoided] = useState<Expense | null>(null)
   const [including, setIncluding] = useState(false)
-  const [blocksSheet, setBlocksSheet] = useState(false)
   const { toast, notify, dismiss } = useToast()
+  const pageRef = useRef<HTMLElement>(null)
   // Блоки «Истории» у каждого свои. Без блока фильтров фильтры не действуют: иначе убранный блок молча прятал бы
   // расходы. Сами фильтры не теряются и вернутся вместе с блоком.
   const historyBlocks = useMemo(() => screenBlocks('history', blocks), [blocks])
@@ -255,6 +260,18 @@ export const HistoryView = memo(function HistoryView({ userId, workspaceId, boot
   const showTotal = isShown(historyBlocks, 'total')
   const showDayTotals = isShown(historyBlocks, 'day-totals')
   const activeFilters = useMemo(() => showFilters ? filters : defaultHistoryPreferences(localDateKey(new Date())), [showFilters, filters])
+  // Настройка экрана начинается сверху, где стоят блоки; выбор записей и открытый свайп ей не нужны.
+  useEffect(() => {
+    if (!editing) return
+    setSelected(new Set())
+    setOpenRow(null)
+    const slot = pageRef.current?.closest<HTMLElement>('.page-slot')
+    if (slot) slot.scrollTop = 0
+  }, [editing])
+  const editBlock = (id: string, withHint = false) => {
+    const block = blockInfo('history', id)
+    return { name: block.name, hint: withHint ? block.hint : undefined, shown: isShown(historyBlocks, id), onToggle: () => onScreensChange({ historyBlocks: toBlockLayout(toggleBlock(historyBlocks, id)) }) }
+  }
   // Всё производное от данных и фильтров считается один раз на их изменение: вкладка остаётся смонтированной,
   // пока открыто пространство, и без мемоизации каждый рендер приложения (например свайп по расходам на экране
   // ввода) заново фильтровал, группировал и форматировал всю историю.
@@ -329,6 +346,9 @@ export const HistoryView = memo(function HistoryView({ userId, workspaceId, boot
   const filtersActive = Boolean(normalizedQuery || activeFilters.categoryIds.length || activeFilters.tagIds.length || activeFilters.currencies.length || activeFilters.period !== 'all')
   const chipStrip = useRef<HTMLDivElement>(null)
   const chipsMore = useOverflowHint(chipStrip)
+  // Поле поиска получает фокус, только когда его открыли тапом по лупе. Поле монтируется заново и после выбора записей,
+  // и после настройки экрана, и autoFocus тогда сам открывал бы клавиатуру.
+  const focusSearch = useRef(false)
   const resetFilters = () => {
     setFilters(defaultHistoryPreferences(localDateKey(new Date())))
     setSelected(new Set())
@@ -430,43 +450,53 @@ export const HistoryView = memo(function HistoryView({ userId, workspaceId, boot
     ? (filters.from && filters.to ? formatDateRange(filters.from, filters.to) : 'Даты')
     : HISTORY_PERIOD_LABELS[filters.period]
   const countLabel = expenses.length !== activeExpenses.length ? `${expenses.length} из ${activeExpenses.length} записей` : `${expenses.length} ${pluralRu(expenses.length, ['запись', 'записи', 'записей'])}`
-  return <section className="page history-page">
-    {activeExpenses.length > 0 && (selected.size > 0 || showFilters || showTotal) && <div className="history-toolbar">
-      {selected.size > 0
-        ? <div className="history-selectbar" role="toolbar" aria-label="Выбранные расходы"><span>Выбрано {selected.size}</span><button type="button" className="danger-link" onClick={removeSelected} disabled={deleting} aria-label={`Удалить выбранные расходы: ${selected.size}`}>Удалить</button><button type="button" className="text-button" onClick={() => setSelected(new Set())}>Отмена</button></div>
-        : showFilters && <div className={`history-chips${chipsMore ? ' more' : ''}`}>
-          <div className="history-chip-strip" ref={chipStrip}>
-          <button type="button" className={`filter-chip${filters.period !== 'all' ? ' active' : ''}`} aria-label="Период истории" aria-haspopup="dialog" aria-expanded={periodOpen} onClick={() => setPeriodOpen(true)}><span>{periodLabel}</span><ChevronIcon/></button>
-          <MultiSelect label="Категория истории" title="Категории" placeholder="Категория" allLabel="Все категории" values={filters.categoryIds} onChange={(values) => updateFilters({ categoryIds: values })} count={(n) => `${n} ${pluralRu(n, ['категория', 'категории', 'категорий'])}`} options={categoryOptions.map((category) => ({ value: category.id, label: category.emoji ? `${category.emoji} ${category.name}` : category.name, ...(category.archivedAt ? { hint: 'скрыта' } : {}) }))}/>
-          {(currencyOptions.length > 1 || filters.currencies.length > 0) && <MultiSelect label="Валюта истории" title="Валюты" placeholder="Валюта" allLabel="Все валюты" values={filters.currencies} onChange={(values) => updateFilters({ currencies: values })} count={(n) => `${n} ${pluralRu(n, ['валюта', 'валюты', 'валют'])}`} options={currencyOptions.map((currency) => ({ value: currency.code, label: currency.code, hint: currency.name }))}/>}
-          {(tagOptions.length > 0 || filters.tagIds.length > 0) && <MultiSelect label="Тег истории" title="Теги" placeholder="Тег" allLabel="Все теги" values={filters.tagIds} onChange={(values) => updateFilters({ tagIds: values })} count={(n) => `${n} ${pluralRu(n, ['тег', 'тега', 'тегов'])}`} options={tagOptions.map((tag) => ({ value: tag.id, label: tag.name }))}/>}
-          </div>
-          <button type="button" className={`filter-chip chip-icon${searchOpen || filters.query ? ' active' : ''}`} aria-label="Поиск" aria-pressed={searchOpen} onClick={() => { if (searchOpen) updateFilters({ query: '' }); setSearchOpen((value) => !value) }}><SearchIcon/></button>
-        </div>}
-      {showFilters && (searchOpen || filters.query) && selected.size === 0 && <input className="search" type="search" placeholder="Поиск" aria-label="Поиск по истории" autoFocus value={filters.query} onChange={(event) => updateFilters({ query: event.target.value })}/>}
-      {periodOpen && <PeriodSheet value={filters.period} onClose={() => setPeriodOpen(false)} onSelect={(period) => {
-        setPeriodOpen(false)
-        // Свой период без дат бесполезен, поэтому календарь открывается сразу.
-        if (period === 'range') { setCalendar(true); return }
-        if (period !== filters.period) updateFilters({ period })
-      }}/>}
-      {/* Без блока «Итог» строка остаётся, только пока фильтр что-то прячет: сколько показано и как сбросить. */}
-      {(showTotal || filtersActive) && <div className="history-total-line">
-        {showTotal && totalLabel && <button type="button" className="history-total" aria-label={`Сумма показанных расходов: ${totalLabel}`} aria-expanded={totalParts ? showParts : undefined} onClick={() => totalParts && setShowParts((value) => !value)}>{totalLabel}</button>}
-        <span>{showTotal && totalLabel ? '· ' : ''}{countLabel}</span>
-        {filtersActive && <button type="button" className="history-reset" onClick={resetFilters}>Сбросить</button>}
+  // Строка чипов и поиск — блок «Фильтры и поиск», сумма и число записей — блок «Итог». В режиме «Настройка экрана»
+  // они стоят на своих местах в рамке с «−», а убранные — пунктирными заготовками.
+  const chips = <div className={`history-chips${chipsMore ? ' more' : ''}`}>
+    <div className="history-chip-strip" ref={chipStrip}>
+    <button type="button" className={`filter-chip${filters.period !== 'all' ? ' active' : ''}`} aria-label="Период истории" aria-haspopup="dialog" aria-expanded={periodOpen} onClick={() => setPeriodOpen(true)}><span>{periodLabel}</span><ChevronIcon/></button>
+    <MultiSelect label="Категория истории" title="Категории" placeholder="Категория" allLabel="Все категории" values={filters.categoryIds} onChange={(values) => updateFilters({ categoryIds: values })} count={(n) => `${n} ${pluralRu(n, ['категория', 'категории', 'категорий'])}`} options={categoryOptions.map((category) => ({ value: category.id, label: category.emoji ? `${category.emoji} ${category.name}` : category.name, ...(category.archivedAt ? { hint: 'скрыта' } : {}) }))}/>
+    {(currencyOptions.length > 1 || filters.currencies.length > 0) && <MultiSelect label="Валюта истории" title="Валюты" placeholder="Валюта" allLabel="Все валюты" values={filters.currencies} onChange={(values) => updateFilters({ currencies: values })} count={(n) => `${n} ${pluralRu(n, ['валюта', 'валюты', 'валют'])}`} options={currencyOptions.map((currency) => ({ value: currency.code, label: currency.code, hint: currency.name }))}/>}
+    {(tagOptions.length > 0 || filters.tagIds.length > 0) && <MultiSelect label="Тег истории" title="Теги" placeholder="Тег" allLabel="Все теги" values={filters.tagIds} onChange={(values) => updateFilters({ tagIds: values })} count={(n) => `${n} ${pluralRu(n, ['тег', 'тега', 'тегов'])}`} options={tagOptions.map((tag) => ({ value: tag.id, label: tag.name }))}/>}
+    </div>
+    <button type="button" className={`filter-chip chip-icon${searchOpen || filters.query ? ' active' : ''}`} aria-label="Поиск" aria-pressed={searchOpen} onClick={() => { if (searchOpen) updateFilters({ query: '' }); else focusSearch.current = true; setSearchOpen((value) => !value) }}><SearchIcon/></button>
+  </div>
+  const search = (searchOpen || filters.query) && <input ref={(node) => { if (node && focusSearch.current) { focusSearch.current = false; node.focus() } }} className="search" type="search" placeholder="Поиск" aria-label="Поиск по истории" value={filters.query} onChange={(event) => updateFilters({ query: event.target.value })}/>
+  // Без блока «Итог» строка остаётся, только пока фильтр что-то прячет: сколько показано и как сбросить.
+  const totalLine = <div className="history-total-line">
+    {showTotal && totalLabel && <button type="button" className="history-total" aria-label={`Сумма показанных расходов: ${totalLabel}`} aria-expanded={totalParts ? showParts : undefined} onClick={() => totalParts && setShowParts((value) => !value)}>{totalLabel}</button>}
+    <span>{showTotal && totalLabel ? '· ' : ''}{countLabel}</span>
+    {filtersActive && <button type="button" className="history-reset" onClick={resetFilters}>Сбросить</button>}
+  </div>
+  return <section ref={pageRef} className={`page history-page${editing ? ' arranging' : ''}`}>
+    {editing
+      ? <div className="history-toolbar">
+        <EditBlock {...editBlock('filters', true)}>{chips}{search}</EditBlock>
+        <EditBlock {...editBlock('total', true)}>{totalLine}</EditBlock>
+      </div>
+      : activeExpenses.length > 0 && (selected.size > 0 || showFilters || showTotal) && <div className="history-toolbar">
+        {selected.size > 0
+          ? <div className="history-selectbar" role="toolbar" aria-label="Выбранные расходы"><span>Выбрано {selected.size}</span><button type="button" className="danger-link" onClick={removeSelected} disabled={deleting} aria-label={`Удалить выбранные расходы: ${selected.size}`}>Удалить</button><button type="button" className="text-button" onClick={() => setSelected(new Set())}>Отмена</button></div>
+          : showFilters && chips}
+        {showFilters && selected.size === 0 && search}
+        {periodOpen && <PeriodSheet value={filters.period} onClose={() => setPeriodOpen(false)} onSelect={(period) => {
+          setPeriodOpen(false)
+          // Свой период без дат бесполезен, поэтому календарь открывается сразу.
+          if (period === 'range') { setCalendar(true); return }
+          if (period !== filters.period) updateFilters({ period })
+        }}/>}
+        {(showTotal || filtersActive) && totalLine}
+        {showTotal && showParts && totalParts && <p className="history-total-parts">{totalParts}{totals.missing.length ? ` · нет курса: ${totals.missing.join(', ')}` : ''}</p>}
       </div>}
-      {showTotal && showParts && totalParts && <p className="history-total-parts">{totalParts}{totals.missing.length ? ` · нет курса: ${totals.missing.join(', ')}` : ''}</p>}
-    </div>}
     {reminder && !selected.size && (reminder.compact
-      ? <div className="history-inbox history-reminder compact"><span className="reminder-mark"><LockIcon/></span><b>Сохраните ссылку доступа</b><button type="button" className="text-button reminder-save" onClick={reminder.onSave}>Сохранить</button><button type="button" className="text-button reminder-later" onClick={reminder.onLater}>Позже</button></div>
-      : <div className="history-inbox history-reminder"><span className="reminder-mark"><LockIcon/></span><span><b>Сохраните ссылку доступа</b><small>Иначе без этого телефона расходы не вернуть</small></span><span className="reminder-actions"><button type="button" className="reminder-action" onClick={reminder.onSave}>Сохранить</button><button type="button" className="text-button reminder-later" onClick={reminder.onLater}>Позже</button></span></div>)}
-    {inbox && inbox.count > 0 && !selected.size && <button type="button" className="history-inbox" onClick={inbox.onOpen}><CardMark/><span><b>{inbox.count} {pluralRu(inbox.count, ['операция с карты ждёт', 'операции с карты ждут', 'операций с карты ждут'])} разбора</b><small>Выбрать категории</small></span><ChevronIcon/></button>}
-    <div className={`history-list${selected.size ? ' selecting' : ''}`}>{groups.map(({ date, items, total }) => <div key={date} className="history-day"><div className="history-date"><span>{formatHistoryDate(date)}</span>{showDayTotals && total && <b>{total}</b>}</div>{items.map((expense) => <HistoryRow key={expense.id} expense={expense} category={categoryMap.get(expense.categoryId)} tags={tags} currencies={bootstrap.currencies} checked={selected.has(expense.id)} selecting={selected.size > 0} open={openRow === expense.id} disabled={deleting} onOpen={setOpenRow} onToggle={toggle} onEdit={editRow} onDelete={deleteRow} onVoided={setVoided}/>)}</div>)}</div>
-    {older && (activeFilters.period === 'all' || activeFilters.period === 'range') && !selected.size && <div className="history-older"><span>{older.count === 1 ? 'Ещё одна запись' : `Ещё ${older.count} ${pluralRu(older.count, ['запись', 'записи', 'записей'])}`} до {formatMonthYear(older.since)}</span><button type="button" className="text-button" disabled={older.busy} onClick={older.load}>{older.busy ? 'Загружаем…' : 'Показать'}</button></div>}
-    {!groups.length && <div className="list-empty" role="status"><span>{filtersActive ? 'Ничего не найдено' : 'История пока пуста'}</span><p>{filtersActive ? 'Измените фильтры или сбросьте их.' : 'Добавьте первый расход — он сразу появится здесь.'}</p>{!filtersActive && <button type="button" className="primary history-empty-action" onClick={createNew}>Добавить первый расход</button>}</div>}
-    {activeExpenses.length > 0 && !selected.size && <button type="button" className="screen-setup" onClick={() => setBlocksSheet(true)}>Настроить экран</button>}
-    {blocksSheet && <ScreenBlocksSheet screens={['history']} settings={{ historyBlocks: blocks }} onChange={onScreensChange} onClose={() => setBlocksSheet(false)}/>}
+      ? <div className="history-inbox history-reminder compact" inert={editing}><span className="reminder-mark"><LockIcon/></span><b>Сохраните ссылку доступа</b><button type="button" className="text-button reminder-save" onClick={reminder.onSave}>Сохранить</button><button type="button" className="text-button reminder-later" onClick={reminder.onLater}>Позже</button></div>
+      : <div className="history-inbox history-reminder" inert={editing}><span className="reminder-mark"><LockIcon/></span><span><b>Сохраните ссылку доступа</b><small>Иначе без этого телефона расходы не вернуть</small></span><span className="reminder-actions"><button type="button" className="reminder-action" onClick={reminder.onSave}>Сохранить</button><button type="button" className="text-button reminder-later" onClick={reminder.onLater}>Позже</button></span></div>)}
+    {inbox && inbox.count > 0 && !selected.size && <button type="button" className="history-inbox" inert={editing} onClick={inbox.onOpen}><CardMark/><span><b>{inbox.count} {pluralRu(inbox.count, ['операция с карты ждёт', 'операции с карты ждут', 'операций с карты ждут'])} разбора</b><small>Выбрать категории</small></span><ChevronIcon/></button>}
+    {/* Суммы по дням настраиваются у первого дня: в рамке с «−» или заготовкой на месте суммы. */}
+    <div className={`history-list${selected.size ? ' selecting' : ''}`}>{groups.map(({ date, items, total }, index) => <div key={date} className="history-day"><div className="history-date"><span>{formatHistoryDate(date)}</span>{editing && index === 0 ? <EditBlock {...editBlock('day-totals')} className="day-totals-block"><b>{total ?? '—'}</b></EditBlock> : showDayTotals && total && <b>{total}</b>}</div>{items.map((expense) => <HistoryRow key={expense.id} expense={expense} category={categoryMap.get(expense.categoryId)} tags={tags} currencies={bootstrap.currencies} checked={selected.has(expense.id)} selecting={selected.size > 0} open={openRow === expense.id} disabled={deleting} inert={editing} onOpen={setOpenRow} onToggle={toggle} onEdit={editRow} onDelete={deleteRow} onVoided={setVoided}/>)}</div>)}</div>
+    {older && (activeFilters.period === 'all' || activeFilters.period === 'range') && !selected.size && <div className="history-older" inert={editing}><span>{older.count === 1 ? 'Ещё одна запись' : `Ещё ${older.count} ${pluralRu(older.count, ['запись', 'записи', 'записей'])}`} до {formatMonthYear(older.since)}</span><button type="button" className="text-button" disabled={older.busy} onClick={older.load}>{older.busy ? 'Загружаем…' : 'Показать'}</button></div>}
+    {!groups.length && <div className="list-empty" role="status" inert={editing}><span>{filtersActive ? 'Ничего не найдено' : 'История пока пуста'}</span><p>{filtersActive ? 'Измените фильтры или сбросьте их.' : 'Добавьте первый расход — он сразу появится здесь.'}</p>{!filtersActive && <button type="button" className="primary history-empty-action" onClick={createNew}>Добавить первый расход</button>}</div>}
+    {activeExpenses.length > 0 && !selected.size && !editing && <button type="button" className="screen-setup" onClick={() => onEditScreen('history')}>Настроить экран</button>}
     {calendar && <CalendarSheet
       from={filters.period === 'range' ? filters.from : ''}
       to={filters.period === 'range' ? filters.to : ''}
