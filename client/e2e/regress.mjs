@@ -6,12 +6,12 @@
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { webkit } from 'playwright'
 import { launch, openApp, goTab, acceptDeviceLink, guard, pinLocalState, patchSettings, resetAccount, pinClock, pinnedNow, ALL_BLOCKS, BASE, SHOTS, sleep, touchDrag } from './common.mjs'
-guard(20 * 60_000, 'regress.mjs')
+guard(25 * 60_000, 'regress.mjs')
 const link = process.argv.find((arg) => arg.includes('#/device/'))
 const label = process.argv.slice(2).find((arg) => !arg.includes('#/device/')) ?? 'now'
 const dir = `${SHOTS}regress-${label}/`
 mkdirSync(dir, { recursive: true })
-const log = { label, base: BASE, clock: pinnedNow().toString(), settingsWidth: {}, historyEnd: {} }
+const log = { label, base: BASE, clock: pinnedNow().toString(), settingsWidth: {}, historyEnd: {}, historyLength: {} }
 const HISTORY = 1, ANALYTICS = 2
 
 // Ответы сервера с ошибкой видны в выводе: 429 от ограничителя частоты или 5xx портят снимки молча.
@@ -261,6 +261,72 @@ await extras('light', { width: 393, height: 659 }, 'p393', { full: true })
 await extras('dark', { width: 393, height: 659 }, 'p393', { full: true })
 await extras('light', { width: 390, height: 763 }, 'p390', { full: false })
 await extras('light', { width: 320, height: 568 }, 'p320', { full: false })
+
+// ——— Длина прокрутки «Истории»: полоса прокрутки и дальность флика зависят от неё, а не только от видимых строк. ———
+// Что нарисовано: строки, высота слота, прокрутка и пустота ниже строк в видимой части. «Пустоту» даёт отступ
+// .history-rest, которым «История» с порциями держит длину ненарисованных строк (у ревизий без порций его нет — 0).
+const historyState = (page) => page.evaluate(() => {
+  const slot = document.querySelectorAll('.page-slot')[1]
+  const view = slot.getBoundingClientRect()
+  const rest = slot.querySelector('.history-rest')?.getBoundingClientRect()
+  const blank = rest ? Math.max(0, Math.min(view.bottom, rest.bottom) - Math.max(view.top, rest.top)) : 0
+  return { scrollHeight: slot.scrollHeight, scrollTop: Math.round(slot.scrollTop), rows: slot.querySelectorAll('.history-expense').length, rest: rest ? Math.round(rest.height) : 0, blank: Math.round(blank) }
+})
+
+// Ждёт условия на странице не дольше limit мс; ответ — сколько ждали, или null, если так и не дождались.
+async function waitFor(page, limit, check, arg) {
+  const started = Date.now()
+  for (;;) {
+    if (await page.evaluate(check, arg)) return Date.now() - started
+    if (Date.now() - started > limit) return null
+    await sleep(50)
+  }
+}
+
+async function historyLength(scheme, viewport, tag) {
+  const { browser, page } = await phoneContext(scheme, viewport, tag)
+  const shot = (name) => page.screenshot({ path: `${dir}${tag}-${scheme}-${name}.png` })
+  const entry = log.historyLength[`${tag}-${scheme}`] = {}
+  await openApp(page)
+  await goTab(page, 'История')
+  await sleep(500)
+  entry.opened = await historyState(page)
+
+  // Граница первой порции: 118-я строка на трети экрана — видны последние строки порции и первые следующей.
+  // Дорисовка ждётся, только если есть отступ (без порций список уже целый).
+  await page.evaluate(() => {
+    const slot = document.querySelectorAll('.page-slot')[1]
+    const row = slot.querySelectorAll('.history-expense')[117]
+    slot.scrollTop = Math.round(slot.scrollTop + row.getBoundingClientRect().top - slot.getBoundingClientRect().top - slot.clientHeight / 3)
+  })
+  const waitedMs = entry.opened.rest ? await waitFor(page, 2000, (rows) => document.querySelectorAll('.page-slot')[1].querySelectorAll('.history-expense').length > rows, entry.opened.rows) : 0
+  await sleep(600)
+  entry.portion = { ...await historyState(page), waitedMs }
+  await shot('history-portion-edge')
+
+  // Прыжок на 40 000 px одним присваиванием, как полосой прокрутки, со свежей страницы (первая порция): порции
+  // должны сами закрыть пустоту на экране не дольше 2 с — без повторных прокруток.
+  await reloadApp(page)
+  await goTab(page, 'История')
+  await sleep(500)
+  await scrollSlot(page, HISTORY, 40000)
+  const fillMs = await waitFor(page, 2000, () => {
+    const slot = document.querySelectorAll('.page-slot')[1]
+    const rest = slot.querySelector('.history-rest')
+    return !rest || rest.getBoundingClientRect().top >= slot.getBoundingClientRect().bottom
+  })
+  await sleep(600)
+  entry.jump = { ...await historyState(page), fillMs }
+  await shot('history-jump-40000')
+  console.log(`  ${tag}-${scheme}: высота «Истории» ${entry.opened.scrollHeight} → ${entry.portion.scrollHeight} (порция за ${waitedMs ?? '>2000'} мс), прыжок: пустота закрыта за ${fillMs ?? '>2000'} мс, высота ${entry.jump.scrollHeight}`)
+  await browser.close()
+}
+
+await historyLength('light', { width: 393, height: 659 }, 'p393')
+await historyLength('dark', { width: 393, height: 659 }, 'p393')
+await historyLength('light', { width: 390, height: 763 }, 'p390')
+await historyLength('light', { width: 320, height: 568 }, 'p320')
+
 await resetAccount()
 
 writeFileSync(`${dir}log.json`, JSON.stringify(log, null, 2))
