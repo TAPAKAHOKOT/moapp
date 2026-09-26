@@ -77,6 +77,7 @@ SQLite в `.perf-work/` в корне репозитория (вне `client/`, 
 ```bash
 node client/e2e/perf/stand.mjs seed                     # один раз в день: база и вход WebKit/Chromium
 node client/e2e/perf/stand.mjs up main --port=4411       # ревизия: ветка, тег, хэш или «.» — рабочая копия
+node client/e2e/perf/stand.mjs up main --port=4411 --reuse  # взять готовую сборку этой ревизии, если есть
 node client/e2e/perf/measure.mjs webkit --port=4411 --label=main
 node client/e2e/perf/measure.mjs chromium --port=4411 --label=main --count
 node client/e2e/perf/measure.mjs chromium --port=4411 --label=main --throttle=4
@@ -89,6 +90,8 @@ node client/e2e/perf/stand.mjs down --port=4411
 
 Из отдельного git worktree стенд запускается с `PERF_WORK=<основная копия>/.perf-work`: база и вход
 общие, а сборка рабочей копии получает метку по имени каталога и не мешает соседям. У каждого — свой порт.
+Сборка ревизии очищает общий каталог `dist-<хэш>`, который может раздавать стенд соседа, — если он уже собран, берите
+`--reuse`.
 
 `measure.mjs` проходит 17 сценариев: первое открытие вкладок, прокрутку «Истории», переключения, цифры на
 клавиатуре, сохранение, шит валюты, фильтр и его сброс, свайп ленты вкладок, «неделя → месяц», простой. Пишет

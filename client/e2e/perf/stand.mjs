@@ -1,6 +1,7 @@
 // Стенд замеров: любая ревизия приложения на своём порту, с одним и тем же годом расходов.
 //   node client/e2e/perf/stand.mjs seed                 — один раз: база с данными и вход WebKit/Chromium
-//   node client/e2e/perf/stand.mjs up <rev|.> [--port=N] — собрать ревизию (или «.» — рабочую копию) и поднять сервер
+//   node client/e2e/perf/stand.mjs up <rev|.> [--port=N] [--reuse] — собрать ревизию (или «.» — рабочую копию) и поднять
+//     сервер; --reuse берёт готовую сборку той же ревизии, не трогая каталог, который раздаёт стенд соседа
 //   node client/e2e/perf/stand.mjs down [--port=N]      — остановить
 //   node client/e2e/perf/stand.mjs link [--port=N]      — ссылка входа для другого браузера (regress.mjs)
 // Все стенды получают копию одной базы, поэтому снимки и замеры разных ревизий сравнимы попиксельно.
@@ -152,7 +153,10 @@ if (command === 'seed') {
   if (!revArg) throw new Error('укажите ревизию: up <rev|.>')
   stopServer(port)
   const source = snapshot(revArg)
-  const dist = build(source)
+  // --reuse: готовая сборка той же ревизии берётся как есть. Сборка очищает каталог dist-<ревизия>, а его может
+  // раздавать стенд соседа на другом порту — пересборка на полминуты оставила бы его без файлов.
+  const built = resolve(WORK, `dist-${source.label}`)
+  const dist = flags.reuse && source.src !== REPO && existsSync(resolve(built, 'index.html')) ? built : build(source)
   const db = resolve(WORK, `db-${port}.sqlite`)
   dbFiles(seedDb).forEach((file, index) => { if (existsSync(file)) copyFileSync(file, dbFiles(db)[index]); else rmSync(dbFiles(db)[index], { force: true }) })
   startServer({ src: source.src, dist, db, port })
