@@ -474,18 +474,24 @@ export const HistoryView = memo(function HistoryView({ userId, workspaceId, boot
   // Всё производное от данных и фильтров считается один раз на их изменение: вкладка остаётся смонтированной,
   // пока открыто пространство, и без мемоизации каждый рендер приложения (например свайп по расходам на экране
   // ввода) заново фильтровал, группировал и форматировал всю историю.
+  // Расчёт зависит только от тех частей данных пространства, которые читает. Рядом в них лежат личные настройки, и сама
+  // «История» кладёт туда свои фильтры: зависимость от всего bootstrap считала бы год второй раз на каждый фильтр.
   // Теги считаются отдельно: они уходят в каждую строку, и новый массив на каждое сохранение перерисовывал бы весь год.
+  const { expenses: allExpenses, categories, currencies, rates } = bootstrap
+  const categoryOrder = bootstrap.settings?.categoryOrder
+  // Валюта итога, когда фильтр не выбрал одну валюту: валюта аналитики человека, иначе валюта пространства.
+  const reportCurrency = bootstrap.settings?.analyticsCurrency || workspaceCurrency(bootstrap)
   const tags = useMemo(() => sortTags(bootstrap.tags ?? [], bootstrap.settings?.tagOrder), [bootstrap.tags, bootstrap.settings?.tagOrder])
   const derived = useMemo(() => {
-    const categoryMap = new Map(bootstrap.categories.map((category) => [category.id, category]))
-    const activeExpenses = bootstrap.expenses.filter((item) => !item.deletedAt)
+    const categoryMap = new Map(categories.map((category) => [category.id, category]))
+    const activeExpenses = allExpenses.filter((item) => !item.deletedAt)
     // Варианты фильтров идут в том же порядке, что у этого человека на «Расходе», а не по алфавиту; скрытые — в конце.
     const tagOptions = tags.filter((tag) => activeFilters.tagIds.includes(tag.id) || activeExpenses.some((expense) => expense.tagIds?.includes(tag.id)))
-    const categoryRank = new Map(inOrder(categoryLayout(bootstrap.categories, bootstrap.settings?.categoryOrder)).map((category, index) => [category.id, index]))
-    const categoryOptions = bootstrap.categories
+    const categoryRank = new Map(inOrder(categoryLayout(categories, categoryOrder)).map((category, index) => [category.id, index]))
+    const categoryOptions = categories
       .filter((category) => activeFilters.categoryIds.includes(category.id) || activeExpenses.some((expense) => expense.categoryId === category.id))
       .sort((left, right) => (categoryRank.get(left.id) ?? Infinity) - (categoryRank.get(right.id) ?? Infinity) || left.name.localeCompare(right.name, 'ru-RU'))
-    const currencyOptions = bootstrap.currencies
+    const currencyOptions = currencies
       .filter((currency) => activeFilters.currencies.includes(currency.code) || activeExpenses.some((expense) => expense.currency === currency.code))
       .sort((left, right) => left.code.localeCompare(right.code))
     const normalizedQuery = activeFilters.query.trim().toLocaleLowerCase('ru-RU')
@@ -499,8 +505,8 @@ export const HistoryView = memo(function HistoryView({ userId, workspaceId, boot
         ...expenseTagNames(item, tags),
         item.currency,
         item.note,
-        money(item.amountMinor, item.currency, bootstrap.currencies),
-        String(item.amountMinor / 10 ** (bootstrap.currencies.find((currency) => currency.code === item.currency)?.decimals ?? 2)).replace('.', ','),
+        money(item.amountMinor, item.currency, currencies),
+        String(item.amountMinor / 10 ** (currencies.find((currency) => currency.code === item.currency)?.decimals ?? 2)).replace('.', ','),
         formatHistoryDate(dateKey),
         cachedDateTimeFormat('ru-RU', { timeZone }).format(date),
       ].filter(Boolean).join(' ').toLocaleLowerCase('ru-RU')
@@ -508,20 +514,20 @@ export const HistoryView = memo(function HistoryView({ userId, workspaceId, boot
     })
     const grouped = expenses.reduce<Record<string, Expense[]>>((result, item) => { (result[localDateKey(item.occurredAt, timeZone)] ||= []).push(item); return result }, {})
     // Итог по показанным записям. В одной валюте — точная сумма; в нескольких — пересчёт в валюту аналитики и разбивка.
-    const totalsTarget = (filters.currencies.length === 1 ? filters.currencies[0] : null) || bootstrap.settings?.analyticsCurrency || workspaceCurrency(bootstrap)
+    const totalsTarget = (filters.currencies.length === 1 ? filters.currencies[0] : null) || reportCurrency
     const sumLabel = (items: Expense[]) => {
-      const totals = historyTotals(items, bootstrap.currencies, bootstrap.rates, totalsTarget)
+      const totals = historyTotals(items, currencies, rates, totalsTarget)
       if (!items.length) return { label: null as string | null, parts: '', totals }
-      const label = totals.byCurrency.length === 1 ? money(totals.byCurrency[0]!.amountMinor, totals.byCurrency[0]!.currency, bootstrap.currencies)
+      const label = totals.byCurrency.length === 1 ? money(totals.byCurrency[0]!.amountMinor, totals.byCurrency[0]!.currency, currencies)
         : totals.converted !== null ? `≈ ${formatAnalyticsAmount(totals.converted, totals.target)}` : null
-      const parts = totals.byCurrency.length > 1 ? totals.byCurrency.map((part) => money(part.amountMinor, part.currency, bootstrap.currencies)).join(' + ') : ''
+      const parts = totals.byCurrency.length > 1 ? totals.byCurrency.map((part) => money(part.amountMinor, part.currency, currencies)).join(' + ') : ''
       return { label, parts, totals }
     }
     // Заголовок дня показывает сумму дня, а не число записей: по ней читается ритм трат.
     const groups = Object.entries(grouped).map(([date, items]) => ({ date, items, total: sumLabel(items).label }))
     const { label: totalLabel, parts: totalParts, totals } = sumLabel(expenses)
     return { categoryMap, activeExpenses, tagOptions, categoryOptions, currencyOptions, normalizedQuery, expenses, groups, totals, totalLabel, totalParts }
-  }, [bootstrap, activeFilters, timeZone, tags])
+  }, [allExpenses, categories, currencies, rates, categoryOrder, reportCurrency, tags, activeFilters, filters.currencies, timeZone])
   const { categoryMap, activeExpenses, tagOptions, categoryOptions, currencyOptions, normalizedQuery, expenses, groups, totals, totalLabel, totalParts } = derived
   // Без IntersectionObserver (старые браузеры, тесты) рисуется весь список, как раньше.
   const windowed = typeof IntersectionObserver === 'function'
