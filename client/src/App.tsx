@@ -249,9 +249,15 @@ export default function App({ capability = null }: { capability?: CapabilityInte
     setEditingScreen(null)
     requestAnimationFrame(()=>document.querySelector<HTMLElement>('.screen-edit-open')?.focus({preventScroll:true}))
   },[])
-  // Без открытой настройки состояние не трогаем: даже setState с тем же значением стоил бы приложению лишнего рендера.
-  useEffect(()=>{if(editingScreen&&editingScreen!==tab)setEditingScreen(null)},[tab]) // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(()=>setEditingScreen(null),[state.activeWorkspaceId])
+  // Настройку закрывает переход на другую вкладку или в другое пространство. Открывают её вместе с переездом ленты к её
+  // вкладке (startEditing), в одном рендере, так что чужой вкладки у открытой настройки не бывает. Без открытой
+  // настройки состояние не трогаем: даже setState с тем же значением стоил бы приложению лишнего рендера.
+  const editingWorkspace=useRef(state.activeWorkspaceId)
+  useEffect(()=>{
+    const moved=editingWorkspace.current!==state.activeWorkspaceId
+    editingWorkspace.current=state.activeWorkspaceId
+    if(editingScreen&&(moved||editingScreen!==tab))setEditingScreen(null)
+  },[tab,editingScreen,state.activeWorkspaceId])
   useEffect(()=>{
     if(!editingScreen)return
     // Кнопка, которой вошли в настройку, исчезает вместе с обычным видом, поэтому фокус переходит на «Готово».

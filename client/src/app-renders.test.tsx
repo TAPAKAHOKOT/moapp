@@ -1,12 +1,13 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
 import * as screenBlocks from './screen-blocks'
 import * as ui from './ui'
+import * as utils from './utils'
 import * as workspaceApi from './workspace-api'
 import * as workspaceOffline from './workspace-offline'
-import type { AuthenticatedSession, WorkspaceBootstrap } from './types'
+import type { AuthenticatedSession, WorkspaceBootstrap, WorkspaceSummary } from './types'
 
 // «Аналитику» мемоизирует её собственный экран, поэтому здесь вместо неё мемоизированная заглушка: тесты смотрят
 // на сторону приложения — сколько оно рендерит и меняются ли пропсы «Аналитики» от переключения вкладок.
@@ -45,13 +46,16 @@ afterEach(() => {
 
 // Целое приложение в jsdom: сеть и офлайн-хранилище подменены. Рендеры считаются по вызовам изнутри тела компонента:
 // useInputModality зовёт только App, hiddenBlockCount — только «Настройки».
-async function renderApp() {
+async function renderApp({ workspaces = [workspace] as WorkspaceSummary[] } = {}) {
   vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { status: 204 })))
   // Без анимаций лента встаёт на вкладку сразу — как в браузере к концу плавной прокрутки.
   vi.stubGlobal('matchMedia', (query: string) => ({ matches: query.includes('reduced-motion'), media: query, addEventListener() {}, removeEventListener() {} }))
   await workspaceApi.probeServer()
-  vi.spyOn(workspaceApi, 'getSession').mockResolvedValue(session)
-  vi.spyOn(workspaceApi, 'getBootstrap').mockResolvedValue({ data: bootstrap, offline: false })
+  vi.spyOn(workspaceApi, 'getSession').mockResolvedValue({ ...session, workspaces })
+  vi.spyOn(workspaceApi, 'getBootstrap').mockImplementation(async (id) => {
+    const summary = workspaces.find((item) => item.id === id)!
+    return { data: { ...bootstrap, workspaceId: summary.id, workspace: summary }, offline: false }
+  })
   vi.spyOn(workspaceApi, 'syncAllWorkspaces').mockResolvedValue(undefined)
   vi.spyOn(workspaceApi, 'listMods').mockResolvedValue([])
   vi.spyOn(workspaceApi, 'getCardQueueStatus').mockResolvedValue({ pendingCount: 0 })
@@ -117,6 +121,25 @@ describe('renders on a tab switch', () => {
       act(() => { (type === 'visibilitychange' ? document : window).dispatchEvent(new Event(type)) })
     }
     expect(appRenders).not.toHaveBeenCalled()
+  })
+
+  it('closes the screen setup when its workspace goes away while it is open', async () => {
+    const family = { ...workspace, id: 'workspace-b', name: 'Семья', role: 'member' as const }
+    await renderApp({ workspaces: [workspace, family] })
+    fireEvent.click(screen.getByRole('button', { name: 'Настроить экран' }))
+    expect(screen.getByText('Настройка экрана')).not.toBeNull()
+
+    // Пока настройка открыта, «Дом» пропал: телефон сменил пояс, пространство перезагружается, а сервер его уже не знает.
+    vi.spyOn(workspaceOffline, 'clearWorkspaceOfflineData').mockResolvedValue(undefined)
+    vi.mocked(workspaceApi.getBootstrap).mockImplementation(async (id) => {
+      if (id === workspace.id) throw new workspaceApi.WorkspaceApiError(404, 'WORKSPACE_NOT_FOUND', 'Пространство не найдено')
+      return { data: { ...bootstrap, workspaceId: family.id, workspace: family }, offline: false }
+    })
+    vi.spyOn(utils, 'appTimeZone').mockReturnValue('Asia/Tokyo')
+    act(() => { document.dispatchEvent(new Event('visibilitychange')) })
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Семья' })).not.toBeNull())
+    expect(screen.queryByText('Настройка экрана')).toBeNull()
   })
 
   it('still shows a new theme and colour in the memoized «Настройки» right away', async () => {
