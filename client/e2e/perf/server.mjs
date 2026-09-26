@@ -10,6 +10,12 @@ process.env.INTEGRATION_ENCRYPTION_KEY ??= 'moapp-perf-stand-integration-key-000
 process.env.APP_ORIGIN ??= `http://localhost:${port}`
 process.env.DEVICE_LINK_TTL_MINUTES ??= '10080'
 process.env.DEVICE_LINK_RATE_LIMIT_PER_HOUR ??= '1000'
+// Курсы — только синтетические, ниже. Иначе первый запрос «Аналитики», у которого конец периода позже последнего
+// курса в базе (а курсы записаны по дню UTC, и ночью «сегодня» телефона их обгоняет), тянет настоящие курсы из
+// Frankfurter и перезаписывает ими синтетические: итоги «Истории» и графики у свежего стенда меняются посреди прогона,
+// а у стенда, который уже сходил в сеть, — нет. Порт 9 на своей машине закрыт: запрос сразу падает, и сервер берёт
+// курсы из базы, как без сети.
+process.env.FRANKFURTER_URL ??= 'http://127.0.0.1:9'
 
 const { buildApp } = await import(`${src}/server/src/app.ts`)
 const { configFromEnv } = await import(`${src}/server/src/config.ts`)
