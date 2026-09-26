@@ -6,8 +6,7 @@ import type { AccountSettings, BlockLayout, Category, Currency, Expense, Tag } f
 import { appTimeZone, cachedDateTimeFormat, localDateKey, monthDateRange, shiftDateKey, weekdayFromDateKey, workspaceCurrency } from '../utils'
 import { HISTORY_PERIOD_LABELS, defaultHistoryPreferences, expenseTagNames, filterHistoryExpenses, historyTotals, parseHistoryPreferences } from '../history'
 import type { HistoryPeriod, HistoryPreferences } from '../history'
-import { CardMark, CategoryMark, ChevronIcon, EditBlock, HOLD_MS, LockIcon, MultiSelect, SearchIcon, Toast, TrashIcon, prefersReducedMotion, tap, useDialog, useDragOrder, useFlip, useHold, useOverflowHint, useToast } from '../ui'
-import { trackEasing } from './Entry'
+import { CardMark, CategoryMark, ChevronIcon, EditBlock, HOLD_MS, LockIcon, MultiSelect, SearchIcon, Toast, TrashIcon, prefersReducedMotion, tap, trackEasing, useDialog, useDragOrder, useFlip, useHold, useOverflowHint, useToast } from '../ui'
 import { formatAnalyticsAmount, formatDateRange, formatHistoryDate, money, pluralRu } from '../format'
 import type { Bootstrap } from '../format'
 import { sortTags } from '../tags'
@@ -304,9 +303,10 @@ const alwaysGlides = () => true
 // - Содержимое меняется сразу; на время пути оно обрезано по обёртке, потом стили снимаются. Обёртка — отдельный блочный
 //   контекст: отступ содержимого сверху живёт внутри неё и сворачивается вместе с ним, а в покое всё стоит там же, где
 //   стояло бы без обёртки.
-// - Высота меняется покадрово через requestAnimationFrame, как у блоков в настройке экрана: часы идут с первого кадра, а
-//   не с перерисовки, и CSS-переходов нет — на iPhone ускоренный переход терял содержимое слоя на первом кадре. Обёртки,
-//   сменившие вид в одной перерисовке, получают одно время кадра и едут одним движением.
+// - Высота меняется покадрово через requestAnimationFrame, как и блоки в настройке экрана, но по кривой ленты карточек
+//   «Расхода» и сдвига строк (trackEasing), а не по их flipEasing: часы идут с первого кадра, а не с перерисовки, и
+//   CSS-переходов нет — на iPhone ускоренный переход терял содержимое слоя на первом кадре. Обёртки, сменившие вид в одной
+//   перерисовке, получают одно время кадра и едут одним движением.
 // - Прежнюю высоту в момент смены уже не измерить: содержимое новое. Её помнит ResizeObserver — он сообщает размер после
 //   раскладки, в которой тот изменился, и сам ничего не раскладывает; посреди пути прежняя высота — та, что поставлена
 //   обёртке. Без ResizeObserver (старые браузеры, jsdom) обёртка меряется в момент смены: у уходящей карточки

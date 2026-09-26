@@ -392,6 +392,24 @@ export function ListSheet({ title, onClose, dismissible = true, children }: { ti
   </section></div>
 }
 
+// Кривая cubic-bezier(.25,.8,.3,1), которая раньше стояла в CSS-переходе ленты карточек «Расхода», но считается в JS:
+// ленту и обёртки над списком «Истории» ведёт requestAnimationFrame. Safari на iPhone на первом кадре ускоренного
+// CSS-перехода терял содержимое карточки — в ?debug=swipe значения ровные, а карточка мигает, — тогда как покадровое
+// движение за пальцем не мигало ни разу.
+export function trackEasing(t: number) {
+  if (t <= 0) return 0
+  if (t >= 1) return 1
+  const [x1, y1, x2, y2] = [0.25, 0.8, 0.3, 1]
+  const bezier = (a: number, b: number, u: number) => 3 * a * u * (1 - u) ** 2 + 3 * b * u * u * (1 - u) + u ** 3
+  let low = 0, high = 1, u = t
+  for (let index = 0; index < 20; index++) {
+    u = (low + high) / 2
+    if (bezier(x1, x2, u) < t) low = u
+    else high = u
+  }
+  return bezier(y1, y2, u)
+}
+
 const FLIP_MS = 240
 const flipEasing = (t: number) => 1 - (1 - t) ** 3
 

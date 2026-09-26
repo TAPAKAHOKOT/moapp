@@ -5,7 +5,7 @@ import { patchSettings } from '../settings'
 import type { SettingsPatch } from '../settings'
 import type { AccountSettings, BlockLayout, Category, Currency, Expense, RateSnapshot, ScreenOrder, Tag, WorkspaceSummary } from '../types'
 import { amountToMinor, appTimeZone, applyKeypad, cachedNumberFormat, formatAmountInput, isoToLocalInput, localDateKey, localInputToIso, swipeDirection, workspaceCurrency } from '../utils'
-import { CategoryMark, ChevronIcon, CurrencySheet, EditBlock, GridIcon, KeypadIcon, MoreSheet, RemoveBadge, SignIcon, Toast, TrashIcon, prefersReducedMotion, tap, useConfirm, useDialog, useDragOrder, useFlip, useHold, useToast } from '../ui'
+import { CategoryMark, ChevronIcon, CurrencySheet, EditBlock, GridIcon, KeypadIcon, MoreSheet, RemoveBadge, SignIcon, Toast, TrashIcon, prefersReducedMotion, tap, trackEasing, useConfirm, useDialog, useDragOrder, useFlip, useHold, useToast } from '../ui'
 import { amountSize, formatAnalyticsAmount, formatEntryDate, formatShortWeekday, inputFromExpense, money, pluralRu } from '../format'
 import { historyTotals } from '../history'
 import type { Bootstrap } from '../format'
@@ -24,23 +24,6 @@ export const SWIPE_START = 14
 export const SWIPE_COMMIT = 64
 
 export const CARD_GAP = 18
-
-// Та же кривая, что раньше стояла в CSS-переходе (cubic-bezier(.25,.8,.3,1)), но считается в JS: лентой управляет
-// requestAnimationFrame. Safari на iPhone на первом кадре ускоренного CSS-перехода терял содержимое карточки —
-// в ?debug=swipe значения ровные, а карточка мигает, — тогда как покадровое движение за пальцем не мигало ни разу.
-export function trackEasing(t: number) {
-  if (t <= 0) return 0
-  if (t >= 1) return 1
-  const [x1, y1, x2, y2] = [0.25, 0.8, 0.3, 1]
-  const bezier = (a: number, b: number, u: number) => 3 * a * u * (1 - u) ** 2 + 3 * b * u * u * (1 - u) + u ** 3
-  let low = 0, high = 1, u = t
-  for (let index = 0; index < 20; index++) {
-    u = (low + high) / 2
-    if (bezier(x1, x2, u) < t) low = u
-    else high = u
-  }
-  return bezier(y1, y2, u)
-}
 
 // Вид карточки задаётся её содержимым, а не состоянием экрана: соседняя карточка сохранённого расхода
 // рисуется теми же правилами, что и живая, и в момент подмены ничего не меняет цвет и не сдвигается.
