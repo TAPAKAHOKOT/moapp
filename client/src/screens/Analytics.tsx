@@ -20,7 +20,10 @@ export type { AnalyticsPeriod }
 
 // Вкладка не размонтируется, пока открыто пространство, поэтому она не должна перерисовываться от чужих изменений
 // состояния приложения — только от своих данных и колбэков (все они стабильны у родителя).
-export const AnalyticsView = memo(function AnalyticsView({ userId, workspaceId, bootstrap, setBootstrap = () => {}, theme, accent = 'sage', online, timeZone = appTimeZone(), blocks, period: savedPeriod, editing = false, onEditScreen = () => {}, onScreensChange = () => {} }: { userId: string; workspaceId: string; bootstrap: Bootstrap; setBootstrap?: React.Dispatch<React.SetStateAction<Bootstrap>>; theme: Theme; accent?: Accent; online: boolean; timeZone?: string
+export const AnalyticsView = memo(function AnalyticsView({ userId, workspaceId, bootstrap, setBootstrap = () => {}, theme, accent = 'sage', online, timeZone = appTimeZone(), today = localDateKey(new Date(), timeZone), blocks, period: savedPeriod, editing = false, onEditScreen = () => {}, onScreensChange = () => {} }: { userId: string; workspaceId: string; bootstrap: Bootstrap; setBootstrap?: React.Dispatch<React.SetStateAction<Bootstrap>>; theme: Theme; accent?: Accent; online: boolean; timeZone?: string
+  /** Сегодняшний день по календарю телефона. Его ведёт приложение: мемоизированный экран сам после полуночи не
+   *  перерисуется, и без этого «Текущая неделя» осталась бы вчерашней. */
+  today?: string
   /** Какие карточки человек оставил и в каком порядке, неделя или месяц — всё это помнит аккаунт. Карточки он
    *  убирает, возвращает и переставляет сам, в режиме «Настройка экрана» (`editing`). */
   blocks?: BlockLayout; period?: AnalyticsPeriod; editing?: boolean; onEditScreen?: (screen: BlockScreen, how?: 'hold' | 'tap') => void; onScreensChange?: (patch: SettingsPatch<AccountSettings>) => void }) {
@@ -60,7 +63,6 @@ export const AnalyticsView = memo(function AnalyticsView({ userId, workspaceId, 
   const [analyticsLoading,setAnalyticsLoading]=useState(online)
   const [analyticsError,setAnalyticsError]=useState<string|null>(null)
   const [retryEpoch,setRetryEpoch]=useState(0)
-  const today=localDateKey(new Date(),timeZone)
   const selectedWeek=weekDateRange(today,weekOffset)
   const selectedMonth=monthDateRange(today,monthOffset)
   // Фокус живёт в легенде большой карточки: убрали карточку или сделали маленькой — фокус не действует, иначе итог

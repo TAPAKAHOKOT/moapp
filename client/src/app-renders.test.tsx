@@ -107,6 +107,18 @@ describe('renders on a tab switch', () => {
     expect(analytics.renders).toBe(0)
   })
 
+  it('does not redraw the app when a return to it finds the same day and time zone', async () => {
+    const { appRenders } = await renderApp()
+    for (const name of TABS) await tap(name)
+    await tap('История')
+
+    appRenders.mockClear()
+    for (const type of ['visibilitychange', 'focus', 'pageshow']) {
+      act(() => { (type === 'visibilitychange' ? document : window).dispatchEvent(new Event(type)) })
+    }
+    expect(appRenders).not.toHaveBeenCalled()
+  })
+
   it('still shows a new theme and colour in the memoized «Настройки» right away', async () => {
     await renderApp()
     await tap('Настройки')

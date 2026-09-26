@@ -249,13 +249,16 @@ const subscribeOnline = (notify: () => void) => {
 }
 const readOnline = () => navigator.onLine
 
-export const EntryView = memo(function EntryView({ userId, workspaceId, workspace, bootstrap, setBootstrap, currentId, setCurrentId, refreshPending, onDraftDirtyChange, active, newExpenseRequest = 0, blocks, editing = false, onEditScreen = () => {}, onScreensChange = () => {} }: {
+export const EntryView = memo(function EntryView({ userId, workspaceId, workspace, bootstrap, today = localDateKey(new Date(), appTimeZone()), setBootstrap, currentId, setCurrentId, refreshPending, onDraftDirtyChange, active, newExpenseRequest = 0, blocks, editing = false, onEditScreen = () => {}, onScreensChange = () => {} }: {
   userId: string
   workspaceId: string
   workspace: WorkspaceSummary
   bootstrap: Bootstrap; setBootstrap: React.Dispatch<React.SetStateAction<Bootstrap>>; currentId: string | null; setCurrentId: (id: string | null) => void; refreshPending: () => void; onDraftDirtyChange: (dirty: boolean) => void; active: boolean
   /** Счётчик просьб «к новому расходу» извне (повторный тап по вкладке «Расход»): каждое увеличение — один переезд к пустой карточке. */
   newExpenseRequest?: number
+  /** Сегодняшний день по календарю телефона для «Сегодня». Его ведёт приложение: мемоизированный экран сам после
+   *  полуночи не перерисуется, и «Сегодня» показывало бы вчерашние траты. */
+  today?: string
   /** Какие блоки «Расхода» человек оставил на экране. Меняет их он сам в режиме «Настройка экрана» (`editing`): его
    *  открывают значок в шапке, удержание плиток или ряда тегов и «Мои экраны» в настройках. */
   blocks?: BlockLayout
@@ -773,13 +776,12 @@ export const EntryView = memo(function EntryView({ userId, workspaceId, workspac
   const publishTag = (tag: Tag) => setBootstrap((data) => ({ ...data, tags: [tag, ...(data.tags ?? []).filter((item) => item.id !== tag.id)] }))
   const saveRow = <div className="entry-save" inert={editing} data-flip-id="save"><button type="button" className="primary" disabled={!save.canSave || saving} onClick={() => void submitExpense()}>{saving ? 'Сохраняем…' : save.label}</button>{current && <button type="button" className={`sheet-cancel${dirty && !saving ? '' : ' ghost'}`} disabled={!dirty || saving} aria-hidden={!dirty || saving} tabIndex={dirty && !saving ? undefined : -1} onClick={cancelEdit}>Отменить</button>}</div>
   // «Сегодня» и «Как обычно» считаются при изменении данных, а не на каждую цифру и шаг свайпа, и только пока блок
-  // стоит на экране. «Сегодня» следует за ключом дня и поясом: после полуночи первая же перерисовка покажет новый день.
+  // стоит на экране. «Сегодня» следует за ключом дня и поясом: новый день приходит от приложения и перерисовывает экран.
   const timeZone = appTimeZone()
-  const todayKey = localDateKey(new Date(), timeZone)
   const totalsCurrency = bootstrap.settings?.analyticsCurrency || usual
   const showsToday = isShown(entryBlocks, 'today')
-  const today = useMemo(() => showsToday ? todayTotal(bootstrap.expenses, todayKey, timeZone, bootstrap.currencies, bootstrap.rates, totalsCurrency) : null,
-    [showsToday, bootstrap.expenses, todayKey, timeZone, bootstrap.currencies, bootstrap.rates, totalsCurrency])
+  const todaySpent = useMemo(() => showsToday ? todayTotal(bootstrap.expenses, today, timeZone, bootstrap.currencies, bootstrap.rates, totalsCurrency) : null,
+    [showsToday, bootstrap.expenses, today, timeZone, bootstrap.currencies, bootstrap.rates, totalsCurrency])
   const showsUsual = isShown(entryBlocks, 'usual')
   const usualItems = useMemo(() => showsUsual ? usualExpenses(bootstrap.expenses, bootstrap.categories, bootstrap.tags ?? []) : NO_USUAL, [showsUsual, bootstrap.expenses, bootstrap.categories, bootstrap.tags])
   const online = useSyncExternalStore(subscribeOnline, readOnline)
@@ -789,7 +791,7 @@ export const EntryView = memo(function EntryView({ userId, workspaceId, workspac
     setForm((value) => ({ ...value, amount: String(item.amountMinor / 10 ** decimals), currency: item.currency, categoryId: item.categoryId, tagIds: item.tagIds }))
   }
   // «Сегодня» и «Как обычно» одинаковы у любой записи: при свайпе они не меняются, а в превью — неживые копии.
-  const fixedBlock = (id: string, live = true) => id === 'today' ? today && <TodayLine total={today}/>
+  const fixedBlock = (id: string, live = true) => id === 'today' ? todaySpent && <TodayLine total={todaySpent}/>
     : id === 'usual' ? <UsualChips items={usualItems} categories={bootstrap.categories} tags={tags} currencies={bootstrap.currencies} usualCurrency={defaultCurrency()} disabled={saving} inert={!live} onPick={live ? pickUsual : undefined}/>
     : null
   const liveUnit = (unit: EntryUnit) => unit.key === 'keypad' ? <Keypad key="keypad" onKey={key} disabled={saving}/>
