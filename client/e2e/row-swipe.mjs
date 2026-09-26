@@ -1,17 +1,17 @@
 // Покадрово: строка «Истории» открывается свайпом влево и закрывается — касанием открытой строки и протяжкой обратно.
 //   node client/e2e/row-swipe.mjs [метка] [ссылка входа]      адрес — MOAPP_BASE, вход — client/e2e/.state/
-// Два прохода по второй строке списка:
-//   реальное время — кадры requestAnimationFrame (~16 мс) в течение ~500 мс от начала жеста → realtime в JSON;
-//   замороженное — время шагами по 16 мс (page.clock + пауза CSS-переходов), после каждого шага состояние и снимок
-//   области строки → frames в JSON и <фаза>-NN.png. Эти кадры повторяются один в один: сравнение до/после —
-//   `regress-compare.mjs <a> <b> row-swipe`.
-// В кадре: tx — сдвиг слоя строки (из вычисленного transform, то есть и посреди перехода), класс строки, «Удалить» —
-// shown / hidden / absent (нет в DOM), red — сколько её красного видно, gap — сколько строки открыто без красного (должно
-// быть 0 — иначе видна дыра), deletes — сколько кнопок «Удалить» во всём списке.
+// Вторая строка списка, три фазы (open, closeTap, closeDrag). В каждой — кадры requestAnimationFrame (~16 мс) в течение
+// ~500 мс от начала жеста и четыре снимка области строки по ходу.
+// В кадре: tx — сдвиг слоя строки (из вычисленного transform, то есть и посреди перехода), row — классы строки,
+// delete — кнопка «Удалить»: shown / hidden / absent (нет в DOM), opened — насколько строка открыта, red — сколько красного
+// видно, gap — открытая часть в пределах ширины кнопки без красного (дыра, должно быть 0), deletes — кнопок во всём списке.
+// Сводка фазы: где строка остановилась и когда, как жила кнопка, пропала ли она раньше, чем строка доехала.
+// Время кадров плавает на кадр-другой между прогонами; состояния и сводка повторяются.
 // Результат — .shots/row-swipe-<метка>/row-swipe.json и PNG.
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
-import { launch, openApp, goTab, acceptDeviceLink, pinLocalState, resetAccount, installClock, freeze, frozenFrames, realtimeFrames, SHOTS, sleep, touchDrag } from './common.mjs'
+import { launch, openApp, goTab, acceptDeviceLink, guard, pinLocalState, resetAccount, realtimeFrames, SHOTS, sleep, touchDrag } from './common.mjs'
 
+guard(150_000, 'row-swipe.mjs')
 const link = process.argv.find((arg) => arg.includes('#/device/'))
 const label = process.argv.slice(2).find((arg) => !arg.includes('#/device/')) ?? 'now'
 const dir = `${SHOTS}row-swipe-${label}/`
@@ -37,8 +37,7 @@ const ROW_SAMPLE = (index) => {
     state = shown ? 'shown' : 'hidden'
     if (shown) { const box = button.getBoundingClientRect(); red = Math.max(0, Math.min(box.right, rowBox.right) - Math.max(box.left, swipeBox.right)) }
   }
-  // Дыра — открытая часть строки там, где должна быть кнопка (84 px у правого края), но красного нет. Перетяжка дальше
-  // кнопки (до 1,15 ширины) открывает полоску фона и дырой не считается: так было всегда.
+  // Перетяжка дальше кнопки (до 1,15 ширины) открывает полоску фона — так было всегда, дырой это не считается.
   return {
     tx: Math.round(tx * 100) / 100,
     row: row.className.replace('history-expense', '').trim() || '-',
@@ -50,46 +49,23 @@ const ROW_SAMPLE = (index) => {
   }
 }
 
-// Жесты на шкале 16 мс: t — когда событие уходит в страницу.
-const rowEvents = (y) => ({
-  open: [{ t: 0, type: 'touchstart', x: 300, y }, ...Array.from({ length: 8 }, (_, k) => ({ t: (k + 1) * 16, type: 'touchmove', x: 300 - (k + 1) * 15, y })), { t: 144, type: 'touchend', x: 180, y }],
-  // Короткое касание открытой строки: касание, через 48 мс отпускание и клик следом, как на телефоне.
-  closeTap: [{ t: 0, type: 'touchstart', x: 150, y }, { t: 48, type: 'touchend', x: 150, y, click: true }],
-  // Протяжка обратно на 60 px: дальше половины кнопки, строка доезжает до места сама.
-  closeDrag: [{ t: 0, type: 'touchstart', x: 180, y }, ...Array.from({ length: 5 }, (_, k) => ({ t: (k + 1) * 16, type: 'touchmove', x: 180 + (k + 1) * 12, y })), { t: 96, type: 'touchend', x: 240, y }],
-})
-
-// Сводка фазы: где строка остановилась и когда, как жила кнопка «Удалить», были ли кадры с дырой.
-function summarize(frames) {
-  const last = frames.at(-1)
-  let settled = frames.length - 1
-  while (settled > 0 && Math.abs(frames[settled - 1].tx - last.tx) < 0.5) settled--
-  const runs = []
-  for (const frame of frames) {
-    const current = runs.at(-1)
-    if (current?.delete === frame.delete) current.to = frame.t
-    else runs.push({ delete: frame.delete, from: frame.t, to: frame.t })
-  }
+function summarize({ samples }) {
+  const last = samples.at(-1)
+  let settled = samples.length - 1
+  while (settled > 0 && Math.abs(samples[settled - 1].tx - last.tx) < 0.5) settled--
+  const states = []
+  for (const sample of samples) if (states.at(-1) !== sample.delete) states.push(sample.delete)
+  // Кнопка пропала (hidden/absent), пока строка ещё была сдвинута больше чем на 1 px, — это видимая дыра при закрытии.
+  const early = samples.find((sample, index) => index > 0 && sample.delete !== 'shown' && samples[index - 1].delete === 'shown' && Math.abs(sample.tx) > 1)
   return {
     final: last.tx,
-    settledAt: frames[settled].t,
-    delete: runs.map((run) => `${run.delete} ${run.from}–${run.to}`).join(', '),
-    gapFrames: frames.filter((frame) => frame.gap > 0).length,
-    maxGap: Math.max(...frames.map((frame) => frame.gap)),
-    deletesInList: [...new Set(frames.map((frame) => frame.deletes))].join('/'),
+    settledAt: samples[settled].t,
+    delete: states.join(' → '),
+    deleteGoneWhileOpen: early ? `${early.t} мс при tx ${early.tx}` : 'нет',
+    gapFrames: samples.filter((sample) => sample.gap > 0).length,
+    maxGap: Math.max(...samples.map((sample) => sample.gap)),
+    deletesInList: [...new Set(samples.map((sample) => sample.deletes))].join('/'),
   }
-}
-
-async function openHistory(context, page) {
-  await pinLocalState(context)
-  page.on('pageerror', (error) => console.log('pageerror', error.message))
-  await openApp(page)
-  await goTab(page, 'История')
-  await sleep(800)
-  return page.evaluate((index) => {
-    const box = document.querySelectorAll('.page-slot')[1].querySelectorAll('.history-expense')[index].getBoundingClientRect()
-    return { top: Math.round(box.top), height: Math.round(box.height), y: Math.round(box.top + box.height / 2) }
-  }, ROW)
 }
 
 if (link) {
@@ -99,47 +75,39 @@ if (link) {
 }
 await resetAccount()
 
-// Реальное время.
-const realtime = {}
-{
-  const { browser, context, page } = await launch('webkit')
-  const row = await openHistory(context, page)
-  const record = (action) => realtimeFrames(page, { ms: 500, sample: ROW_SAMPLE, arg: ROW, action })
-  const open = () => touchDrag(page, null, { x: 300, y: row.y }, { x: 180, y: row.y }, { steps: 8, stepDelay: 16 })
-  realtime.open = await record(open)
-  await sleep(400)
-  realtime.closeTap = await record(async () => {
-    await touchDrag(page, null, { x: 150, y: row.y }, { x: 150, y: row.y }, { steps: 1, stepDelay: 48 })
-    await page.evaluate((index) => document.querySelectorAll('.page-slot')[1].querySelectorAll('.history-row')[index].click(), ROW)
-  })
-  await sleep(400)
-  await open()
-  await sleep(600)
-  realtime.closeDrag = await record(() => touchDrag(page, null, { x: 180, y: row.y }, { x: 240, y: row.y }, { steps: 5, stepDelay: 16 }))
-  await browser.close()
-}
+const { browser, context, page } = await launch('webkit')
+await pinLocalState(context)
+page.on('pageerror', (error) => console.log('pageerror', error.message))
+await openApp(page)
+await goTab(page, 'История')
+await sleep(800)
+const row = await page.evaluate((index) => {
+  const box = document.querySelectorAll('.page-slot')[1].querySelectorAll('.history-expense')[index].getBoundingClientRect()
+  return { top: Math.round(box.top), height: Math.round(box.height), y: Math.round(box.top + box.height / 2) }
+}, ROW)
+const clip = { x: 0, y: row.top, width: page.viewportSize().width, height: row.height }
+const record = (name, action) => realtimeFrames(page, {
+  ms: 500, sample: ROW_SAMPLE, arg: ROW, action,
+  shots: [40, 140, 260, 420].map((at, index) => ({ at, clip, path: `${dir}${name}-${index}.png` })),
+})
+const open = () => touchDrag(page, null, { x: 300, y: row.y }, { x: 180, y: row.y }, { steps: 8, stepDelay: 16 })
 
-// Замороженное время: кадр каждые 16 мс, снимок области строки.
-const frames = {}
-let rowBox
-{
-  const { browser, context, page } = await launch('webkit')
-  await installClock(page)
-  const row = await openHistory(context, page)
-  rowBox = row
-  const touches = rowEvents(row.y)
-  await freeze(page)
-  const clip = { x: 0, y: row.top, width: page.viewportSize().width, height: row.height }
-  const film = (name, events, withShots = true) => frozenFrames(page, { frames: 32, events, sample: ROW_SAMPLE, arg: ROW, clip, shot: (index) => withShots ? `${dir}${name}-${String(index).padStart(2, '0')}.png` : null })
-  frames.open = await film('open', touches.open)
-  frames.closeTap = await film('close-tap', touches.closeTap)
-  await film('reopen', touches.open, false)
-  frames.closeDrag = await film('close-drag', touches.closeDrag)
-  await browser.close()
-}
+const phases = {}
+phases.open = await record('open', open)
+await sleep(400)
+// Короткое касание открытой строки и клик следом, как на телефоне (синтетические касания клика не порождают).
+phases.closeTap = await record('close-tap', async () => {
+  await touchDrag(page, null, { x: 150, y: row.y }, { x: 150, y: row.y }, { steps: 1, stepDelay: 48 })
+  await page.evaluate((index) => document.querySelectorAll('.page-slot')[1].querySelectorAll('.history-row')[index].click(), ROW)
+})
+await sleep(400)
+await open()
+await sleep(600)
+// Протяжка обратно на 60 px — дальше половины кнопки, строка доезжает до места сама.
+phases.closeDrag = await record('close-drag', () => touchDrag(page, null, { x: 180, y: row.y }, { x: 240, y: row.y }, { steps: 5, stepDelay: 16 }))
+await browser.close()
 
-const summary = {}
-for (const [mode, phases] of Object.entries({ realtime, frames })) for (const [phase, list] of Object.entries(phases)) summary[`${mode} ${phase}`] = summarize(list)
-writeFileSync(`${dir}row-swipe.json`, JSON.stringify({ label, row: { index: ROW, ...rowBox }, summary, realtime, frames }, null, 2))
-for (const [key, value] of Object.entries(summary)) console.log(`${key.padEnd(18)} стоп ${value.final} к ${value.settledAt} мс · «Удалить»: ${value.delete} · дыра в ${value.gapFrames} кадрах (до ${value.maxGap} px) · кнопок в списке ${value.deletesInList}`)
+const summary = Object.fromEntries(Object.entries(phases).map(([name, phase]) => [name, summarize(phase)]))
+writeFileSync(`${dir}row-swipe.json`, JSON.stringify({ label, row: { index: ROW, ...row }, summary, phases }, null, 2))
+for (const [name, value] of Object.entries(summary)) console.log(`${name.padEnd(9)} стоп ${value.final} к ${value.settledAt} мс · «Удалить»: ${value.delete}, пропала раньше строки: ${value.deleteGoneWhileOpen} · дыра в ${value.gapFrames} кадрах (до ${value.maxGap} px) · кнопок в списке ${value.deletesInList}`)
 console.log(`→ ${dir}`)

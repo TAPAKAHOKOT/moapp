@@ -23,6 +23,9 @@ export async function launch(kind = 'webkit', { colorScheme = 'light', viewport 
     serviceWorkers: 'block',
     ...(existsSync(statePath) ? { storageState: statePath } : {}),
   })
+  // Жёсткие таймауты: ожидание селектора или клика не висит дольше 15 с, загрузка страницы — 20 с.
+  context.setDefaultTimeout(15000)
+  context.setDefaultNavigationTimeout(20000)
   const page = await context.newPage()
   return { browser, context, page, statePath }
 }
@@ -131,41 +134,24 @@ export async function touchDrag(page, selector, from, to, { steps = 12, holdMs =
   }, { selector, from, to, steps, holdMs, stepDelay })
 }
 
-// Покадровая запись, два режима.
-// Реальное время: requestAnimationFrame на странице пишет состояние каждого кадра (~16 мс), пока скрипт ведёт жест.
-// Замороженное: часы страницы стоят (page.clock, ставится до загрузки), CSS-переходы и Web Animations на паузе, и скрипт
-// сам двигает время шагами по 16 мс — события жеста на своих шагах, после шага состояние и снимок. Кадры такого прогона
-// повторяются один в один, их можно сравнивать попиксельно между ревизиями. Рендер React и события анимаций идут в
-// реальном времени, поэтому после шага скрипт ждёт реальные ~30 мс.
-const FRAME_TOOLS = () => {
-  const tools = window.__frameTools = { t: 0, seen: new Map(), target: null }
-  // Касание одним пальцем по одному событию, без таймеров страницы — они стоят вместе с часами. click — клик следом,
-  // как после короткого касания на телефоне (синтетические касания его не порождают).
-  tools.touch = (type, x, y, click = false) => {
-    if (type === 'touchstart') tools.target = document.elementFromPoint(x, y)
-    const target = tools.target
-    const point = typeof document.createTouch === 'function' ? document.createTouch(window, target, 1, x, y, x, y, x, y) : new Touch({ identifier: 1, target, clientX: x, clientY: y, pageX: x, pageY: y, screenX: x, screenY: y })
-    const list = (items) => typeof document.createTouchList === 'function' ? document.createTouchList(...items) : items
-    const touches = type === 'touchend' || type === 'touchcancel' ? [] : [point]
-    target.dispatchEvent(new TouchEvent(type, { touches: list(touches), targetTouches: list(touches), changedTouches: list([point]), bubbles: true, cancelable: true, composed: true }))
-    if (click) target.closest('button, [role="button"]')?.click()
-  }
-  // Анимация, замеченная впервые, начинается с текущего шага, дальше её время — время шагов.
-  tools.seek = () => {
-    for (const animation of document.getAnimations()) {
-      if (!tools.seen.has(animation)) { tools.seen.set(animation, tools.t); animation.pause() }
-      animation.currentTime = tools.t - tools.seen.get(animation)
-    }
-  }
+
+// Предохранитель на весь скрипт: что бы ни зависло, процесс выйдет с кодом 2.
+export function guard(ms, name) {
+  setTimeout(() => { console.error(`${name}: не уложился в ${Math.round(ms / 1000)} с, выхожу`); process.exit(2) }, ms).unref()
 }
 
 // Функция состояния для страницы: sample(arg) без замыканий, результат — простой объект.
 const sampleExpression = (sample, arg) => `(${sample.toString()})(${JSON.stringify(arg ?? null)})`
 
-export async function realtimeFrames(page, { ms = 500, sample, arg, action }) {
+// Покадровая запись в реальном времени: requestAnimationFrame на странице пишет состояние каждого кадра (~16 мс) в течение
+// ms от старта, пока скрипт ведёт действие. shots — снимки по ходу: [{ at: мс от старта, path, clip? }]; снимок в WebKit
+// занимает ~90 мс, поэтому в JSON идёт фактическое время каждого. Запись кончается и по таймеру страницы — даже если
+// кадры перестали приходить.
+export async function realtimeFrames(page, { ms = 500, sample, arg, action, shots = [] }) {
   await page.evaluate(`(() => {
     const record = window.__realtime = { samples: [], t0: performance.now() }
     record.done = new Promise((resolve) => {
+      setTimeout(resolve, ${ms + 1500})
       const tick = (now) => {
         record.samples.push({ t: Math.round(now - record.t0), ...${sampleExpression(sample, arg)} })
         if (now - record.t0 < ${ms}) requestAnimationFrame(tick)
@@ -174,43 +160,19 @@ export async function realtimeFrames(page, { ms = 500, sample, arg, action }) {
       requestAnimationFrame(tick)
     })
   })()`)
-  await action()
-  await page.evaluate(() => window.__realtime.done)
-  return page.evaluate(() => window.__realtime.samples)
-}
-
-// Часы ставятся до загрузки страницы и идут как настоящие, пока их не остановят.
-export async function installClock(page) { await page.clock.install() }
-
-export async function freeze(page) {
-  await page.evaluate(FRAME_TOOLS)
-  const now = await page.evaluate(() => Date.now())
-  await page.clock.pauseAt(now + 50)
-}
-
-export async function unfreeze(page) {
-  await page.evaluate(() => { for (const animation of document.getAnimations()) animation.play() })
-  await page.clock.resume()
-}
-
-// events: { t, type: 'touchstart' | 'touchmove' | 'touchend', x, y, click? } или { t, run: async () => … } — действие скрипта.
-// shot(index) — путь снимка кадра или null; clip — область снимка.
-export async function frozenFrames(page, { frames = 32, events = [], sample, arg, shot = () => null, clip }) {
-  await page.evaluate(() => { window.__frameTools.t = 0; window.__frameTools.seen = new Map() })
-  const result = []
-  for (let index = 0; index < frames; index++) {
-    const t = index * 16
-    if (index > 0) await page.clock.runFor(16)
-    await page.evaluate((t) => { window.__frameTools.t = t }, t)
-    for (const event of events.filter((item) => item.t === t)) {
-      if (event.run) await event.run()
-      else await page.evaluate((event) => window.__frameTools.touch(event.type, event.x, event.y, event.click), event)
+  const started = Date.now()
+  const taken = []
+  const shooting = (async () => {
+    for (const shot of shots) {
+      const wait = shot.at - (Date.now() - started)
+      if (wait > 0) await sleep(wait)
+      const t = await page.evaluate(() => Math.round(performance.now() - window.__realtime.t0))
+      await page.screenshot({ path: shot.path, ...(shot.clip ? { clip: shot.clip } : {}) })
+      taken.push({ t, png: shot.path.split('/').pop() })
     }
-    await sleep(30)
-    const state = await page.evaluate(`(window.__frameTools.seek(), ${sampleExpression(sample, arg)})`)
-    const path = shot(index)
-    if (path) await page.screenshot({ path, ...(clip ? { clip } : {}) })
-    result.push({ i: index, t, ...state, ...(path ? { png: path.split('/').pop() } : {}) })
-  }
-  return result
+  })()
+  await action()
+  await shooting
+  await page.evaluate(() => window.__realtime.done)
+  return { samples: await page.evaluate(() => window.__realtime.samples), shots: taken }
 }

@@ -3,7 +3,8 @@
 // со сброшенного аккаунта, и называются по-своему. Аккаунт сбрасывается в начале и в конце прогона.
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { webkit } from 'playwright'
-import { launch, openApp, goTab, acceptDeviceLink, pinLocalState, patchSettings, resetAccount, ALL_BLOCKS, BASE, SHOTS, sleep, touchDrag } from './common.mjs'
+import { launch, openApp, goTab, acceptDeviceLink, guard, pinLocalState, patchSettings, resetAccount, ALL_BLOCKS, BASE, SHOTS, sleep, touchDrag } from './common.mjs'
+guard(9 * 60_000, 'regress.mjs')
 const link = process.argv.find((arg) => arg.includes('#/device/'))
 const label = process.argv.slice(2).find((arg) => !arg.includes('#/device/')) ?? 'now'
 const dir = `${SHOTS}regress-${label}/`
@@ -99,6 +100,8 @@ await phone('light', { width: 390, height: 763 }, 'p390')
 const browser = await webkit.launch()
 for (const scheme of ['light', 'dark']) {
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, colorScheme: scheme, serviceWorkers: 'block' })
+  context.setDefaultTimeout(15000)
+  context.setDefaultNavigationTimeout(20000)
   const page = await context.newPage()
   await page.goto(BASE)
   await page.waitForSelector('.empty-state')
