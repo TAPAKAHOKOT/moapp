@@ -2255,14 +2255,14 @@ button.tag-chip:disabled {
 
 /* Слой, обрезка и кнопка «Удалить» под строкой — только у открытой, у той, что тянут, и у отпущенной, пока она едет на
    место: сотни неподвижных строк без них Safari рисует заметно дешевле. Строка с фокусом обрезается, как раньше: кольцо
-   фокуса с клавиатуры выходит за её края. У строки отменённого платежа слои прежние: полупрозрачная метка категории без
-   них рисуется чуть иначе. */
-.history-expense:is(.open,.dragging,.closing,.voided,:focus-within) {
+   фокуса с клавиатуры выходит за её края. У строки отменённого платежа и у выбранной слои прежние: без них WebKit иначе
+   сглаживает полупрозрачную метку категории и скруглённые углы плашки выбора. Выбранных строк обычно единицы. */
+.history-expense:is(.open,.dragging,.closing,.voided,.selected,:focus-within) {
   position: relative;
   overflow: hidden;
 }
 
-.history-expense:is(.open,.dragging,.closing,.voided,:focus-within) .history-swipe {
+.history-expense:is(.open,.dragging,.closing,.voided,.selected,:focus-within) .history-swipe {
   position: relative;
   z-index: 1;
 }
