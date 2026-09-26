@@ -3088,6 +3088,12 @@ button.settings-row:disabled .settings-row-value {
   min-height: 0;
 }
 
+/* На невысоком экране у клавиатуры есть потолок; лишнее место уходит наверх, к сумме, как при обычном порядке. */
+.entry-lower.with-keypad > .entry-lower-live,
+.entry-lower.with-keypad > .entry-lower-preview {
+  justify-content: flex-end;
+}
+
 /* «Сегодня» — строка: сколько потрачено за день и сколько раз. */
 .entry-today {
   display: flex;
