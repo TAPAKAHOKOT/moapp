@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import * as accessFlow from './access-flow'
 import App, { AnalyticsView, CardReviewView, CapabilityScreen, CreateWorkspaceSheet, EntryView, fallbackAnalytics, formatEntryDate, formatHistoryDate, HistoryView, pagerTabsAt, RecoverySave, SettingsView, useToast, WorkspaceSwitcher } from './App'
 import { splitDraft, SplitSheet } from './screens/Split'
-import { entryUnits } from './screens/Entry'
+import { entryUnits, usualExpenses } from './screens/Entry'
 import { ModsView, readStatementFile, statementFeedback } from './screens/Mods'
 import * as workspaceApi from './workspace-api'
 import * as workspaceOffline from './workspace-offline'
@@ -1600,13 +1600,15 @@ describe('screens made of blocks', () => {
     expect(screen.queryByRole('button', { name: 'Настроить экран' })).toBeNull()
 
     fireEvent.click(screen.getByRole('button', { name: 'Убрать «Категории»' }))
-    expect(change).toHaveBeenLastCalledWith({ analyticsBlocks: { shown: ['trend', 'tags'], hidden: ['categories', 'weekdays'] } })
+    expect(change).toHaveBeenLastCalledWith({ analyticsBlocks: { shown: ['trend', 'tags'], hidden: ['categories', 'weekdays', 'pace', 'top', 'calendar'] } })
     fireEvent.click(screen.getByRole('button', { name: 'Вернуть «По дням недели»' }))
-    expect(change).toHaveBeenLastCalledWith({ analyticsBlocks: { shown: ['trend', 'categories', 'tags', 'weekdays'], hidden: [] } })
+    expect(change).toHaveBeenLastCalledWith({ analyticsBlocks: { shown: ['trend', 'categories', 'tags', 'weekdays'], hidden: ['pace', 'top', 'calendar'] } })
     fireEvent.keyDown(screen.getAllByRole('button', { name: /Перетащить/ })[1]!, { key: 'ArrowUp' })
-    expect(change).toHaveBeenLastCalledWith({ analyticsBlocks: { shown: ['categories', 'trend', 'tags'], hidden: ['weekdays'] } })
+    expect(change).toHaveBeenLastCalledWith({ analyticsBlocks: { shown: ['categories', 'trend', 'tags'], hidden: ['weekdays', 'pace', 'top', 'calendar'] } })
     fireEvent.click(screen.getByRole('button', { name: 'Размер «Категории»: большая, сделать маленькой' }))
-    expect(change).toHaveBeenLastCalledWith({ analyticsBlocks: { shown: ['trend', 'categories', 'tags'], hidden: ['weekdays'], small: ['categories'] } })
+    expect(change).toHaveBeenLastCalledWith({ analyticsBlocks: { shown: ['trend', 'categories', 'tags'], hidden: ['weekdays', 'pace', 'top', 'calendar'], small: ['categories'] } })
+    // Новые карточки ждут пунктиром, пока их не поставят.
+    expect(screen.getByRole('button', { name: 'Вернуть «Темп»' })).not.toBeNull()
   })
 
   it('puts small cards two in a row with only the main thing, and a small category card does not narrow the total', () => {
@@ -1636,11 +1638,13 @@ describe('screens made of blocks', () => {
     expect(screen.queryByRole('button', { name: 'Убрать «Плитки»' })).toBeNull()
 
     fireEvent.click(screen.getByRole('button', { name: 'Вернуть «Заметка»' }))
-    expect(change).toHaveBeenLastCalledWith({ entryBlocks: { shown: ['keypad', 'tiles', 'note', 'tags'], hidden: [] } })
+    expect(change).toHaveBeenLastCalledWith({ entryBlocks: { shown: ['keypad', 'tiles', 'note', 'tags'], hidden: ['today', 'usual'] } })
     fireEvent.keyDown(screen.getByRole('button', { name: 'Переставить «Плитки»' }), { key: 'ArrowUp' })
-    expect(change).toHaveBeenLastCalledWith({ entryBlocks: { shown: ['tiles', 'keypad', 'tags'], hidden: ['note'] } })
+    expect(change).toHaveBeenLastCalledWith({ entryBlocks: { shown: ['tiles', 'keypad', 'tags'], hidden: ['note', 'today', 'usual'] } })
     fireEvent.click(screen.getByRole('button', { name: 'Убрать «Теги»' }))
-    expect(change).toHaveBeenLastCalledWith({ entryBlocks: { shown: ['keypad', 'tiles'], hidden: ['tags', 'note'] } })
+    expect(change).toHaveBeenLastCalledWith({ entryBlocks: { shown: ['keypad', 'tiles'], hidden: ['tags', 'note', 'today', 'usual'] } })
+    fireEvent.click(screen.getByRole('button', { name: 'Вернуть «Сегодня»' }))
+    expect(change).toHaveBeenLastCalledWith({ entryBlocks: { shown: ['today', 'keypad', 'tiles', 'tags'], hidden: ['note', 'usual'] } })
   })
 
   it('stands «Расход» blocks in the person\'s order, with the note and tags sharing a row when they meet', () => {
@@ -1698,6 +1702,45 @@ describe('screens made of blocks', () => {
     release()
     expect(edit).toHaveBeenLastCalledWith('entry', 'hold')
     expect(within(entry.container.querySelector('.entry-lower-live')!).getByRole('button', { name: 'Продукты' }).getAttribute('aria-pressed')).toBe('false')
+  })
+
+  it('shows today\'s spending and fills in a usual expense with one tap on «Расход»', () => {
+    const now = new Date().toISOString()
+    const coffee = (id: string, occurredAt = now) => ({ ...spent(id, 'products', occurredAt, ['tag-0']), amountMinor: 42_000 })
+    const bootstrap = expenseBootstrap({ categories: personalCategories, tags: personalTags, expenses: [coffee('a'), coffee('b'), coffee('c'), spent('d', 'home', '2026-01-01T10:00:00.000Z')] })
+    const { container } = render(<EntryView userId="user-a" workspaceId="workspace-a" workspace={bootstrap.workspace} bootstrap={bootstrap} setBootstrap={vi.fn()} currentId={null} setCurrentId={vi.fn()} refreshPending={vi.fn()} onDraftDirtyChange={vi.fn()} active blocks={{ shown: ['today', 'usual', 'keypad', 'tiles', 'note', 'tags'], hidden: [] }}/>)
+    expect(container.querySelector('.entry-today')?.textContent).toMatch(/^Сегодня1[\s\u00a0]260.*3 траты$/)
+    fireEvent.click(screen.getByRole('button', { name: 'Как обычно: 420, #вдвоём' }))
+    expect(container.querySelector('.entry-card:not(.aside) .amount-value')?.textContent).toBe('420')
+    expect(within(container.querySelector('.entry-lower-live')!).getByRole('button', { name: 'Продукты' }).getAttribute('aria-pressed')).toBe('true')
+    expect(within(container.querySelector('.entry-lower-live')!).getByRole('button', { name: 'вдвоём' }).getAttribute('aria-pressed')).toBe('true')
+  })
+
+  it('counts a spending as usual after three repeats in three months, the most frequent first', () => {
+    const now = Date.parse('2026-09-26T12:00:00.000Z')
+    const at = (days: number) => new Date(now - days * 86_400_000).toISOString()
+    const expenses = [
+      spent('a', 'products', at(1)), spent('b', 'products', at(5)), spent('c', 'products', at(40)),
+      spent('d', 'home', at(2)), spent('e', 'home', at(3)), spent('f', 'home', at(120)),
+      { ...spent('g', 'fun', at(1)), voidedAt: at(1) }, spent('h', 'fun', at(2)), spent('i', 'fun', at(3)),
+      spent('j', 'products', at(1), ['tag-0']), spent('k', 'products', at(2), ['tag-0']), spent('l', 'products', at(3), ['tag-0']), spent('m', 'products', at(4), ['tag-0']),
+    ]
+    expect(usualExpenses(expenses, now).map((item) => [item.categoryId, item.tagIds, item.count])).toEqual([['products', ['tag-0'], 4], ['products', [], 3]])
+  })
+
+  it('adds «Темп», «Крупные траты» and «Календарь» cards to analytics', () => {
+    const now = new Date().toISOString()
+    const bootstrap = expenseBootstrap({ categories: personalCategories, expenses: [spent('a', 'products', now), { ...spent('b', 'home', now), amountMinor: 5_000 }] })
+    const { container } = render(<AnalyticsView userId="user-a" workspaceId="workspace-a" bootstrap={bootstrap} theme="light" online={false} blocks={{ shown: ['pace', 'top', 'calendar'], hidden: ['trend', 'categories', 'tags', 'weekdays'], small: ['calendar'] }}/>)
+    expect(titles(container)).toEqual(['Темп', 'Крупные траты', 'Календарь'])
+    // Прогноз — сумма за прошедшие дни недели, растянутая на всю неделю; в воскресенье неделя уже целиком.
+    const elapsed = (new Date().getDay() + 6) % 7 + 1
+    const forecast = new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 0 }).format(60 / elapsed * 7)
+    expect(container.querySelector('.pace-value')?.textContent).toBe(`${elapsed < 7 ? '≈ ' : ''}${forecast} RSD`)
+    expect([...container.querySelectorAll('.top-row')].map((row) => [row.querySelector('span b')?.textContent, row.querySelector('.legend-value b')?.textContent])).toEqual([['Для дома', expect.stringMatching(/^50/)], ['Продукты', expect.stringMatching(/^10/)]])
+    const cells = container.querySelectorAll('.calendar-heat.small > span')
+    expect(cells.length % 7).toBe(0)
+    expect(container.querySelector('.calendar-heat.small > span.today')).not.toBeNull()
   })
 
   it('offers each screen in «Мои экраны» and opens the one picked right on it', () => {
@@ -2194,7 +2237,7 @@ describe('appearance in the account', () => {
     expect(screen.getByText('Настройка экрана')).not.toBeNull()
     fireEvent.click(screen.getByRole('button', { name: 'Убрать «Заметка»' }))
     await waitFor(() => expect(fetchMock.mock.calls.some(([url, init]) => url === '/api/me/settings' && init?.method === 'PATCH'
-      && init.body === JSON.stringify({ settings: { entryBlocks: { shown: ['keypad', 'tiles', 'tags'], hidden: ['note'] } } }))).toBe(true))
+      && init.body === JSON.stringify({ settings: { entryBlocks: { shown: ['keypad', 'tiles', 'tags'], hidden: ['note', 'today', 'usual'] } } }))).toBe(true))
     fireEvent.click(screen.getByRole('button', { name: 'Готово' }))
 
     expect(screen.queryByText('Настройка экрана')).toBeNull()

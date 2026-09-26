@@ -171,9 +171,15 @@ workspaces.
 
 | Screen | Blocks (default order) | Always there |
 |---|---|---|
-| «Расход» | `keypad` and `tiles` (cannot be removed), `note`, `tags` | the amount and «Сохранить» |
+| «Расход» | `today`* and `usual`*, `keypad` and `tiles` (cannot be removed), `note`, `tags` | the amount and «Сохранить» |
 | «История» | `filters`, `total`, `day-totals` (stays by the dates) | the list, reminders, card review |
-| «Аналитика» (cards can be small) | `trend`, `categories`, `tags`, `weekdays` (month only) | the total and the period switch |
+| «Аналитика» (cards can be small) | `trend`, `pace`*, `categories`, `top`*, `tags`, `weekdays` (month only), `calendar`* | the total and the period switch |
+
+\* Optional blocks, off until the person adds them. `today` shows what was spent today in the totals currency; `usual`
+offers up to four expenses repeated at least three times in the last 90 days (same category, amount, currency and tags),
+and a tap fills them into the form. `pace` projects the period at the current pace next to the whole previous period,
+`top` lists the five biggest expenses of the period under the current focus, and `calendar` tints each day of the
+period by its share of the busiest day.
 
 Without the `filters` block the saved history filters do not apply (they return with the block). Without the `categories` or
 `tags` card the analytics focus on a category or tag does not apply.

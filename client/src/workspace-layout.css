@@ -2855,6 +2855,128 @@ button.settings-row:disabled .settings-row-value {
   margin-top: 9px;
 }
 
+/* «Темп»: одно число — сколько выйдет к концу периода — и прошлый период целиком для сравнения. */
+.chart-card .pace-value {
+  margin: 12px 0 3px;
+  color: var(--ink);
+  font-size: 26px;
+  font-weight: 750;
+  letter-spacing: -.02em;
+}
+
+.chart-card .pace-value.small {
+  margin: 8px 0 1px;
+  font-size: 22px;
+}
+
+/* «Крупные траты»: пять строк — категория, дата с пометками, сумма. */
+.top-list {
+  display: flex;
+  flex-direction: column;
+  margin-top: 8px;
+}
+
+.top-row {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 0;
+  border-top: 1px solid var(--line);
+}
+
+.top-row > i {
+  width: 10px;
+  height: 26px;
+  border-radius: 5px;
+}
+
+.top-row > .category-emoji {
+  width: 16px;
+  font-size: 17px;
+}
+
+.top-row > span:nth-child(2) {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.top-row b {
+  font-size: calc(12px * var(--text-scale));
+}
+
+.top-row small {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: calc(11px * var(--text-scale));
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* «Календарь»: дни периода по неделям, цвет дня — доля от самого дорогого дня. */
+.calendar-heat {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 4px;
+  margin-top: 12px;
+}
+
+.calendar-heat > small {
+  color: var(--text-tertiary);
+  font-size: calc(10px * var(--text-scale));
+  text-align: center;
+}
+
+.calendar-heat > span {
+  position: relative;
+  isolation: isolate;
+  display: grid;
+  place-items: center;
+  aspect-ratio: 1;
+  overflow: hidden;
+  border-radius: 8px;
+  background: var(--soft);
+  color: var(--muted);
+  font-size: calc(11px * var(--text-scale));
+  font-weight: 600;
+}
+
+.calendar-heat > span::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  background: var(--heat-color);
+  opacity: var(--heat, 0);
+}
+
+.calendar-heat > span.hot {
+  color: var(--on-ink);
+}
+
+.calendar-heat > span.outside {
+  background: transparent;
+}
+
+.calendar-heat > span.future {
+  opacity: .45;
+}
+
+.calendar-heat > span.today {
+  box-shadow: inset 0 0 0 1.5px var(--ink);
+}
+
+.calendar-heat.small {
+  gap: 3px;
+  margin-top: 10px;
+}
+
+.calendar-heat.small > span {
+  border-radius: 4px;
+}
+
 /* Кнопка размера на плашке: сейчас большая или маленькая. */
 .size-toggle {
   min-height: 30px;
@@ -2964,6 +3086,80 @@ button.settings-row:disabled .settings-row-value {
 .entry-lower.with-keypad > .entry-lower-live {
   flex: 1 1 auto;
   min-height: 0;
+}
+
+/* «Сегодня» — строка: сколько потрачено за день и сколько раз. */
+.entry-today {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin: 0 20px;
+  padding: 6px 0 2px;
+  color: var(--muted);
+  font-size: calc(12px * var(--text-scale));
+}
+
+.entry-today b {
+  color: var(--ink);
+  font-size: calc(13px * var(--text-scale));
+  font-weight: 750;
+}
+
+.entry-today small {
+  color: var(--text-tertiary);
+  font-size: calc(11px * var(--text-scale));
+}
+
+/* «Как обычно» — частые траты чипами; полоса листается сама и не переключает расходы. */
+.entry-usual {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 16px;
+  padding: 6px 4px 2px;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+  touch-action: pan-x;
+}
+
+.entry-usual::-webkit-scrollbar {
+  display: none;
+}
+
+.usual-chip {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 5px;
+  min-height: 32px;
+  padding: 0 11px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--card);
+  color: var(--ink);
+  font-size: calc(12px * var(--text-scale));
+}
+
+.usual-chip b {
+  font-weight: 750;
+}
+
+.usual-chip small {
+  color: var(--muted);
+  font-size: calc(11px * var(--text-scale));
+}
+
+.usual-empty {
+  padding: 7px 0;
+  color: var(--text-tertiary);
+  font-size: calc(11px * var(--text-scale));
+}
+
+.entry-arrange .entry-today,
+.entry-arrange .entry-usual {
+  margin: 0;
+  padding: 4px 2px;
 }
 
 /* Ручка ≡ в правом углу рамки — зеркало «−»: за неё блок переставляют. */

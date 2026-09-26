@@ -4,9 +4,10 @@ import { getWorkspacePreference, setWorkspacePreference } from '../app-state'
 import { patchSettings } from '../settings'
 import type { SettingsPatch } from '../settings'
 import type { AccountSettings, BlockLayout, Category, Currency, Expense, ScreenOrder, Tag, WorkspaceSummary } from '../types'
-import { amountToMinor, applyKeypad, cachedNumberFormat, formatAmountInput, isoToLocalInput, localInputToIso, swipeDirection, workspaceCurrency } from '../utils'
+import { amountToMinor, applyKeypad, cachedNumberFormat, formatAmountInput, isoToLocalInput, localDateKey, localInputToIso, swipeDirection, workspaceCurrency } from '../utils'
 import { CategoryMark, ChevronIcon, CurrencySheet, EditBlock, GridIcon, KeypadIcon, MoreSheet, RemoveBadge, SignIcon, Toast, TrashIcon, prefersReducedMotion, tap, useConfirm, useDialog, useDragOrder, useHold, useToast } from '../ui'
-import { amountSize, formatEntryDate, formatShortWeekday, inputFromExpense } from '../format'
+import { amountSize, formatAnalyticsAmount, formatEntryDate, formatShortWeekday, inputFromExpense, money, pluralRu } from '../format'
+import { historyTotals } from '../history'
 import type { Bootstrap } from '../format'
 import { ExtrasRow, NoteSheet, TAG_COLORS, createTagOrReuse, tagStyle } from '../tags'
 import { categoryLayout, moveToMore, moveToShown, reorderGroup, tagLayout, toScreenOrder } from '../screen-order'
@@ -172,10 +173,56 @@ export function entryUnits(ids: string[]): { head: EntryUnit[]; tail: EntryUnit[
   return first < 0 ? { head: units, tail: [] } : { head: units.slice(0, first), tail: units.slice(first) }
 }
 
-export function EntryLowerPreview({ units, main, additional, tags, tagOrder, state }: { units: EntryUnit[]; main: Category[]; additional: Category[]; tags: Tag[]; tagOrder?: ScreenOrder; state: LowerPreviewState }) {
+// «Сегодня» — сколько потрачено за сегодня, в валюте итогов, как в истории.
+export function TodayLine({ bootstrap }: { bootstrap: Bootstrap }) {
+  const today = localDateKey(new Date())
+  const items = bootstrap.expenses.filter((expense) => !expense.deletedAt && !expense.voidedAt && localDateKey(expense.occurredAt) === today)
+  const target = bootstrap.settings?.analyticsCurrency || workspaceCurrency(bootstrap)
+  const totals = historyTotals(items, bootstrap.currencies, bootstrap.rates, target)
+  const amount = totals.byCurrency.length === 1 ? money(totals.byCurrency[0]!.amountMinor, totals.byCurrency[0]!.currency, bootstrap.currencies)
+    : totals.converted !== null ? `≈ ${formatAnalyticsAmount(totals.converted, target)}`
+    : totals.byCurrency.map((part) => money(part.amountMinor, part.currency, bootstrap.currencies)).join(' + ')
+  return <div className="entry-today">{items.length
+    ? <><span>Сегодня</span><b>{amount}</b><small>{items.length} {pluralRu(items.length, ['трата', 'траты', 'трат'])}</small></>
+    : <span>Сегодня трат ещё нет</span>}</div>
+}
+
+export type UsualExpense = { key: string; categoryId: string; amountMinor: number; currency: string; tagIds: string[]; count: number; last: string }
+
+// «Как обычно»: траты, которые за последние три месяца повторились хотя бы трижды, — та же категория, сумма, валюта
+// и теги. Самые частые первыми, не больше четырёх.
+export function usualExpenses(expenses: Expense[], now = Date.now()): UsualExpense[] {
+  const since = now - 90 * 86_400_000
+  const groups = new Map<string, UsualExpense>()
+  for (const expense of expenses) {
+    if (expense.deletedAt || expense.voidedAt || Date.parse(expense.occurredAt) < since) continue
+    const tagIds = [...(expense.tagIds ?? [])].sort()
+    const key = [expense.categoryId, expense.amountMinor, expense.currency, tagIds.join(',')].join('|')
+    const group = groups.get(key) ?? { key, categoryId: expense.categoryId, amountMinor: expense.amountMinor, currency: expense.currency, tagIds, count: 0, last: '' }
+    group.count += 1
+    if (expense.occurredAt > group.last) group.last = expense.occurredAt
+    groups.set(key, group)
+  }
+  return [...groups.values()].filter((group) => group.count >= 3).sort((left, right) => right.count - left.count || right.last.localeCompare(left.last)).slice(0, 4)
+}
+
+// Касание подставляет сумму, валюту, категорию и теги — сохраняет, как всегда, кнопка внизу.
+export function UsualChips({ items, categories, tags, currencies, usualCurrency, disabled = false, inert = false, onPick = noop }: { items: UsualExpense[]; categories: Category[]; tags: Tag[]; currencies: Currency[]; usualCurrency: string; disabled?: boolean; inert?: boolean; onPick?: (item: UsualExpense) => void }) {
+  return <div className="entry-usual" role="group" aria-label="Как обычно">{items.length ? items.map((item) => {
+    const category = categories.find((entry) => entry.id === item.categoryId)
+    const tag = tags.find((entry) => item.tagIds.includes(entry.id))
+    const decimals = currencies.find((currency) => currency.code === item.currency)?.decimals ?? 2
+    const amount = `${cachedNumberFormat('ru-RU', { maximumFractionDigits: decimals }).format(item.amountMinor / 10 ** decimals)}${item.currency === usualCurrency ? '' : ` ${item.currency}`}`
+    const label = tag ? `#${tag.name}` : category?.name ?? ''
+    return <button type="button" key={item.key} className="usual-chip" disabled={disabled} tabIndex={inert ? -1 : undefined} aria-label={`Как обычно: ${amount}, ${label}`} onClick={() => onPick(item)}>{category?.emoji && <span aria-hidden="true">{category.emoji}</span>}<b>{amount}</b><small>{label}</small></button>
+  }) : <span className="usual-empty">Здесь появятся траты, которые повторяются</span>}</div>
+}
+
+export function EntryLowerPreview({ units, main, additional, tags, tagOrder, state, renderFixed = () => null }: { units: EntryUnit[]; main: Category[]; additional: Category[]; tags: Tag[]; tagOrder?: ScreenOrder; state: LowerPreviewState; renderFixed?: (key: string) => React.ReactNode }) {
   return <>
     {units.map((unit) => unit.key === 'keypad' ? <Keypad key="keypad" onKey={noop} inert/>
       : unit.key === 'tiles' ? <CategoryTiles key="tiles" main={main} additional={additional} selectedId={state.categoryId} inert/>
+      : !unit.key.startsWith('extras') ? <div key={unit.key}>{renderFixed(unit.key)}</div>
       : <ExtrasRow key={unit.key} tags={tags} order={tagOrder} showNote={unit.ids.includes('note')} showTags={unit.ids.includes('tags')} tagsFirst={unit.ids[0] === 'tags'} selected={state.tagIds} note={state.note} inert onChange={noop} onNote={noop}/>)}
     <div className="entry-save"><button type="button" className="primary" tabIndex={-1} disabled={!state.canSave}>{state.saveLabel}</button>{state.key !== 'blank' && <button type="button" className="sheet-cancel ghost" tabIndex={-1} disabled aria-hidden>Отменить</button>}</div>
   </>
@@ -210,7 +257,7 @@ export function EntryView({ userId, workspaceId, workspace, bootstrap, setBootst
   const suppressTouchPointerUp = useRef(false)
   const entryRef = useRef<HTMLElement | null>(null)
   // Удержание плиток или ряда заметки и тегов открывает настройку экрана; клавиатура и карточка суммы — нет.
-  const holdRef = useHold(editing ? undefined : () => onEditScreen('entry', 'hold'), (target) => Boolean(target.closest('.entry-lower-live .categories, .entry-lower-live .extras-row')))
+  const holdRef = useHold(editing ? undefined : () => onEditScreen('entry', 'hold'), (target) => Boolean(target.closest('.categories, .extras-row, .entry-today, .entry-usual')) && !target.closest('.entry-lower-preview'))
   const sectionRef = useCallback((node: HTMLElement | null) => { entryRef.current = node; holdRef(node) }, [holdRef])
   const trackRef = useRef<HTMLDivElement>(null)
   const actionsRef = useRef<HTMLDivElement>(null)
@@ -561,7 +608,7 @@ export function EntryView({ userId, workspaceId, workspace, bootstrap, setBootst
   const usesNativeTouch = () => 'ontouchstart' in window
 
   // Ряд «Дополнительно» листается сам по горизонтали: жест внутри него не должен переключать расходы.
-  const insideTagStrip = (target: EventTarget | null) => target instanceof Element && Boolean(target.closest('.tag-strip'))
+  const insideTagStrip = (target: EventTarget | null) => target instanceof Element && Boolean(target.closest('.tag-strip, .entry-usual'))
   const swipeStart = (event: React.PointerEvent) => {
     if (event.pointerType === 'touch' && usesNativeTouch()) return
     if (event.pointerType === 'mouse' && event.button !== 0) return
@@ -700,7 +747,18 @@ export function EntryView({ userId, workspaceId, workspace, bootstrap, setBootst
   },[active,editing,physicalKey])
   const publishTag = (tag: Tag) => setBootstrap((data) => ({ ...data, tags: [tag, ...(data.tags ?? []).filter((item) => item.id !== tag.id)] }))
   const saveRow = <div className="entry-save" inert={editing}><button type="button" className="primary" disabled={!save.canSave || saving} onClick={() => void submitExpense()}>{saving ? 'Сохраняем…' : save.label}</button>{current && <button type="button" className={`sheet-cancel${dirty && !saving ? '' : ' ghost'}`} disabled={!dirty || saving} aria-hidden={!dirty || saving} tabIndex={dirty && !saving ? undefined : -1} onClick={cancelEdit}>Отменить</button>}</div>
+  const usualItems = useMemo(() => usualExpenses(bootstrap.expenses), [bootstrap.expenses])
+  const pickUsual = (item: UsualExpense) => {
+    tap(6)
+    const decimals = bootstrap.currencies.find((currency) => currency.code === item.currency)?.decimals ?? 2
+    setForm((value) => ({ ...value, amount: String(item.amountMinor / 10 ** decimals), currency: item.currency, categoryId: item.categoryId, tagIds: item.tagIds }))
+  }
+  // «Сегодня» и «Как обычно» одинаковы у любой записи: при свайпе они не меняются, а в превью — неживые копии.
+  const fixedBlock = (id: string, live = true) => id === 'today' ? <TodayLine bootstrap={bootstrap}/>
+    : id === 'usual' ? <UsualChips items={usualItems} categories={bootstrap.categories} tags={bootstrap.tags ?? []} currencies={bootstrap.currencies} usualCurrency={defaultCurrency()} disabled={saving} inert={!live} onPick={live ? pickUsual : undefined}/>
+    : null
   const liveUnit = (unit: EntryUnit) => unit.key === 'keypad' ? <Keypad key="keypad" onKey={key} disabled={saving}/>
+    : unit.key === 'today' || unit.key === 'usual' ? <div key={unit.key}>{fixedBlock(unit.key)}</div>
     : unit.key === 'tiles' ? <CategoryTiles key="tiles" main={main} additional={additional} selectedId={selectedCategoryId} disabled={saving} onPick={chooseCategory} onMore={() => setCategorySheet(true)}/>
     : <ExtrasRow key={unit.key} tags={bootstrap.tags ?? []} order={tagOrder} showNote={unit.ids.includes('note')} showTags={unit.ids.includes('tags')} tagsFirst={unit.ids[0] === 'tags'} selected={form.tagIds} note={form.note} disabled={saving} online={navigator.onLine} onChange={(tagIds) => setForm((value) => ({ ...value, tagIds }))} onNote={() => setNoteSheet(true)} onCreate={(name) => createTagOrReuse(workspaceId, name, TAG_COLORS[(bootstrap.tags ?? []).length % TAG_COLORS.length] ?? null, publishTag)}/>
   return <section ref={sectionRef} className={`entry-view${current ? ' editing' : ''}${saving ? ' saving' : ''}${editing ? ' arranging' : ''}`} aria-label="Ввод суммы" onPointerDown={swipeStart} onPointerMove={swipeMove} onPointerUpCapture={swipeEnd} onPointerCancel={swipeCancel}>
@@ -716,12 +774,12 @@ export function EntryView({ userId, workspaceId, workspace, bootstrap, setBootst
       <button type="button" className="icon-danger entry-delete" disabled={saving || !current || jumpingNew} onClick={() => void remove()} aria-label="Удалить расход"><TrashIcon/></button>
     </div>
     {editing
-      ? <><EntryArrange blocks={entryBlocks} onBlocks={(next) => onScreensChange({ entryBlocks: toBlockLayout(next) })} categories={bootstrap.categories} categoryOrder={bootstrap.settings?.categoryOrder} tags={bootstrap.tags ?? []} tagOrder={tagOrder} onOrder={saveOrder}/>{saveRow}</>
+      ? <><EntryArrange blocks={entryBlocks} onBlocks={(next) => onScreensChange({ entryBlocks: toBlockLayout(next) })} categories={bootstrap.categories} categoryOrder={bootstrap.settings?.categoryOrder} tags={bootstrap.tags ?? []} tagOrder={tagOrder} onOrder={saveOrder} fixedBody={(id) => fixedBlock(id, false)}/>{saveRow}</>
       : <>
         {head.map(liveUnit)}
         <div className={`entry-lower${tail.some((unit) => unit.key === 'keypad') ? ' with-keypad' : ''}`}>
           <div ref={lowerLiveRef} className="entry-lower-live">{tail.map(liveUnit)}{saveRow}</div>
-          {swipePreview && <div ref={lowerPreviewRef} className="entry-lower-preview" aria-hidden="true" inert><EntryLowerPreview units={tail} main={main} additional={additional} tags={bootstrap.tags ?? []} tagOrder={tagOrder} state={swipePreview}/></div>}
+          {swipePreview && <div ref={lowerPreviewRef} className="entry-lower-preview" aria-hidden="true" inert><EntryLowerPreview units={tail} main={main} additional={additional} tags={bootstrap.tags ?? []} tagOrder={tagOrder} state={swipePreview} renderFixed={(id) => fixedBlock(id, false)}/></div>}
         </div>
       </>}
     {dateSheet && <DateSheet value={form.occurredAt} onClose={() => setDateSheet(false)} onPick={(value) => { setForm({ ...form, occurredAt: value }); setDateSheet(false) }}/>}
@@ -747,16 +805,19 @@ export function EntryView({ userId, workspaceId, workspace, bootstrap, setBootst
 // Режим «Настройка экрана» на «Расходе»: блоки стоят в рамках по порядку. ≡ в правом углу переставляет блок, «−» в левом
 // убирает его (клавиатура и плитки только переставляются), убранные ждут внизу пунктиром. Клавиатура на время
 // настройки свёрнута в плашку, а плитки и теги раскладываются прямо здесь.
-export function EntryArrange({ blocks, onBlocks, categories, categoryOrder, tags, tagOrder, onOrder }: {
+export function EntryArrange({ blocks, onBlocks, categories, categoryOrder, tags, tagOrder, onOrder, fixedBody = () => null }: {
   blocks: Blocks; onBlocks: (next: Blocks) => void
   categories: Category[]; categoryOrder?: ScreenOrder; tags: Tag[]; tagOrder?: ScreenOrder
   onOrder: (patch: { categoryOrder: ScreenOrder } | { tagOrder: ScreenOrder }) => void
+  /** Как выглядят «Сегодня» и «Как обычно» — их показывает экран. */
+  fixedBody?: (id: string) => React.ReactNode
 }) {
   const drag = useDragOrder({ items: blocks.shown, onReorder: (ids) => onBlocks(reorderBlocks(blocks, ids)) })
   const body = (id: string) => id === 'keypad' ? <div className="keypad-plate"><KeypadIcon/><span>Клавиатура</span></div>
     : id === 'tiles' ? <TilesArrange categories={categories} order={categoryOrder} onChange={(order) => onOrder({ categoryOrder: order })}/>
     : id === 'tags' ? <TagsArrange tags={tags} order={tagOrder} onChange={(order) => onOrder({ tagOrder: order })}/>
-    : <span className="tag-add extra-add">＋ Заметка</span>
+    : id === 'note' ? <span className="tag-add extra-add">＋ Заметка</span>
+    : fixedBody(id)
   return <div className="entry-arrange">
     <div ref={drag.listRef} className="arrange-list">{drag.shown.map((block) => <div key={block.id} data-drag-id={block.id} className={`arrange-slot${drag.lifted === block.id ? ' lifted' : ''}`}>
       <EditBlock name={block.name} shown removable={!block.fixed} live={block.id === 'tiles' || block.id === 'tags'} className={`arrange-${block.id}`} onToggle={() => onBlocks(hideBlock(blocks, block.id))}

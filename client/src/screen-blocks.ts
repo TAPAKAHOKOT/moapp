@@ -34,6 +34,8 @@ export const SCREENS: Readonly<Record<BlockScreen, ScreenInfo>> = {
   entry: {
     title: 'Расход', setting: 'entryBlocks',
     blocks: [
+      { id: 'today', name: 'Сегодня', hint: 'сколько потрачено за день', optional: true },
+      { id: 'usual', name: 'Как обычно', hint: 'частые траты в одно касание', optional: true },
       { id: 'keypad', name: 'Клавиатура', hint: 'цифры для суммы', fixed: true },
       { id: 'tiles', name: 'Плитки', hint: 'категории одним касанием', fixed: true },
       { id: 'note', name: 'Заметка', hint: 'кнопка «＋ Заметка»' },
@@ -52,9 +54,12 @@ export const SCREENS: Readonly<Record<BlockScreen, ScreenInfo>> = {
     title: 'Аналитика', setting: 'analyticsBlocks',
     blocks: [
       { id: 'trend', name: 'Динамика', hint: 'график трат по дням', resizable: true },
+      { id: 'pace', name: 'Темп', hint: 'сколько выйдет к концу недели или месяца', optional: true, resizable: true },
       { id: 'categories', name: 'Категории', hint: 'круг и список категорий', resizable: true },
+      { id: 'top', name: 'Крупные траты', hint: 'пять самых больших трат за период', optional: true, resizable: true },
       { id: 'tags', name: 'Теги', hint: 'круг и список тегов', resizable: true },
       { id: 'weekdays', name: 'По дням недели', hint: 'в какие дни тратите больше, за месяц', resizable: true },
+      { id: 'calendar', name: 'Календарь', hint: 'дни, окрашенные по сумме трат', optional: true, resizable: true },
     ],
   },
 }
