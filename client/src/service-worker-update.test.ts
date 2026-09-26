@@ -10,6 +10,7 @@ describe('service worker update monitor', () => {
     const registration = Object.assign(new EventTarget(), {
       waiting: null as ServiceWorker | null,
       installing: installing as unknown as ServiceWorker,
+      active: {} as ServiceWorker,
       update: vi.fn(async () => {}),
     }) as unknown as ServiceWorkerRegistration
     const serviceWorker = Object.assign(new EventTarget(), {
@@ -29,7 +30,75 @@ describe('service worker update monitor', () => {
     expect(monitor.activateWaiting()).toBe(true)
     expect(worker.postMessage).toHaveBeenCalledWith({ type: 'SKIP_WAITING' })
 
+    // Контроллера при старте не было (жёсткая перезагрузка), но «Обновить» нажато — перезагрузка нужна.
     serviceWorker.dispatchEvent(new Event('controllerchange'))
     expect(controllerChange).toHaveBeenCalledTimes(1)
+  })
+
+  // Воркер без ожидающего обновления: страница видит только смену контроллера.
+  function watch(controller: object | null) {
+    const serviceWorker = Object.assign(new EventTarget(), {
+      controller,
+      ready: new Promise<ServiceWorkerRegistration>(() => {}),
+      getRegistration: vi.fn(async () => undefined),
+    })
+    vi.stubGlobal('navigator', { serviceWorker })
+    const controllerChange = vi.fn()
+    monitorServiceWorkerUpdates({ onWaiting: vi.fn(), onControllerChange: controllerChange })
+    return { controllerChange, takeOver: () => serviceWorker.dispatchEvent(new Event('controllerchange')) }
+  }
+
+  it('lets the first worker take over a fresh page without a reload, so an invitation link survives', () => {
+    const { controllerChange, takeOver } = watch(null)
+    takeOver()
+    expect(controllerChange).not.toHaveBeenCalled()
+
+    // Дальше страница уже под воркером: его замена — обновление работающего приложения.
+    takeOver()
+    expect(controllerChange).toHaveBeenCalledTimes(1)
+  })
+
+  it('reloads as before when the worker of a page that started under one is replaced', () => {
+    const { controllerChange, takeOver } = watch({})
+    takeOver()
+    expect(controllerChange).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not offer «Обновить» for the first install, which passes through waiting on its way to active', async () => {
+    const registration = Object.assign(new EventTarget(), {
+      installing: null as EventTarget | null,
+      waiting: null as EventTarget | null,
+      active: null as EventTarget | null,
+      update: vi.fn(async () => {}),
+    })
+    const serviceWorker = Object.assign(new EventTarget(), {
+      controller: null,
+      ready: new Promise<ServiceWorkerRegistration>(() => {}),
+      getRegistration: vi.fn(async () => registration as unknown as ServiceWorkerRegistration),
+    })
+    vi.stubGlobal('navigator', { serviceWorker })
+    const waiting = vi.fn()
+    const controllerChange = vi.fn()
+    const monitor = monitorServiceWorkerUpdates({ onWaiting: waiting, onControllerChange: controllerChange })
+    await monitor.checkForUpdate()
+    const install = (worker: EventTarget) => {
+      registration.installing = worker
+      registration.dispatchEvent(new Event('updatefound'))
+      registration.installing = null; registration.waiting = worker
+      worker.dispatchEvent(new Event('statechange'))
+    }
+
+    // Первая установка: installing → waiting → active, затем clients.claim() забирает страницу.
+    const first = new EventTarget()
+    install(first)
+    registration.waiting = null; registration.active = first
+    first.dispatchEvent(new Event('statechange'))
+    serviceWorker.dispatchEvent(new Event('controllerchange'))
+    expect(waiting).not.toHaveBeenCalled()
+    expect(controllerChange).not.toHaveBeenCalled()
+
+    // Следующая версия ждёт при действующей — это обновление.
+    install(new EventTarget())
+    expect(waiting).toHaveBeenCalledTimes(1)
   })
 })
