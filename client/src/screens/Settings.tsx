@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { memo, useCallback, useEffect, useState } from 'react'
 import { QRCodeSVG } from 'qrcode.react'
 import { WorkspaceApiError as ApiError, changeWorkspaceCurrency, createCategory, createDeviceLink, createInvitation, createTag, deleteTag, getSession, leaveWorkspace, listInvitations, listMembers, listSessions, prepareInitialOrManualRecovery, removeMember, renameWorkspace, revokeInvitation, revokeSession, saveMemberSettings, transferOwnership, updateCategory, updateProfile, updateTag } from '../workspace-api'
 import { clearWorkspaceOfflineData } from '../workspace-offline'
@@ -317,7 +317,9 @@ export type SettingsSheet = 'categories' | 'tags' | 'appearance' | 'screens' | n
 // Настройки — плоский список в три группы: «что это за пространство», «кто я и как у меня выглядит приложение»
 // (это живёт в аккаунте и едет на любое устройство), «что на этом телефоне». Без сегментов и вложенных заголовков:
 // строка = одно понятие, всё, что требует экрана, открывается шитом.
-export function SettingsView({ user, workspace, workspaceId, bootstrap, setBootstrap, pendingCount, refreshPending, onLogout, appearance=DEFAULT_APPEARANCE, onAppearanceChange=()=>{}, onEditScreen=()=>{}, onSession, online, mods=null, onOpenMods=()=>{}, loadOlderExpenses }: { user: AuthenticatedSession; workspace:WorkspaceSummary; workspaceId:string; bootstrap:Bootstrap; setBootstrap:React.Dispatch<React.SetStateAction<Bootstrap>>; pendingCount:number; refreshPending:()=>void;onLogout:()=>void;appearance?:Appearance;onAppearanceChange?:(patch:Partial<Appearance>)=>void;onEditScreen?:(screen:BlockScreen)=>void;onSession:(session:SessionState)=>Promise<void>;online:boolean;mods?:WorkspaceMod[]|null;onOpenMods?:()=>void;loadOlderExpenses?:()=>Promise<Expense[]> }) {
+// Вкладка живёт, пока открыто пространство, поэтому мемоизирована: перерисовывается от своих данных и колбэков
+// (родитель отдаёт их стабильными), а не от каждого рендера приложения.
+export const SettingsView = memo(function SettingsView({ user, workspace, workspaceId, bootstrap, setBootstrap, pendingCount, refreshPending, onLogout, appearance=DEFAULT_APPEARANCE, onAppearanceChange=()=>{}, onEditScreen=()=>{}, onSession, online, mods=null, onOpenMods=()=>{}, loadOlderExpenses }: { user: AuthenticatedSession; workspace:WorkspaceSummary; workspaceId:string; bootstrap:Bootstrap; setBootstrap:React.Dispatch<React.SetStateAction<Bootstrap>>; pendingCount:number; refreshPending:()=>void;onLogout:()=>void;appearance?:Appearance;onAppearanceChange?:(patch:Partial<Appearance>)=>void;onEditScreen?:(screen:BlockScreen)=>void;onSession:(session:SessionState)=>Promise<void>;online:boolean;mods?:WorkspaceMod[]|null;onOpenMods?:()=>void;loadOlderExpenses?:()=>Promise<Expense[]> }) {
   const [sheet,setSheet]=useState<SettingsSheet>(null)
   const [editing,setEditing]=useState<Category|null>(null)
   const [adding,setAdding]=useState(false)
@@ -443,7 +445,7 @@ export function SettingsView({ user, workspace, workspaceId, bootstrap, setBoots
     {(editingTag||addingTag)&&<TagEditor tag={editingTag} onClose={()=>{setEditingTag(null);setAddingTag(false)}} onSave={saveTag} onDelete={editingTag?()=>removeTag(editingTag):undefined}/>}
     {notice&&<Toast toast={notice} onDismiss={hideNotice}/>}
   </section>
-}
+})
 
 // Частые значки трат — в одно касание; любой другой эмодзи вводится в поле за ними.
 export const EMOJI_CHOICES = ['🛒', '🍽️', '☕', '🏠', '🚕', '💊', '🎬', '👕', '🎁', '✈️']

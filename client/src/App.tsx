@@ -184,7 +184,9 @@ export default function App({ capability = null }: { capability?: CapabilityInte
   // настроек в аккаунте), — копия на этом телефоне; без профиля — вид по умолчанию, тема как в системе.
   const [appearanceMirror,setAppearanceMirror]=useState<Appearance>(readAppearanceMirror)
   const accountSettings=state.session?.authenticated?state.session.settings:undefined
-  const appearance:Appearance=accountSettings?appearanceOf(accountSettings):state.knownUserId?appearanceMirror:DEFAULT_APPEARANCE
+  const shownAppearance:Appearance=accountSettings?appearanceOf(accountSettings):state.knownUserId?appearanceMirror:DEFAULT_APPEARANCE
+  // «Настройки» мемоизированы: вид отдаётся им тем же объектом, пока не сменились тема, цвет или размер текста.
+  const appearance=useMemo<Appearance>(()=>({theme:shownAppearance.theme,accent:shownAppearance.accent,textSize:shownAppearance.textSize}),[shownAppearance.theme,shownAppearance.accent,shownAppearance.textSize])
   const themePreference:ThemePreference=appearance.theme
   const theme=useResolvedTheme(themePreference)
   const [debugFlag]=useState(readDebugFlag)
@@ -422,6 +424,8 @@ export default function App({ capability = null }: { capability?: CapabilityInte
   const session=state.session
   const auth=session?.authenticated?session:null
   const settingsIdentityEpoch=identityEpoch.current
+  // Ответ на действие, начатое в настройках до смены личности, отбрасывается: колбэк помнит эпоху и меняется только вместе с ней.
+  const settingsSession=useCallback((next:SessionState)=>hydrate(next,false,settingsIdentityEpoch),[hydrate,settingsIdentityEpoch])
   const workspaceId=state.activeWorkspaceId
   const workspacesKey=auth?.workspaces.map((workspace)=>`${workspace.id}:${workspace.version}`).join('|')??''
   const mods=modsRuntime?.workspaceId===workspaceId?modsRuntime.mods:null
@@ -459,6 +463,8 @@ export default function App({ capability = null }: { capability?: CapabilityInte
   // Разбор открыт поверх истории своего пространства; смена пространства его закрывает.
   useEffect(()=>setReviewOpen(false),[workspaceId])
   useEffect(()=>setModsOpen(false),[workspaceId])
+  // Настройки мемоизированы: страницу модов они открывают неизменным колбэком.
+  const openMods=useCallback(()=>setModsOpen(true),[])
   // История мемоизирована: карточка очереди отдаётся ей стабильным объектом, чтобы не перерисовывать список на каждый рендер приложения.
   const openReview=useCallback(()=>setReviewOpen(true),[])
   const reviewCount=queueRuntime?.workspaceId===workspaceId?queueRuntime.pendingCount:0
@@ -656,6 +662,9 @@ export default function App({ capability = null }: { capability?: CapabilityInte
       await refresh()
     }catch(reason){setError(reason instanceof Error?reason.message:'Не удалось завершить выход. Повторите после подключения к интернету.')}
   }
+  // Настройки мемоизированы и получают неизменный колбэк; актуальное замыкание берётся из рефа.
+  const logoutRef=useRef(logoutCurrent);logoutRef.current=logoutCurrent
+  const logout=useCallback(()=>void logoutRef.current(),[])
 
   const forgetCurrent=async()=>{
     if(!await confirm({title:'Начать заново?',message:'Данные этого профиля удалятся с телефона, включая расходы, которые не успели отправиться. Если ссылка доступа сохранена, лучше открыть её.',confirmLabel:'Начать заново',danger:true}))return
@@ -772,7 +781,7 @@ if(Math.abs(node.scrollLeft-pagerTarget.current)>1)node.scrollLeft=pagerTarget.c
       <div className="page-slot" inert={tab!=='entry'} aria-hidden={tab!=='entry'}>{mountedTabs.includes('entry')&&<EntryView userId={auth.user.id} workspaceId={workspaceId} workspace={workspace} bootstrap={bootstrap} setBootstrap={setWorkspaceData} currentId={currentId} setCurrentId={setCurrentId} refreshPending={refreshPending} onDraftDirtyChange={setDraftDirty} active={tab==='entry'} newExpenseRequest={newExpenseRequest} blocks={auth.settings?.entryBlocks} editing={editingScreen==='entry'} onEditScreen={startEditing} onScreensChange={changeAccountSettings}/>}</div>
       <div className="page-slot" inert={tab!=='history'} aria-hidden={tab!=='history'}>{mountedTabs.includes('history')&&<HistoryView userId={auth.user.id} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} edit={editExpense} createNew={createNewExpense} refreshPending={refreshPending} inbox={historyInbox} reminder={historyReminder} timeZone={timeZone} older={historyOlder} blocks={auth.settings?.historyBlocks} editing={editingScreen==='history'} onEditScreen={startEditing} onScreensChange={changeAccountSettings}/>}</div>
       <div className="page-slot" inert={tab!=='analytics'} aria-hidden={tab!=='analytics'}>{mountedTabs.includes('analytics')&&<AnalyticsView userId={auth.user.id} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} theme={theme} accent={appearance.accent} online={serverAvailable} timeZone={timeZone} blocks={auth.settings?.analyticsBlocks} period={auth.settings?.analyticsPeriod} editing={editingScreen==='analytics'} onEditScreen={startEditing} onScreensChange={changeAccountSettings}/>}</div>
-      <div className="page-slot" inert={tab!=='settings'} aria-hidden={tab!=='settings'}>{mountedTabs.includes('settings')&&<SettingsView user={auth} workspace={workspace} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} pendingCount={stats.total} refreshPending={refreshPending} onLogout={()=>void logoutCurrent()} appearance={appearance} onAppearanceChange={changeAccountSettings} onEditScreen={startEditing} onSession={(next)=>hydrate(next,false,settingsIdentityEpoch)} online={serverAvailable} mods={mods} onOpenMods={()=>setModsOpen(true)} loadOlderExpenses={loadOlderExpenses}/>}</div>
+      <div className="page-slot" inert={tab!=='settings'} aria-hidden={tab!=='settings'}>{mountedTabs.includes('settings')&&<SettingsView user={auth} workspace={workspace} workspaceId={workspaceId} bootstrap={bootstrap} setBootstrap={setWorkspaceData} pendingCount={stats.total} refreshPending={refreshPending} onLogout={logout} appearance={appearance} onAppearanceChange={changeAccountSettings} onEditScreen={startEditing} onSession={settingsSession} online={serverAvailable} mods={mods} onOpenMods={openMods} loadOlderExpenses={loadOlderExpenses}/>}</div>
     </main>
     <nav className="bottom-nav" aria-label="Основная навигация">{navigationTabs.map((item)=><button type="button" key={item.id} aria-current={tab===item.id?'page':undefined} aria-label={item.id==='history'&&reviewCount?`История: ${reviewCount} операций с карты ждут разбора`:item.label} className={tab===item.id?'active':''} onClick={()=>{if(tab!==item.id)tap(4);else if(item.id==='entry'&&currentId)setNewExpenseRequest((value)=>value+1);setTab(item.id)}}><span><NavIcon tab={item.id}/>{item.id==='history'&&reviewCount>0&&<b className="nav-badge">{reviewCount>99?'99+':reviewCount}</b>}</span><small>{item.label}</small></button>)}</nav>
     {modsOpen&&<ModsOverlay onClose={()=>setModsOpen(false)}><ModsView workspaceId={workspaceId} mods={mods} online={serverAvailable} onMods={updateMods} onBybitStatus={updateBybitStatus} onBybitSynced={reloadWorkspaceData} onStatementImported={(pendingCount)=>{updateQueueCount(pendingCount);reloadWorkspaceData()}} onOpenReview={openReview}/></ModsOverlay>}

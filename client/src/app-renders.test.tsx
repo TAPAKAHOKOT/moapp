@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
 import * as screenBlocks from './screen-blocks'
@@ -93,5 +93,31 @@ describe('renders on a tab switch', () => {
       await tap(name)
       expect(appRenders, name).toHaveBeenCalledTimes(1)
     }
+  })
+
+  it('leaves «Настройки» and «Аналитика» alone while other tabs are picked', async () => {
+    const { settingsRenders } = await renderApp()
+    for (const name of TABS) await tap(name)
+    expect(settingsRenders).toHaveBeenCalled()
+    expect(analytics.renders).toBeGreaterThan(0)
+
+    settingsRenders.mockClear(); analytics.renders = 0
+    for (const name of [...TABS, 'История']) await tap(name)
+    expect(settingsRenders).not.toHaveBeenCalled()
+    expect(analytics.renders).toBe(0)
+  })
+
+  it('still shows a new theme and colour in the memoized «Настройки» right away', async () => {
+    await renderApp()
+    await tap('Настройки')
+    const row = within(screen.getByRole('group', { name: 'Профиль' })).getByRole('button', { name: /^Внешний вид/ })
+    expect(row.textContent).toBe('Внешний видшалфейный цвет, Как в системе')
+
+    fireEvent.click(row)
+    const sheet = screen.getByRole('dialog', { name: 'Внешний вид' })
+    fireEvent.click(within(within(sheet).getByRole('group', { name: 'Тема' })).getByRole('button', { name: 'Тёмная' }))
+    expect(row.textContent).toBe('Внешний видшалфейный цвет, Тёмная')
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Цвет: голубой' }))
+    expect(row.textContent).toBe('Внешний видголубой цвет, Тёмная')
   })
 })
