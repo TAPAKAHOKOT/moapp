@@ -6,7 +6,7 @@ import { isCalendarDate, jsonError, normalizeCurrencyCode } from "./validation.j
 /*
  * Личные настройки: как выглядит приложение у человека и что оно за ним запоминает. Видит и меняет их только
  * он сам. Живут они в аккаунте, поэтому переезжают на новый телефон и переживают выход. Настройки бывают
- * общими для всех пространств человека (тема) и своими в каждом пространстве (валюты, фильтры истории, плитки);
+ * общими для всех пространств человека (тема, блоки экранов) и своими в каждом пространстве (валюты, фильтры истории, плитки);
  * вторые исчезают вместе с участием в пространстве. Какие ключи бывают и что в них можно положить — в каталогах
  * ниже. Незнакомый ключ — ошибка, `null` — возврат к значению по умолчанию.
  */
@@ -19,13 +19,6 @@ const MAX_KEYS_PER_CHANGE = 20;
 const HISTORY_PERIODS = ["all", "today", "this-week", "this-month", "range"];
 
 const oneOf = (...allowed: string[]): Normalize => (value) => typeof value === "string" && allowed.includes(value) ? value : undefined;
-
-/* Внешний вид: тема, свой цвет интерфейса и размер текста. Палитры цветов живут в клиенте (appearance.ts). */
-const ACCOUNT_SETTINGS: Readonly<Record<string, Normalize>> = {
-  theme: oneOf("system", "light", "dark"),
-  accent: oneOf("sage", "terracotta", "sand", "blue", "lilac", "graphite"),
-  textSize: oneOf("normal", "large")
-};
 
 function idList(value: unknown, valid: (item: string) => boolean, max = 50): string[] | undefined {
   if (!Array.isArray(value) || value.length > max) return undefined;
@@ -65,6 +58,38 @@ function screenOrder(value: unknown) {
   if (!shown || !more || shown.some((id) => more.includes(id))) return undefined;
   return { shown, more };
 }
+
+/*
+ * Какие блоки стоят на экране и в каком порядке (`shown`), а какие человек убрал (`hidden`). Каталог блоков знает
+ * клиент (screen-blocks.ts), поэтому незнакомое имя блока — не ошибка: так настройки переживают и старую, и более
+ * новую версию приложения.
+ */
+const BLOCK_ID = /^[a-z][a-z-]{0,29}$/;
+
+function blockLayout(value: unknown) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const input = value as Record<string, unknown>;
+  if (Object.keys(input).some((key) => key !== "shown" && key !== "hidden")) return undefined;
+  const block = (item: string) => BLOCK_ID.test(item);
+  const shown = idList(input.shown, block, 12);
+  const hidden = idList(input.hidden, block, 12);
+  if (!shown || !hidden || shown.some((id) => hidden.includes(id))) return undefined;
+  return { shown, hidden };
+}
+
+/*
+ * Внешний вид (тема, свой цвет, размер текста; палитры — в клиенте, appearance.ts) и устройство экранов: блоки
+ * «Расхода», «Истории» и «Аналитики» и неделя или месяц в аналитике. Всё это одинаково во всех пространствах человека.
+ */
+const ACCOUNT_SETTINGS: Readonly<Record<string, Normalize>> = {
+  theme: oneOf("system", "light", "dark"),
+  accent: oneOf("sage", "terracotta", "sand", "blue", "lilac", "graphite"),
+  textSize: oneOf("normal", "large"),
+  analyticsPeriod: oneOf("week", "month"),
+  entryBlocks: blockLayout,
+  historyBlocks: blockLayout,
+  analyticsBlocks: blockLayout
+};
 
 const MEMBER_SETTINGS: Readonly<Record<string, Normalize>> = {
   lastCurrency: normalizeCurrencyCode,

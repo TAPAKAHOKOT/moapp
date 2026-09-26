@@ -72,6 +72,34 @@ test("the appearance of a profile is its theme, its own colour and its text size
   assert.deepEqual((await session(device(phone.userId))).json().settings, { theme: "dark", accent: "terracotta", textSize: "large" });
 });
 
+test("the screens of a profile keep their blocks and the analytics period, the same in every workspace", async () => {
+  const phone = person("Аня");
+  const screens = {
+    analyticsPeriod: "month",
+    entryBlocks: { shown: ["tags"], hidden: ["note"] },
+    historyBlocks: { shown: ["filters", "filters", "day-totals"], hidden: ["total"] },
+    analyticsBlocks: { shown: ["categories", "trend", "weekdays", "future-block"], hidden: ["tags"] }
+  };
+  const saved = await saveAccount(phone, screens);
+  assert.equal(saved.statusCode, 200, saved.body);
+  assert.deepEqual(saved.json().settings.historyBlocks, { shown: ["filters", "day-totals"], hidden: ["total"] });
+  assert.deepEqual(saved.json().settings.analyticsBlocks.shown, ["categories", "trend", "weekdays", "future-block"], "a block from a newer app is kept");
+  assert.deepEqual((await session(device(phone.userId))).json().settings.entryBlocks, { shown: ["tags"], hidden: ["note"] });
+
+  for (const settings of [
+    { analyticsPeriod: "year" },
+    { entryBlocks: { shown: ["note"], hidden: ["note"] } },
+    { entryBlocks: { shown: ["note"] } },
+    { historyBlocks: { shown: ["Filters"], hidden: [] } },
+    { analyticsBlocks: { shown: Array.from({ length: 13 }, (_, index) => `b${"x".repeat(index)}`), hidden: [] } },
+    { analyticsBlocks: ["trend"] }
+  ]) {
+    const refused = await saveAccount(phone, settings);
+    assert.equal(refused.statusCode, 400, JSON.stringify(settings));
+    assert.equal(refused.json().error.details.key, Object.keys(settings)[0]);
+  }
+});
+
 test("unknown keys and impossible values are refused, and null returns a setting to its default", async () => {
   const phone = person("Аня");
   for (const settings of [{ theme: "purple" }, { fontSize: 18 }, { theme: ["dark"] }]) {
