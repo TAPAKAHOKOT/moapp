@@ -59,7 +59,7 @@ export function ExtrasRow({ tags, order, selected, note, onChange, onNote, onCre
   // Шторка рендерится рядом с рядом, а не внутри него: iOS Safari удерживает position:fixed внутри прокручиваемого
   // контейнера, и подложка оказывалась обрезанной полосой и под футером.
   return <>
-    <div className={`extras-row${more ? ' more' : ''}`} role="group" aria-label={showNote && showTags ? 'Заметка и теги' : showNote ? 'Заметка' : 'Теги'}>
+    <div className={`extras-row${more && showTags ? ' more' : ''}`} role="group" aria-label={showNote && showTags ? 'Заметка и теги' : showNote ? 'Заметка' : 'Теги'}>
       {showNote && <button type="button" className={`tag-add extra-add extra-note${note ? ' filled' : ''}`} disabled={disabled} tabIndex={tabIndex} onClick={onNote} aria-label={note ? `Заметка: ${note}` : 'Добавить заметку'}>{note ? `✎ ${note}` : '＋ Заметка'}</button>}
       {showTags && <div className="tag-strip" ref={stripRef} role="group" aria-label="Теги">
         {shown.map((tag) => <TagChip key={tag.id} name={tag.name} color={tag.color} selected={selected.includes(tag.id)} disabled={disabled} inert={inert} onToggle={() => toggle(tag.id)}/>)}
