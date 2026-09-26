@@ -4,14 +4,14 @@
 // Часы каждой страницы начинаются сегодня в 12:34 (pinClock): время на карточке «Расхода» одно и то же во всех прогонах
 // одного дня, поэтому масок на снимках нет — сравнивается весь экран, в том числе открытые поверх шиты.
 import { mkdirSync, writeFileSync } from 'node:fs'
-import { webkit } from 'playwright'
-import { launch, openApp, goTab, acceptDeviceLink, guard, pinLocalState, patchSettings, resetAccount, pinClock, pinnedNow, ALL_BLOCKS, BASE, SHOTS, sleep, touchDrag } from './common.mjs'
+import { chromium, devices, webkit } from 'playwright'
+import { launch, openApp, goTab, acceptDeviceLink, guard, pinLocalState, patchSettings, resetAccount, pinClock, pinnedNow, ALL_BLOCKS, BASE, SHOTS, STATE_WEBKIT, sleep, touchDrag } from './common.mjs'
 guard(25 * 60_000, 'regress.mjs')
 const link = process.argv.find((arg) => arg.includes('#/device/'))
 const label = process.argv.slice(2).find((arg) => !arg.includes('#/device/')) ?? 'now'
 const dir = `${SHOTS}regress-${label}/`
 mkdirSync(dir, { recursive: true })
-const log = { label, base: BASE, clock: pinnedNow().toString(), settingsWidth: {}, historyEnd: {}, historyLength: {} }
+const log = { label, base: BASE, clock: pinnedNow().toString(), settingsWidth: {}, historyEnd: {}, historyLength: {}, pressed: {} }
 const HISTORY = 1, ANALYTICS = 2
 
 // Ответы сервера с ошибкой видны в выводе: 429 от ограничителя частоты или 5xx портят снимки молча.
@@ -327,6 +327,70 @@ await historyLength('dark', { width: 393, height: 659 }, 'p393')
 await historyLength('light', { width: 390, height: 763 }, 'p390')
 await historyLength('light', { width: 320, height: 568 }, 'p320')
 
+// ——— Плашка нажатия строки «Истории». Сравнивается вид, а не момент: на main это :active, в ветке — класс .pressed,
+// который касание ставит через ~100 мс неподвижного пальца, а мышь — сразу. ———
+// Цвет подложки строки под пальцем — в журнал: у обеих ревизий он должен быть одним и тем же.
+const plate = (page) => page.evaluate(() => {
+  const row = document.querySelectorAll('.page-slot')[1].querySelectorAll('.history-expense')[1]
+  const swipe = getComputedStyle(row.querySelector('.history-swipe'))
+  return { background: swipe.backgroundColor, radius: swipe.borderRadius, selecting: Boolean(document.querySelector('.history-selectbar')) }
+})
+
+// Мышь: обычное окно 390×844 без касаний, кнопка зажата над второй строкой и не отпущена. Снимок до 450 мс — дальше
+// удержание включило бы выбор записей.
+async function pressedMouse(scheme) {
+  const browser = await webkit.launch()
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 }, colorScheme: scheme, serviceWorkers: 'block', storageState: STATE_WEBKIT })
+  context.setDefaultTimeout(15000)
+  context.setDefaultNavigationTimeout(20000)
+  await pinLocalState(context)
+  await pinClock(context)
+  const page = await context.newPage()
+  watchErrors(page, `m390-${scheme}`)
+  await openApp(page)
+  await goTab(page, 'История')
+  await sleep(500)
+  const row = await rowCenter(page, 1)
+  await page.mouse.move(row.x, row.y)
+  await sleep(300)
+  await page.mouse.down()
+  await sleep(120)
+  log.pressed[`m390-${scheme}`] = await plate(page)
+  await page.screenshot({ path: `${dir}m390-${scheme}-history-pressed-mouse.png` })
+  await browser.close()
+}
+
+// Касание: iPhone в Chromium. Долгий тап через CDP (Input.synthesizeTapGesture) проходит настоящий путь касания, и
+// :active на main зажигается (примерно через 150 мс). Синтетические TouchEvent (touchDrag) :active не ставят, а
+// касание в Playwright WebKit — только мгновенный тап, поэтому в WebKit сравнимого снимка удержания нет.
+// Палец стоит 440 мс (меньше 450 мс выбора записей), снимок — на 300 мс.
+async function pressedTouch(scheme) {
+  const browser = await chromium.launch()
+  const context = await browser.newContext({ ...devices['iPhone 15'], viewport: { width: 393, height: 659 }, colorScheme: scheme, serviceWorkers: 'block', storageState: STATE_WEBKIT })
+  context.setDefaultTimeout(15000)
+  context.setDefaultNavigationTimeout(20000)
+  await pinLocalState(context)
+  await pinClock(context)
+  const page = await context.newPage()
+  watchErrors(page, `c393-${scheme}`)
+  await openApp(page)
+  await goTab(page, 'История')
+  await sleep(500)
+  const row = await rowCenter(page, 1)
+  const cdp = await context.newCDPSession(page)
+  const hold = cdp.send('Input.synthesizeTapGesture', { x: row.x, y: row.y, duration: 440, tapCount: 1, gestureSourceType: 'touch' })
+  await sleep(300)
+  const during = await plate(page)
+  await page.screenshot({ path: `${dir}c393-${scheme}-history-pressed-touch.png` })
+  log.pressed[`c393-${scheme}`] = { ...during, stillHeld: (await plate(page)).background === during.background }
+  await hold
+  await browser.close()
+}
+
+await pressedMouse('light')
+await pressedMouse('dark')
+await pressedTouch('light')
+await pressedTouch('dark')
 await resetAccount()
 
 writeFileSync(`${dir}log.json`, JSON.stringify(log, null, 2))
