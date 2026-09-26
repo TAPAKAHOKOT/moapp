@@ -1381,6 +1381,88 @@ describe('settings identity transitions', () => {
   })
 })
 
+const at = '2026-08-01T00:00:00.000Z'
+const personalCategories: Category[] = [
+  { id: 'products', name: 'Продукты', color: '#758d69', placement: 'main', sortOrder: 0, createdAt: at, updatedAt: at, archivedAt: null, version: 1 },
+  { id: 'home', name: 'Для дома', color: '#7d9db4', emoji: '🏠', placement: 'additional', sortOrder: 0, createdAt: at, updatedAt: at, archivedAt: null, version: 1 },
+  { id: 'fun', name: 'Развлечения', color: '#aa8aaf', placement: 'additional', sortOrder: 1, createdAt: at, updatedAt: at, archivedAt: null, version: 1 },
+]
+const personalTags = ['вдвоём', 'отпуск', 'кофе'].map((name, sortOrder) => ({ id: `tag-${sortOrder}`, name, color: null, sortOrder, version: 1, createdAt: at, updatedAt: at }))
+
+describe('personal «Расход»', () => {
+  const quietAccess = () => {
+    vi.spyOn(workspaceApi, 'listMembers').mockResolvedValue({ members: [] })
+    vi.spyOn(workspaceApi, 'listSessions').mockResolvedValue({ sessions: [] })
+    vi.spyOn(workspaceApi, 'listInvitations').mockResolvedValue({ invitations: [] })
+  }
+  const groups = (dialog: HTMLElement) => [...dialog.querySelectorAll('h3, .drag-row')].map((node) => node.tagName === 'H3' ? `# ${node.textContent}` : node.querySelector('.category-name')?.textContent)
+
+  it('shows the tiles and tags this person keeps, each category with its emoji', () => {
+    const bootstrap = expenseBootstrap({ categories: personalCategories, tags: personalTags, settings: { categoryOrder: { shown: ['home', 'products'], more: [] }, tagOrder: { shown: ['tag-2'], more: ['tag-0'] } } })
+    const { container } = render(<EntryView userId="user-a" workspaceId="workspace-a" workspace={bootstrap.workspace} bootstrap={bootstrap} setBootstrap={vi.fn()} currentId={null} setCurrentId={vi.fn()} refreshPending={vi.fn()} onDraftDirtyChange={vi.fn()} active/>)
+
+    const live = container.querySelector('.entry-lower-live')!
+    expect([...live.querySelectorAll('.main-categories button')].map((node) => node.textContent)).toEqual(['🏠Для дома', 'Продукты', 'Ещё 1'])
+    expect(live.querySelector('.main-categories .category-emoji')?.getAttribute('aria-hidden')).toBe('true')
+    expect(screen.getByRole('button', { name: 'Для дома' })).not.toBeNull()
+    expect([...live.querySelectorAll('.tag-strip button')].map((node) => node.textContent)).toEqual(['кофе', 'Ещё 2'])
+  })
+
+  it('moves tiles and tags with «+» and «−» only for this person, without touching the shared categories', async () => {
+    quietAccess()
+    const save = vi.spyOn(workspaceApi, 'saveMemberSettings').mockImplementation(() => {})
+    const update = vi.spyOn(workspaceApi, 'updateCategory')
+    render(<SettingsHarness bootstrap={expenseBootstrap({ categories: personalCategories, tags: personalTags })}/>)
+
+    fireEvent.click(screen.getByRole('button', { name: /^Категории/ }))
+    const sheet = screen.getByRole('dialog', { name: 'Категории' })
+    expect(groups(sheet)).toEqual(['# Плитки на «Расходе»', 'Продукты', '# За плиткой «Ещё»', 'Для дома', 'Развлечения'])
+    expect(sheet.textContent).toContain('Плитки и их порядок — только ваши')
+
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Поставить «Развлечения» на «Расход»' }))
+    expect(save).toHaveBeenLastCalledWith('user-a', 'workspace-a', { categoryOrder: { shown: ['products', 'fun'], more: ['home'] } })
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Убрать «Продукты» с «Расхода»' }))
+    expect(save).toHaveBeenLastCalledWith('user-a', 'workspace-a', { categoryOrder: { shown: ['fun'], more: ['products', 'home'] } })
+    expect(groups(sheet)).toEqual(['# Плитки на «Расходе»', 'Развлечения', '# За плиткой «Ещё»', 'Продукты', 'Для дома'])
+    expect(update).not.toHaveBeenCalled()
+
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Закрыть' }))
+    fireEvent.click(screen.getByRole('button', { name: /^Теги/ }))
+    const tags = screen.getByRole('dialog', { name: 'Теги' })
+    fireEvent.click(within(tags).getByRole('button', { name: 'Убрать «отпуск» с «Расхода»' }))
+    expect(save).toHaveBeenLastCalledWith('user-a', 'workspace-a', { tagOrder: { shown: ['tag-0', 'tag-2'], more: ['tag-1'] } })
+    expect(groups(tags)).toEqual(['# В ряду на «Расходе»', 'вдвоём', 'кофе', '# За «Ещё»', 'отпуск'])
+  })
+
+  it('gives a category a shared emoji in the editor, which no longer decides where it stands', async () => {
+    quietAccess()
+    const update = vi.spyOn(workspaceApi, 'updateCategory').mockImplementation(async (_workspaceId, _id, category) => ({ ...personalCategories[0]!, ...category, version: 2 }))
+    render(<SettingsHarness bootstrap={expenseBootstrap({ categories: personalCategories })}/>)
+
+    fireEvent.click(screen.getByRole('button', { name: /^Категории/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Продукты' }))
+    const editor = screen.getByRole('dialog', { name: 'Категория' })
+    expect(within(editor).queryByRole('switch')).toBeNull()
+    expect(editor.textContent).toContain('Плитки на «Расходе» каждый выбирает себе сам')
+
+    // Своё поле держит один эмодзи: буквы не проходят, новый эмодзи заменяет прежний, составной не распадается.
+    const own = within(editor).getByLabelText('Свой значок: любой эмодзи') as HTMLInputElement
+    fireEvent.change(own, { target: { value: 'ab' } })
+    expect(own.value).toBe('')
+    fireEvent.change(own, { target: { value: '🧑‍🍳' } })
+    expect(own.value).toBe('🧑‍🍳')
+    fireEvent.click(within(editor).getByRole('button', { name: 'Значок 🛒' }))
+    expect(own.value).toBe('')
+    expect(within(editor).getByRole('button', { name: 'Значок 🛒' }).getAttribute('aria-pressed')).toBe('true')
+    fireEvent.click(within(editor).getByRole('button', { name: 'Сохранить' }))
+
+    await waitFor(() => expect(update).toHaveBeenCalled())
+    expect(update.mock.calls[0]![2]).toEqual(expect.objectContaining({ emoji: '🛒', placement: 'main' }))
+    expect(await screen.findByText('Категория сохранена')).not.toBeNull()
+    expect(screen.getByRole('dialog', { name: 'Категории' }).querySelector('.drag-row .category-emoji')?.textContent).toBe('🛒')
+  })
+})
+
 describe('workspace onboarding controls', () => {
   it('shows Russian inline validation without invoking native browser messages', () => {
     const create = vi.fn().mockResolvedValue(undefined)

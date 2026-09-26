@@ -2073,68 +2073,6 @@ button.settings-row:disabled .settings-row-value {
   background: #242525;
 }
 
-/* Переключатель в редакторе категории. */
-.editor .switch-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin: 8px 0 14px;
-  color: var(--ink);
-}
-
-.editor .switch-row > span {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-  font-size: calc(13px * var(--text-scale));
-}
-
-.editor .switch-row small {
-  color: var(--muted);
-  font-size: calc(11px * var(--text-scale));
-  line-height: 1.35;
-}
-
-.editor .switch-row input {
-  position: relative;
-  display: inline-block;
-  flex: 0 0 auto;
-  width: 46px;
-  height: 28px;
-  margin: 0;
-  padding: 0;
-  border: 0;
-  border-radius: 999px;
-  background: var(--line);
-  appearance: none;
-  -webkit-appearance: none;
-  cursor: pointer;
-  transition: background-color .2s ease;
-}
-
-.editor .switch-row input::after {
-  content: "";
-  position: absolute;
-  top: 3px;
-  left: 3px;
-  width: 22px;
-  height: 22px;
-  border-radius: 50%;
-  background: var(--card);
-  box-shadow: 0 1px 3px rgb(0 0 0 / 25%);
-  transition: transform .2s ease;
-}
-
-.editor .switch-row input:checked {
-  background: var(--sage);
-}
-
-.editor .switch-row input:checked::after {
-  transform: translateX(18px);
-}
-
 /* Напоминание о ссылке доступа — та же карточка, что входящие с карты, с кнопкой вместо стрелки. */
 .history-reminder {
   grid-template-columns: 38px minmax(0, 1fr) auto;
@@ -2537,4 +2475,113 @@ button.settings-row:disabled .settings-row-value {
   border-radius: 50%;
   background: var(--sage);
   vertical-align: 0;
+}
+
+/* Значок-эмодзи категории вместо квадратика её цвета: на плитке, в «Ещё», в истории и в списках. Коробка той же
+   высоты, что квадратик, поэтому подписи плиток с значком и без стоят на одной линии; картинка чуть выходит за неё. */
+.category-emoji {
+  display: grid;
+  place-items: center;
+  font-style: normal;
+  font-weight: 400;
+  line-height: 1;
+}
+
+.main-categories .category-emoji,
+.category-grid .category-emoji {
+  height: 16px;
+  font-size: 21px;
+}
+
+.history-row > .category-emoji {
+  width: 16px;
+  font-size: 20px;
+}
+
+.drag-row > .category-emoji,
+.list-sheet .hidden-category > .category-emoji {
+  width: 16px;
+  font-size: 18px;
+}
+
+/* Раскладка «Расхода» в списках категорий и тегов: «−» убирает за «Ещё», «+» ставит обратно, ≡ меняет порядок. */
+.layout-list .drag-row {
+  grid-template-columns: 32px 16px minmax(0, 1fr) 44px;
+}
+
+.layout-toggle {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 44px;
+  padding: 0;
+  border: 0;
+  background: none;
+}
+
+.layout-toggle span {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--soft);
+  color: var(--sage);
+  font-size: 17px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.layout-toggle.shown span {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--control-line);
+  color: var(--muted);
+}
+
+:root[data-theme="dark"] .layout-toggle span {
+  background: var(--card);
+}
+
+:root[data-theme="dark"] .layout-toggle.shown span {
+  background: transparent;
+}
+
+/* Выбор значка в редакторе категории: частые эмодзи, поле для любого другого и «без значка». */
+.emoji-choices {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(44px, 1fr));
+  gap: 8px;
+}
+
+.emoji-choices button,
+.editor .emoji-input {
+  height: 44px;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--control-line);
+  border-radius: 12px;
+  background: var(--card);
+  font-size: 22px;
+  line-height: 1;
+  text-align: center;
+}
+
+.editor .emoji-input {
+  min-width: 0;
+  border-style: dashed;
+}
+
+.editor .emoji-input::placeholder {
+  opacity: .35;
+}
+
+.emoji-choices .selected,
+.editor .emoji-input.selected {
+  border: 1px solid var(--ink);
+  box-shadow: inset 0 0 0 2px var(--ink);
+}
+
+.emoji-choices .colors-none {
+  color: var(--muted);
+  font-size: calc(14px * var(--text-scale));
 }

@@ -1,15 +1,16 @@
 import { useEffect, useRef, useState } from 'react'
 import { WorkspaceApiError as ApiError, classifyCardTransaction, ignoreCardTransaction, listCardTransactions, recordedSplitParts, splitCardTransaction, undoCardTransaction, unsplitCardTransaction, type RecordedSplitPart } from '../workspace-api'
-import type { CardTransaction, Category, Currency, Expense, Tag } from '../types'
+import type { CardTransaction, Category, Currency, Expense, ScreenOrder, Tag } from '../types'
 import { CardMark, Toast, tap, useConfirm, useDialog, useToast } from '../ui'
 import { amountNumber, amountSize, pluralRu } from '../format'
 import { ExtrasRow, NoteSheet, TAG_COLORS, createTagOrReuse } from '../tags'
 import { CategorySheet, CategoryTiles, saveButtonLabel } from './Entry'
 import { SplitSheet } from './Split'
+import { categoryLayout } from '../screen-order'
 
 export type ReviewAction={transaction:CardTransaction;expenses?:Expense[];categoryId?:string;comment:string;tagIds:string[]}
 
-export function CardReviewView({ workspaceId, categories, currencies, tags=[], onTag=()=>{}, online, onExpenses, onExpensesUndo, onStatus, pendingCount=0, active=true }: {workspaceId:string;categories:Category[];currencies:Currency[];tags?:Tag[];onTag?:(tag:Tag)=>void;online:boolean;onExpenses:(expenses:Expense[])=>void;onExpensesUndo:(expenseIds:string[])=>void;onStatus:(status:{pendingCount:number})=>void;pendingCount?:number;active?:boolean}) {
+export function CardReviewView({ workspaceId, categories, currencies, tags=[], categoryOrder, tagOrder, onTag=()=>{}, online, onExpenses, onExpensesUndo, onStatus, pendingCount=0, active=true }: {workspaceId:string;categories:Category[];currencies:Currency[];tags?:Tag[];categoryOrder?:ScreenOrder;tagOrder?:ScreenOrder;onTag?:(tag:Tag)=>void;online:boolean;onExpenses:(expenses:Expense[])=>void;onExpensesUndo:(expenseIds:string[])=>void;onStatus:(status:{pendingCount:number})=>void;pendingCount?:number;active?:boolean}) {
   const [items,setItems]=useState<CardTransaction[]>([])
   const [comment,setComment]=useState('')
   const [noteSheet,setNoteSheet]=useState(false)
@@ -24,9 +25,8 @@ export function CardReviewView({ workspaceId, categories, currencies, tags=[], o
   const {toast:notice,notify,dismiss}=useToast()
   const {confirm,confirmation}=useConfirm()
   const current=items[0]
-  // Ряд категорий повторяет расход: основные плитками, остальные — в шите за «Ещё N».
-  const main=categories.filter((item)=>!item.archivedAt&&item.placement==='main').sort((a,b)=>a.sortOrder-b.sortOrder)
-  const additional=categories.filter((item)=>!item.archivedAt&&item.placement==='additional').sort((a,b)=>a.sortOrder-b.sortOrder)
+  // Ряд категорий повторяет «Расход» этого человека: его плитки, остальные — в шите за «Ещё N».
+  const {shown:main,more:additional}=categoryLayout(categories,categoryOrder)
   useEffect(()=>{const controller=new AbortController();setLoading(true);listCardTransactions(workspaceId,controller.signal).then((result)=>{setItems(result.transactions);onStatus({pendingCount:result.pendingCount})}).catch((reason)=>{if(!controller.signal.aborted)setError(reason instanceof ApiError?reason.message:'Не удалось загрузить операции')}).finally(()=>{if(!controller.signal.aborted)setLoading(false)});return()=>controller.abort()},[workspaceId]) // eslint-disable-line react-hooks/exhaustive-deps
   // A sync elsewhere (Settings, the server scheduler) can add or settle items while this view is mounted.
   // Re-read the queue when the tab is opened or the known count outgrows what is loaded, merging so the
@@ -130,7 +130,7 @@ export function CardReviewView({ workspaceId, categories, currencies, tags=[], o
         {!current.settled&&<p className="review-pending-note">Ожидает списания · сумма может уточниться после расчёта</p>}
       </div>
       <CategoryTiles main={main} additional={additional} selectedId={selectedCategoryId} disabled={busy} onPick={(category)=>{tap(6);setSelectedCategoryId(category.id);setCategorySheet(false)}} onMore={()=>setCategorySheet(true)}/>
-      <ExtrasRow tags={tags} selected={selectedTagIds} note={comment} disabled={busy} online={online} onChange={setSelectedTagIds} onNote={()=>setNoteSheet(true)} onCreate={(name)=>createTagOrReuse(workspaceId,name,TAG_COLORS[tags.length%TAG_COLORS.length]??null,onTag)}/>
+      <ExtrasRow tags={tags} order={tagOrder} selected={selectedTagIds} note={comment} disabled={busy} online={online} onChange={setSelectedTagIds} onNote={()=>setNoteSheet(true)} onCreate={(name)=>createTagOrReuse(workspaceId,name,TAG_COLORS[tags.length%TAG_COLORS.length]??null,onTag)}/>
       </div>
       <button type="button" className="primary review-save" disabled={busy||!online||!save?.canSave} onClick={()=>{if(selectedCategoryId)void classify(selectedCategoryId)}}>{busy?'Сохраняем…':save?.label}</button>
       {/* Одним платежом закрывают сразу две категории. У части первая кнопка предлагает обратное действие:

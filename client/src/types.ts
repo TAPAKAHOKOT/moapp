@@ -11,6 +11,9 @@ export type Category = {
   id: string
   name: string
   color: string | null
+  /** Значок-эмодзи, общий для пространства. В кэше до его появления поля нет. */
+  emoji?: string | null
+  /** Стартовая раскладка «Расхода» для тех, кто не собирал свою (`MemberSettings.categoryOrder`). */
   placement: 'main' | 'additional'
   sortOrder: number
   createdAt: string
@@ -190,11 +193,19 @@ export type AccountSettings = {
   textSize?: TextSize
 }
 
+/**
+ * Что человек видит на «Расходе»: `shown` — плитки категорий или теги в ряду по порядку, `more` — остальное за «Ещё»,
+ * тоже по порядку. Удалённые id пропускаются, а неупомянутое встаёт в конец «Ещё».
+ */
+export type ScreenOrder = { shown: string[]; more: string[] }
+
 /** Свои настройки человека в одном пространстве. Фильтры истории — без строки поиска. */
 export type MemberSettings = {
   lastCurrency?: string
   analyticsCurrency?: string
   historyFilters?: HistoryFilters
+  categoryOrder?: ScreenOrder
+  tagOrder?: ScreenOrder
 }
 
 export type AuthenticatedSession = {

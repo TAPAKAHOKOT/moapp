@@ -5,10 +5,11 @@ import type { Category, Currency, Expense, Tag } from '../types'
 import { appTimeZone, cachedDateTimeFormat, localDateKey, monthDateRange, shiftDateKey, weekdayFromDateKey, workspaceCurrency } from '../utils'
 import { HISTORY_PERIOD_LABELS, defaultHistoryPreferences, expenseTagNames, filterHistoryExpenses, historyTotals, parseHistoryPreferences } from '../history'
 import type { HistoryPeriod, HistoryPreferences } from '../history'
-import { CardMark, ChevronIcon, LockIcon, MultiSelect, SearchIcon, Toast, TrashIcon, tap, useDialog, useOverflowHint, useToast } from '../ui'
+import { CardMark, CategoryMark, ChevronIcon, LockIcon, MultiSelect, SearchIcon, Toast, TrashIcon, tap, useDialog, useOverflowHint, useToast } from '../ui'
 import { formatAnalyticsAmount, formatDateRange, formatHistoryDate, money, pluralRu } from '../format'
 import type { Bootstrap } from '../format'
 import { sortTags } from '../tags'
+import { categoryLayout, inOrder } from '../screen-order'
 
 // Календарь для фильтра истории: первый тап — начало, второй — конец; один день — два тапа по одной дате.
 // Нативный <input type="date"> в iOS Safari закрывался сразу после открытия, поэтому даты выбираются в шите.
@@ -192,13 +193,14 @@ export const HistoryRow = memo(function HistoryRow({ expense, category, tags, cu
     else onEdit(expense.id)
   }
   const translate = dragOffset ?? (open ? -ROW_ACTION_WIDTH : 0)
-  const tagList = expense.tagIds?.length ? sortTags(tags.filter((tag) => expense.tagIds?.includes(tag.id))) : []
+  // Теги приходят уже в порядке этого человека.
+  const tagList = expense.tagIds?.length ? tags.filter((tag) => expense.tagIds?.includes(tag.id)) : []
   const categoryName = category?.name || 'Скрытая категория'
   const details = [expense.note, tagList.map((tag) => `#${tag.name}`).join(' ')].filter(Boolean).join(' · ')
   return <div ref={root} className={`history-expense${checked ? ' selected' : ''}${open ? ' open' : ''}${dragOffset !== null ? ' dragging' : ''}`} onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={pointerEnd} onPointerCancel={pointerEnd}>
     <div className="history-swipe" style={{ transform: translate ? `translateX(${translate}px)` : undefined, transition: dragOffset === null ? undefined : 'none', willChange: dragOffset === null ? undefined : 'transform' }}>
       <label className="expense-check" aria-label={`Выбрать расход ${categoryName}`}><input type="checkbox" tabIndex={selecting ? 0 : -1} checked={checked} onChange={() => onToggle(expense.id)}/><span/></label>
-      <button type="button" className={`history-row${expense.voidedAt ? ' voided' : ''}`} aria-pressed={selecting ? checked : undefined} onClick={click}><i style={{backgroundColor:category?.color ?? '#a9afa5'}}/><span><b>{categoryName}</b>{details && <small>{details}</small>}</span><strong>{money(expense.amountMinor,expense.currency,currencies)}</strong>{expense.voidedAt && <em className="voided-badge" aria-label="Платёж не прошёл, не учитывается">{expense.voidReason?.kind === 'reversed' ? 'Возврат' : 'Не прошёл'}</em>}</button>
+      <button type="button" className={`history-row${expense.voidedAt ? ' voided' : ''}`} aria-pressed={selecting ? checked : undefined} onClick={click}><CategoryMark category={category}/><span><b>{categoryName}</b>{details && <small>{details}</small>}</span><strong>{money(expense.amountMinor,expense.currency,currencies)}</strong>{expense.voidedAt && <em className="voided-badge" aria-label="Платёж не прошёл, не учитывается">{expense.voidReason?.kind === 'reversed' ? 'Возврат' : 'Не прошёл'}</em>}</button>
     </div>
     <button type="button" className="history-swipe-delete" tabIndex={open ? 0 : -1} aria-hidden={!open} disabled={disabled} onClick={() => onDelete(expense)}><TrashIcon/><span>Удалить</span></button>
   </div>
@@ -244,13 +246,14 @@ export const HistoryView = memo(function HistoryView({ userId, workspaceId, boot
   // ввода) заново фильтровал, группировал и форматировал всю историю.
   const derived = useMemo(() => {
     const categoryMap = new Map(bootstrap.categories.map((category) => [category.id, category]))
-    const tags = bootstrap.tags ?? []
+    const tags = sortTags(bootstrap.tags ?? [], bootstrap.settings?.tagOrder)
     const activeExpenses = bootstrap.expenses.filter((item) => !item.deletedAt)
-    // Варианты фильтров идут в том же порядке, что на экране расхода и в настройках, а не по алфавиту.
-    const tagOptions = sortTags(tags.filter((tag) => filters.tagIds.includes(tag.id) || activeExpenses.some((expense) => expense.tagIds?.includes(tag.id))))
+    // Варианты фильтров идут в том же порядке, что у этого человека на «Расходе», а не по алфавиту; скрытые — в конце.
+    const tagOptions = tags.filter((tag) => filters.tagIds.includes(tag.id) || activeExpenses.some((expense) => expense.tagIds?.includes(tag.id)))
+    const categoryRank = new Map(inOrder(categoryLayout(bootstrap.categories, bootstrap.settings?.categoryOrder)).map((category, index) => [category.id, index]))
     const categoryOptions = bootstrap.categories
       .filter((category) => filters.categoryIds.includes(category.id) || activeExpenses.some((expense) => expense.categoryId === category.id))
-      .sort((left, right) => Number(left.placement === 'additional') - Number(right.placement === 'additional') || left.sortOrder - right.sortOrder || left.name.localeCompare(right.name, 'ru-RU'))
+      .sort((left, right) => (categoryRank.get(left.id) ?? Infinity) - (categoryRank.get(right.id) ?? Infinity) || left.name.localeCompare(right.name, 'ru-RU'))
     const currencyOptions = bootstrap.currencies
       .filter((currency) => filters.currencies.includes(currency.code) || activeExpenses.some((expense) => expense.currency === currency.code))
       .sort((left, right) => left.code.localeCompare(right.code))
@@ -420,7 +423,7 @@ export const HistoryView = memo(function HistoryView({ userId, workspaceId, boot
         : <div className={`history-chips${chipsMore ? ' more' : ''}`}>
           <div className="history-chip-strip" ref={chipStrip}>
           <button type="button" className={`filter-chip${filters.period !== 'all' ? ' active' : ''}`} aria-label="Период истории" aria-haspopup="dialog" aria-expanded={periodOpen} onClick={() => setPeriodOpen(true)}><span>{periodLabel}</span><ChevronIcon/></button>
-          <MultiSelect label="Категория истории" title="Категории" placeholder="Категория" allLabel="Все категории" values={filters.categoryIds} onChange={(values) => updateFilters({ categoryIds: values })} count={(n) => `${n} ${pluralRu(n, ['категория', 'категории', 'категорий'])}`} options={categoryOptions.map((category) => ({ value: category.id, label: category.name, ...(category.archivedAt ? { hint: 'скрыта' } : {}) }))}/>
+          <MultiSelect label="Категория истории" title="Категории" placeholder="Категория" allLabel="Все категории" values={filters.categoryIds} onChange={(values) => updateFilters({ categoryIds: values })} count={(n) => `${n} ${pluralRu(n, ['категория', 'категории', 'категорий'])}`} options={categoryOptions.map((category) => ({ value: category.id, label: category.emoji ? `${category.emoji} ${category.name}` : category.name, ...(category.archivedAt ? { hint: 'скрыта' } : {}) }))}/>
           {(currencyOptions.length > 1 || filters.currencies.length > 0) && <MultiSelect label="Валюта истории" title="Валюты" placeholder="Валюта" allLabel="Все валюты" values={filters.currencies} onChange={(values) => updateFilters({ currencies: values })} count={(n) => `${n} ${pluralRu(n, ['валюта', 'валюты', 'валют'])}`} options={currencyOptions.map((currency) => ({ value: currency.code, label: currency.code, hint: currency.name }))}/>}
           {(tagOptions.length > 0 || filters.tagIds.length > 0) && <MultiSelect label="Тег истории" title="Теги" placeholder="Тег" allLabel="Все теги" values={filters.tagIds} onChange={(values) => updateFilters({ tagIds: values })} count={(n) => `${n} ${pluralRu(n, ['тег', 'тега', 'тегов'])}`} options={tagOptions.map((tag) => ({ value: tag.id, label: tag.name }))}/>}
           </div>

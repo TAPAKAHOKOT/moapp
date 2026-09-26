@@ -1,8 +1,9 @@
 import { useId, useLayoutEffect, useRef, useState } from 'react'
 import { WorkspaceApiError as ApiError, createTag } from './workspace-api'
-import type { Tag } from './types'
+import type { ScreenOrder, Tag } from './types'
 import { CheckIcon, tap, useConfirm, useDialog, useOverflowHint } from './ui'
 import { pluralRu } from './format'
+import { inOrder, tagLayout } from './screen-order'
 
 export const MAX_EXPENSE_TAGS = 20
 
@@ -16,27 +17,24 @@ export const TAG_COLORS = ['#819978', '#d98f70', '#d2ad62', '#7d9db4', '#aa8aaf'
 
 export const TAG_COLOR_NAMES = ['шалфейный', 'терракотовый', 'песочный', 'голубой', 'сиреневый', 'графитовый']
 
-// Порядок тегов задаёт пользователь в настройках: полоса выбора и плашки в истории следуют ему.
-export function sortTags(tags: Tag[]) {
-  return [...tags].sort((left, right) => left.sortOrder - right.sortOrder || left.name.localeCompare(right.name, 'ru-RU'))
+// Порядок тегов у каждого свой (настройки → «Теги»): полоса выбора, шит и плашки в истории следуют ему.
+export function sortTags(tags: Tag[], order?: ScreenOrder) {
+  return inOrder(tagLayout(tags, order))
 }
 
 export function tagStyle(tag: Pick<Tag, 'color'>) {
   return tag.color ? { '--tag': tag.color } as React.CSSProperties : undefined
 }
 
-// Сколько тегов лежит на самом экране расхода до чипа «Ещё N». Выбранные видны всегда.
-export const VISIBLE_TAGS = 5
-
-// Ряд под категориями: заметка первой и всегда на месте, дальше теги как категории — по порядку из настроек,
-// остальные за «Ещё N». Полный список с поиском и созданием — в шите.
-export function ExtrasRow({ tags, selected, note, onChange, onNote, onCreate, disabled = false, online = true, inert = false }: { tags: Tag[]; selected: string[]; note: string; onChange: (ids: string[]) => void; onNote: () => void; onCreate?: (name: string) => Promise<Tag | null>; disabled?: boolean; online?: boolean; inert?: boolean }) {
+// Ряд под категориями: заметка первой и всегда на месте, дальше теги как категории — те, что человек держит
+// в ряду, по его порядку, остальные за «Ещё N». Полный список с поиском и созданием — в шите.
+export function ExtrasRow({ tags, order, selected, note, onChange, onNote, onCreate, disabled = false, online = true, inert = false }: { tags: Tag[]; order?: ScreenOrder; selected: string[]; note: string; onChange: (ids: string[]) => void; onNote: () => void; onCreate?: (name: string) => Promise<Tag | null>; disabled?: boolean; online?: boolean; inert?: boolean }) {
   const [open, setOpen] = useState(false)
   const stripRef = useRef<HTMLDivElement>(null)
-  const sorted = sortTags(tags)
-  // Порядок стабилен: выбранный чип не переезжает под пальцем в начало, а тег из хвоста списка встаёт в конец ряда.
-  const shown = sorted.filter((tag, index) => index < VISIBLE_TAGS || selected.includes(tag.id))
-  const hidden = sorted.length - shown.length
+  const layout = tagLayout(tags, order)
+  // Порядок стабилен: выбранный чип не переезжает под пальцем в начало, а тег из «Ещё» встаёт в конец ряда.
+  const shown = inOrder(layout).filter((tag) => layout.shown.includes(tag) || selected.includes(tag.id))
+  const hidden = tags.length - shown.length
   const tabIndex = inert ? -1 : undefined
   const more = useOverflowHint(stripRef)
   // Полоса тегов — единственное место экрана ввода, где разрешён горизонтальный пан. Пока чипам хватает ширины, ей
@@ -66,7 +64,7 @@ export function ExtrasRow({ tags, selected, note, onChange, onNote, onCreate, di
         <button type="button" className="tag-add extra-add" disabled={disabled} tabIndex={tabIndex} onClick={() => setOpen(true)} aria-label={hidden ? `Ещё ${hidden} ${pluralRu(hidden, ['тег', 'тега', 'тегов'])}, все теги` : tags.length ? 'Все теги' : 'Добавить тег'}>{hidden ? `Ещё ${hidden}` : '＋ Тег'}</button>
       </div>
     </div>
-    {open && <TagSheet tags={tags} selected={selected} online={online} onClose={() => setOpen(false)} onChange={onChange} onCreate={onCreate}/>}
+    {open && <TagSheet tags={tags} order={order} selected={selected} online={online} onClose={() => setOpen(false)} onChange={onChange} onCreate={onCreate}/>}
   </>
 }
 
@@ -85,14 +83,14 @@ export function NoteSheet({ value, onClose, onSave }: { value: string; onClose: 
   </div>
 }
 
-export function TagSheet({ tags, selected, online, onClose, onChange, onCreate }: { tags: Tag[]; selected: string[]; online: boolean; onClose: () => void; onChange: (ids: string[]) => void; onCreate?: (name: string) => Promise<Tag | null> }) {
+export function TagSheet({ tags, order, selected, online, onClose, onChange, onCreate }: { tags: Tag[]; order?: ScreenOrder; selected: string[]; online: boolean; onClose: () => void; onChange: (ids: string[]) => void; onCreate?: (name: string) => Promise<Tag | null> }) {
   const [query, setQuery] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const dialogRef = useDialog(onClose, !busy)
   const titleId = useId()
   const normalized = query.trim().toLowerCase()
-  const sorted = sortTags(tags)
+  const sorted = sortTags(tags, order)
   const filtered = normalized ? sorted.filter((tag) => tag.name.toLowerCase().includes(normalized)) : sorted
   const exact = tags.find((tag) => tag.name.toLowerCase() === normalized)
   const canCreate = Boolean(onCreate) && normalized.length > 0 && !exact

@@ -280,21 +280,19 @@ export function splitExpense(workspaceId: string, expenseId: string, version: nu
 export function listCategories(workspaceId: string, signal?: AbortSignal) { return request<{ categories: Category[] }>(workspacePath(workspaceId, '/categories'), { signal }) }
 export function createCategory(workspaceId: string, category: Omit<Category, 'version' | 'createdAt' | 'updatedAt' | 'archivedAt'>, signal?: AbortSignal) {
   assertMutationsAllowed()
-  const { id, name, placement, sortOrder, color } = category
-  return request<Category>(workspacePath(workspaceId, '/categories'), { method: 'POST', body: JSON.stringify({ id, name, placement, sortOrder, color }), signal })
+  const { id, name, placement, sortOrder, color, emoji } = category
+  return request<Category>(workspacePath(workspaceId, '/categories'), { method: 'POST', body: JSON.stringify({ id, name, placement, sortOrder, color, emoji: emoji ?? null }), signal })
 }
 export function updateCategory(workspaceId: string, categoryId: string, update: Partial<Category> & Pick<Category, 'version'>, signal?: AbortSignal) {
   assertMutationsAllowed()
-  const { name, placement, sortOrder, color, archivedAt, version } = update
-  return request<Category>(workspacePath(workspaceId, `/categories/${encodeURIComponent(categoryId)}`), { method: 'PATCH', body: JSON.stringify({ name, placement, sortOrder, color, archivedAt, version }), signal })
+  const { name, placement, sortOrder, color, emoji, archivedAt, version } = update
+  return request<Category>(workspacePath(workspaceId, `/categories/${encodeURIComponent(categoryId)}`), { method: 'PATCH', body: JSON.stringify({ name, placement, sortOrder, color, emoji, archivedAt, version }), signal })
 }
 export async function deleteCategory(workspaceId: string, categoryId: string, version: number, signal?: AbortSignal): Promise<void> { assertMutationsAllowed(); return request<void>(workspacePath(workspaceId, `/categories/${encodeURIComponent(categoryId)}`), { method: 'DELETE', body: JSON.stringify({ version }), signal }) }
 export function listTags(workspaceId: string, signal?: AbortSignal) { return request<{ tags: Tag[] }>(workspacePath(workspaceId, '/tags'), { signal }) }
 export function createTag(workspaceId: string, input: { name: string; color?: string | null; id?: string }, signal?: AbortSignal) { assertMutationsAllowed(); return request<Tag>(workspacePath(workspaceId, '/tags'), { method: 'POST', body: JSON.stringify({ id: input.id ?? crypto.randomUUID(), name: input.name, color: input.color ?? null }), signal }) }
 export function updateTag(workspaceId: string, tagId: string, update: { name?: string; color?: string | null; sortOrder?: number; version: number }, signal?: AbortSignal) { assertMutationsAllowed(); return request<Tag>(workspacePath(workspaceId, `/tags/${encodeURIComponent(tagId)}`), { method: 'PATCH', body: JSON.stringify(update), signal }) }
-export function reorderTags(workspaceId: string, ids: string[], signal?: AbortSignal) { assertMutationsAllowed(); return request<{ tags: Tag[] }>(workspacePath(workspaceId, '/tags/order'), { method: 'PUT', body: JSON.stringify({ ids }), signal }) }
 export async function deleteTag(workspaceId: string, tagId: string, version: number, signal?: AbortSignal): Promise<void> { assertMutationsAllowed(); return request<void>(workspacePath(workspaceId, `/tags/${encodeURIComponent(tagId)}`), { method: 'DELETE', body: JSON.stringify({ version }), signal }) }
-export function reorderCategories(workspaceId: string, ids: string[], signal?: AbortSignal) { assertMutationsAllowed(); return request<{ categories: Category[] }>(workspacePath(workspaceId, '/categories/order'), { method: 'PUT', body: JSON.stringify({ ids }), signal }) }
 export function getAnalytics(workspaceId: string, from: string, to: string, currency: string, filter: { categoryId?: string; tagId?: string } = {}, signal?: AbortSignal) {
   const query = new URLSearchParams({ from, to, currency, tz: appTimeZone() }); if (filter.categoryId) query.set('categoryId', filter.categoryId); if (filter.tagId) query.set('tagId', filter.tagId)
   return request<AnalyticsData>(workspacePath(workspaceId, `/analytics?${query}`), { signal })

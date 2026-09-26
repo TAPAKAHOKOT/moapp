@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { amountToMinor, appTimeZone, applyKeypad, convertExpense, countCalendarWeekdays, formatAmountInput, isoToLocalInput, localDateKey, localInputToIso, currencyCatalogue, monthDateRange, shiftDateKey, startOfWeekDateKey, swipeDirection, weekDateRange, weekdayFromDateKey, workspaceCurrency } from './utils'
+import { amountToMinor, appTimeZone, applyKeypad, convertExpense, countCalendarWeekdays, formatAmountInput, isoToLocalInput, lastEmoji, localDateKey, localInputToIso, currencyCatalogue, monthDateRange, shiftDateKey, startOfWeekDateKey, swipeDirection, weekDateRange, weekdayFromDateKey, workspaceCurrency } from './utils'
 import type { Currency, Expense } from './types'
 
 const currencies: Currency[] = [
@@ -138,5 +138,18 @@ describe('currencyCatalogue', () => {
     expect(euro.name.toLowerCase()).toContain('евро')
     expect(list.find((currency) => currency.code === 'JPY')?.decimals).toBe(0)
     expect(currencyCatalogue()).toBe(list)
+  })
+})
+
+describe('category emoji field', () => {
+  it('keeps exactly one emoji: a new one replaces the old, letters do not get in, joined emoji stay whole', () => {
+    expect(lastEmoji('🛒🍕')).toBe('🍕')
+    expect(lastEmoji('ab')).toBeNull()
+    expect(lastEmoji('Кафе ☕')).toBe('☕')
+    expect(lastEmoji('🧑‍🍳')).toBe('🧑‍🍳')
+    expect(lastEmoji('🇷🇸')).toBe('🇷🇸')
+    expect(lastEmoji('1️⃣')).toBe('1️⃣')
+    expect(lastEmoji('👍🏽x')).toBe('👍🏽')
+    expect(lastEmoji('1')).toBeNull()
   })
 })

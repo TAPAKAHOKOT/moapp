@@ -1,19 +1,21 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { QRCodeSVG } from 'qrcode.react'
-import { WorkspaceApiError as ApiError, changeWorkspaceCurrency, createCategory, createDeviceLink, createInvitation, createTag, deleteTag, getSession, leaveWorkspace, listInvitations, listMembers, listSessions, prepareInitialOrManualRecovery, removeMember, renameWorkspace, reorderCategories, reorderTags, revokeInvitation, revokeSession, saveMemberSettings, transferOwnership, updateCategory, updateProfile, updateTag } from '../workspace-api'
+import { WorkspaceApiError as ApiError, changeWorkspaceCurrency, createCategory, createDeviceLink, createInvitation, createTag, deleteTag, getSession, leaveWorkspace, listInvitations, listMembers, listSessions, prepareInitialOrManualRecovery, removeMember, renameWorkspace, revokeInvitation, revokeSession, saveMemberSettings, transferOwnership, updateCategory, updateProfile, updateTag } from '../workspace-api'
 import { clearWorkspaceOfflineData } from '../workspace-offline'
 import { patchSettings } from '../settings'
 import { ACCENTS, DEFAULT_APPEARANCE, TEXT_SIZES, accentInfo } from '../appearance'
 import type { Appearance } from '../appearance'
 import { completeRotationSafely } from '../recovery-flow'
 import type { AuthenticatedSession, Category, Expense, RecoveryPrepareResponse, SessionState, Tag, ThemePreference, WorkspaceMod, WorkspaceSummary } from '../types'
-import { PINNED_CURRENCIES, localDateKey, workspaceCurrency } from '../utils'
+import { PINNED_CURRENCIES, lastEmoji, localDateKey, workspaceCurrency } from '../utils'
 import { buildHistoryCsv } from '../history'
-import { ChevronIcon, CurrencySheet, ListSheet, TextSheet, Toast, copyText, tap, useConfirm, useDialog, useToast } from '../ui'
+import { CategoryMark, ChevronIcon, CurrencySheet, ListSheet, TextSheet, Toast, copyText, tap, useConfirm, useDialog, useToast } from '../ui'
 import type { SelectOption } from '../ui'
 import { formatLinkLifetime, formatRelativeTime } from '../format'
 import type { Bootstrap } from '../format'
-import { TAG_COLORS, TAG_COLOR_NAMES, TagEditor, sortTags } from '../tags'
+import { TAG_COLORS, TAG_COLOR_NAMES, TagEditor } from '../tags'
+import { ROOMY_TILES, categoryLayout, moveToMore, moveToShown, reorderGroup, tagLayout, toScreenOrder } from '../screen-order'
+import type { Layout } from '../screen-order'
 import { RecoverySave } from './Access'
 
 // Ссылка приглашения или подключения: на телефоне главное действие — «Поделиться», сам URL человеку читать не нужно
@@ -268,7 +270,7 @@ export function AccessSettings({ user, workspace, bootstrap, setBootstrap, pendi
 
 // Порядок в списке меняется перетаскиванием за ручку ≡ (или стрелками с клавиатуры) — вместо двух стрелок на каждую строку.
 // На iOS ручке нужен touch-action: none, иначе Safari отдаёт жест прокрутке и обрывает указатель.
-export function DragList<T extends { id: string }>({ items, disabled = false, onReorder, render }: { items: T[]; disabled?: boolean; onReorder: (ids: string[]) => void; render: (item: T) => React.ReactNode }) {
+export function DragList<T extends { id: string }>({ items, disabled = false, className, onReorder, render }: { items: T[]; disabled?: boolean; className?: string; onReorder: (ids: string[]) => void; render: (item: T) => React.ReactNode }) {
   const [order, setOrder] = useState<string[] | null>(null)
   const [drag, setDrag] = useState<{ id: string; pointerY: number } | null>(null)
   const listRef = useRef<HTMLDivElement>(null)
@@ -325,7 +327,7 @@ export function DragList<T extends { id: string }>({ items, disabled = false, on
     ;[ids[index], ids[target]] = [ids[target]!, ids[index]!]
     onReorder(ids)
   }
-  return <div ref={listRef} className={`drag-list${drag ? ' dragging' : ''}`}>{shown.map((item) => <div key={item.id} data-drag-id={item.id} className={`drag-row${drag?.id === item.id ? ' lifted' : ''}`}>
+  return <div ref={listRef} className={`drag-list${className ? ` ${className}` : ''}${drag ? ' dragging' : ''}`}>{shown.map((item) => <div key={item.id} data-drag-id={item.id} className={`drag-row${drag?.id === item.id ? ' lifted' : ''}`}>
     {render(item)}
     {items.length > 1 && <span className="drag-handle" role="button" tabIndex={disabled ? -1 : 0} aria-label="Перетащить, чтобы изменить порядок" aria-disabled={disabled} onPointerDown={(event) => start(event, item.id)} onPointerMove={move} onPointerUp={() => end(true)} onPointerCancel={() => end(false)} onKeyDown={(event) => keyMove(event, item.id)}>≡</span>}
   </div>)}</div>
@@ -383,7 +385,6 @@ export function SettingsView({ user, workspace, workspaceId, bootstrap, setBoots
   const [sheet,setSheet]=useState<SettingsSheet>(null)
   const [editing,setEditing]=useState<Category|null>(null)
   const [adding,setAdding]=useState(false)
-  const [reordering,setReordering]=useState(false)
   const [editingTag,setEditingTag]=useState<Tag|null>(null)
   const [addingTag,setAddingTag]=useState(false)
   const [accessBusy,setAccessBusy]=useState(false)
@@ -391,7 +392,7 @@ export function SettingsView({ user, workspace, workspaceId, bootstrap, setBoots
   const accessNotice=useCallback((message:string,urgent=false)=>setNotice(message,undefined,urgent),[setNotice])
   const save=async(category:Category)=>{
     const previous=bootstrap.categories.find((item)=>item.id===category.id)
-    const matchesOptimistic=(item:Category)=>item.version===category.version&&item.updatedAt===category.updatedAt&&item.name===category.name&&item.color===category.color&&item.placement===category.placement&&item.sortOrder===category.sortOrder&&item.archivedAt===category.archivedAt
+    const matchesOptimistic=(item:Category)=>item.version===category.version&&item.updatedAt===category.updatedAt&&item.name===category.name&&item.color===category.color&&item.emoji===category.emoji&&item.placement===category.placement&&item.sortOrder===category.sortOrder&&item.archivedAt===category.archivedAt
     setBootstrap((b)=>({...b,categories:[category,...b.categories.filter((x)=>x.id!==category.id)]}))
     try{
       const saved=previous?await updateCategory(workspaceId,category.id,category):await createCategory(workspaceId,category)
@@ -420,30 +421,20 @@ export function SettingsView({ user, workspace, workspaceId, bootstrap, setBoots
     }
     refreshPending()
   }
-  const activeCategories=bootstrap.categories.filter((x)=>!x.archivedAt).sort((a,b)=>a.placement.localeCompare(b.placement)||a.sortOrder-b.sortOrder)
   // Скрытые видны только здесь: имя за ними остаётся занятым, поэтому вернуть их нужно уметь без повторного создания.
   const hiddenCategories=bootstrap.categories.filter((x)=>x.archivedAt).sort((a,b)=>a.name.localeCompare(b.name,'ru'))
-  const mainCategories=activeCategories.filter((x)=>x.placement==='main')
-  const otherCategories=activeCategories.filter((x)=>x.placement==='additional')
-  // Порядок внутри одной группы: сервер принимает полный список активных категорий, поэтому вторая группа идёт как есть.
-  const reorderGroup=async(placement:Category['placement'],ids:string[])=>{
-    if(!online||reordering)return
-    setReordering(true)
-    const previousOrder=new Map(activeCategories.map((item)=>[item.id,item.sortOrder]))
-    const optimisticOrder=new Map(ids.map((id,order)=>[id,order]))
-    const ordered=placement==='main'?[...ids,...otherCategories.map((x)=>x.id)]:[...mainCategories.map((x)=>x.id),...ids]
-    setBootstrap((b)=>({...b,categories:b.categories.map((x)=>optimisticOrder.has(x.id)?{...x,sortOrder:optimisticOrder.get(x.id)!}:x)}))
-    try{
-      const result=await reorderCategories(workspaceId,ordered);const fresh=new Map(result.categories.map((x)=>[x.id,x]))
-      setBootstrap((b)=>({...b,categories:b.categories.map((x)=>optimisticOrder.get(x.id)===x.sortOrder?(fresh.get(x.id)||x):x)}))
-    }catch(error){
-      setBootstrap((b)=>({...b,categories:b.categories.map((x)=>optimisticOrder.get(x.id)===x.sortOrder?{...x,sortOrder:previousOrder.get(x.id)!}:x)}))
-      setNotice(error instanceof ApiError?error.message:'Не удалось изменить порядок',undefined,true)
-    }
-    refreshPending()
-    setReordering(false)
+  // Что стоит на «Расходе», у каждого своё и живёт в аккаунте: меняется сразу и без сети, как тема. Сами категории
+  // и теги — общие, их правка идёт на сервер.
+  const categoryTiles=categoryLayout(bootstrap.categories,bootstrap.settings?.categoryOrder)
+  const activeCount=categoryTiles.shown.length+categoryTiles.more.length
+  const tags=bootstrap.tags??[]
+  const tagRow=tagLayout(tags,bootstrap.settings?.tagOrder)
+  const saveLayout=(key:'categoryOrder'|'tagOrder',layout:Layout<{id:string}>)=>{
+    const order=toScreenOrder(layout)
+    const patch=key==='categoryOrder'?{categoryOrder:order}:{tagOrder:order}
+    setBootstrap((b)=>({...b,settings:patchSettings(b.settings,patch)}))
+    saveMemberSettings(user.user.id,workspaceId,patch)
   }
-  const tags=sortTags(bootstrap.tags??[])
   const saveTag=async(name:string,color:string|null)=>{
     try{
       const saved=editingTag?await updateTag(workspaceId,editingTag.id,{name,color,version:editingTag.version}):await createTag(workspaceId,{name,color})
@@ -461,24 +452,26 @@ export function SettingsView({ user, workspace, workspaceId, bootstrap, setBoots
       setEditingTag(null);setNotice('Тег удалён')
     }catch(error){setNotice(error instanceof ApiError?error.message:'Не удалось удалить тег',undefined,true)}
   }
-  const reorderTagList=async(ids:string[])=>{
-    if(!online||reordering)return
-    setReordering(true)
-    const previous=new Map(tags.map((x)=>[x.id,x.sortOrder]))
-    setBootstrap((b)=>({...b,tags:(b.tags??[]).map((x)=>{const at=ids.indexOf(x.id);return at>=0?{...x,sortOrder:at}:x})}))
-    try{const result=await reorderTags(workspaceId,ids);setBootstrap((b)=>({...b,tags:result.tags}))}
-    catch(error){setBootstrap((b)=>({...b,tags:(b.tags??[]).map((x)=>previous.has(x.id)?{...x,sortOrder:previous.get(x.id)!}:x)}));setNotice(error instanceof ApiError?error.message:'Не удалось изменить порядок тегов',undefined,true)}
-    setReordering(false)
-  }
   // Моды — одной строкой: сколько добавлено, а если ключ Bybit перестал работать — об этом, чтобы не искать внутри.
   const addedMods=mods?.filter((mod)=>mod.added)??[]
   const modsNeedAttention=addedMods.some((mod)=>mod.state?.status==='error')
   const modsValue=mods===null?(online?'…':'нужна сеть'):modsNeedAttention?'нужно обновить':addedMods.length?String(addedMods.length):'нет'
-  const categoryRow=(category:Category)=><><i style={{background:category.color??'#a9afa5'}}/><button type="button" className="category-name" disabled={!online||reordering} onClick={()=>setEditing(category)}>{category.name}</button></>
+  // «−» убирает с «Расхода» за «Ещё», «+» ставит обратно в конец ряда; ≡ меняет порядок внутри группы.
+  const layoutToggle=(name:string,shown:boolean,move:()=>void)=><button type="button" className={`layout-toggle${shown?' shown':''}`} aria-label={shown?`Убрать «${name}» с «Расхода»`:`Поставить «${name}» на «Расход»`} onClick={()=>{tap(4);move()}}><span aria-hidden="true">{shown?'−':'+'}</span></button>
+  const categoryRow=(shown:boolean)=>(category:Category)=><>
+    {layoutToggle(category.name,shown,()=>saveLayout('categoryOrder',shown?moveToMore(categoryTiles,category.id):moveToShown(categoryTiles,category.id)))}
+    <CategoryMark category={category}/>
+    <button type="button" className="category-name" disabled={!online} onClick={()=>setEditing(category)}>{category.name}</button>
+  </>
+  const tagLine=(shown:boolean)=>(tag:Tag)=><>
+    {layoutToggle(tag.name,shown,()=>saveLayout('tagOrder',shown?moveToMore(tagRow,tag.id):moveToShown(tagRow,tag.id)))}
+    <i style={{background:tag.color??'#a9afa5'}}/>
+    <button type="button" className="category-name" disabled={!online} onClick={()=>setEditingTag(tag)}>{tag.name}</button>
+  </>
   return <section className="page settings-page">
     <AccessSettings user={user} workspace={workspace} bootstrap={bootstrap} setBootstrap={setBootstrap} pendingCount={pendingCount} online={online} onSession={onSession} onNotice={accessNotice} onBusyChange={setAccessBusy}
       profileRows={<SettingsRow label="Внешний вид" value={<AppearanceValue appearance={appearance}/>} onClick={()=>setSheet('appearance')}/>}>
-      <SettingsRow label="Категории" value={String(activeCategories.length)} onClick={()=>setSheet('categories')}/>
+      <SettingsRow label="Категории" value={String(activeCount)} onClick={()=>setSheet('categories')}/>
       <SettingsRow label="Теги" value={tags.length?String(tags.length):'нет'} onClick={()=>setSheet('tags')}/>
       <SettingsRow label="Моды" value={modsValue} tone={modsNeedAttention?'warn':undefined} onClick={onOpenMods}/>
     </AccessSettings>
@@ -488,39 +481,49 @@ export function SettingsView({ user, workspace, workspaceId, bootstrap, setBoots
         try{const expenses=bootstrap.olderExpenses&&loadOlderExpenses?await loadOlderExpenses():bootstrap.expenses;setNotice(`Экспортировано расходов: ${exportHistoryCsv({...bootstrap,expenses})}`)}
         catch(reason){setNotice(reason instanceof ApiError?reason.message:'Не удалось подготовить файл экспорта',undefined,true)}
       })()}}/>
-      <SettingsRow label="Выйти" tone="danger" disabled={accessBusy||reordering} onClick={onLogout}/>
+      <SettingsRow label="Выйти" tone="danger" disabled={accessBusy} onClick={onLogout}/>
     </div></div>
     {sheet==='categories'&&<ListSheet title="Категории" onClose={()=>setSheet(null)}>
-      {mainCategories.length>0&&<h3>На главном экране</h3>}
-      <DragList items={mainCategories} disabled={!online||reordering} onReorder={(ids)=>void reorderGroup('main',ids)} render={categoryRow}/>
-      {otherCategories.length>0&&<h3>{mainCategories.length?'За плиткой «Ещё»':'Категории'}</h3>}
-      <DragList items={otherCategories} disabled={!online||reordering} onReorder={(ids)=>void reorderGroup('additional',ids)} render={categoryRow}/>
-      {!activeCategories.length&&<p className="sheet-copy">Категорий пока нет.</p>}
+      {activeCount>0&&<h3>Плитки на «Расходе»</h3>}
+      <DragList className="layout-list" items={categoryTiles.shown} onReorder={(ids)=>saveLayout('categoryOrder',reorderGroup(categoryTiles,'shown',ids))} render={categoryRow(true)}/>
+      {activeCount>0&&!categoryTiles.shown.length&&<p className="sheet-copy">Плиток нет: все категории за плиткой «Ещё».</p>}
+      {categoryTiles.shown.length>ROOMY_TILES&&<p className="sheet-copy">На узком телефоне больше четырёх плиток помещаются с трудом, подписи обрежутся.</p>}
+      {categoryTiles.more.length>0&&<h3>За плиткой «Ещё»</h3>}
+      <DragList className="layout-list" items={categoryTiles.more} onReorder={(ids)=>saveLayout('categoryOrder',reorderGroup(categoryTiles,'more',ids))} render={categoryRow(false)}/>
+      {!activeCount&&<p className="sheet-copy">Категорий пока нет.</p>}
       {hiddenCategories.length>0&&<><h3>Скрытые</h3>
         {hiddenCategories.map((category)=><div className="management-row hidden-category" key={category.id}>
-          <i style={{background:category.color??'#a9afa5'}}/>
+          <CategoryMark category={category}/>
           <span>{category.name}<small>остаётся у старых расходов</small></span>
-          <button type="button" disabled={!online||reordering} onClick={()=>void save({...category,archivedAt:null})}>Вернуть</button>
+          <button type="button" disabled={!online} onClick={()=>void save({...category,archivedAt:null})}>Вернуть</button>
         </div>)}</>}
-      <p className="sheet-copy">{online?'Порядок меняется перетаскиванием за ≡. Скрытые категории остаются у старых расходов, их можно вернуть.':'Категории меняются только при подключении к сети.'}</p>
+      <p className="sheet-copy">{`Плитки и их порядок — только ваши. Название, значок и цвет — общие для всех в «${workspace.name}»${online?'.':', их можно менять только при подключении к сети.'}`}</p>
       <button type="button" className="primary sheet-action" disabled={!online} onClick={()=>setAdding(true)}>Новая категория</button>
     </ListSheet>}
     {sheet==='tags'&&<ListSheet title="Теги" onClose={()=>setSheet(null)}>
-      <DragList items={tags} disabled={!online||reordering} onReorder={(ids)=>void reorderTagList(ids)} render={(tag)=><><i style={{background:tag.color??'#a9afa5'}}/><button type="button" className="category-name" disabled={!online||reordering} onClick={()=>setEditingTag(tag)}>{tag.name}</button></>}/>
-      <p className="sheet-copy">{tags.length?'Тег — короткая пометка поверх категории, например «отпуск». Один расход может нести несколько тегов.':'Тегов пока нет. Тег — короткая пометка поверх категории, например «отпуск» или «вдвоём».'}</p>
+      {tags.length>0&&<h3>В ряду на «Расходе»</h3>}
+      <DragList className="layout-list" items={tagRow.shown} onReorder={(ids)=>saveLayout('tagOrder',reorderGroup(tagRow,'shown',ids))} render={tagLine(true)}/>
+      {tags.length>0&&!tagRow.shown.length&&<p className="sheet-copy">В ряду пусто: все теги за «Ещё».</p>}
+      {tagRow.more.length>0&&<h3>За «Ещё»</h3>}
+      <DragList className="layout-list" items={tagRow.more} onReorder={(ids)=>saveLayout('tagOrder',reorderGroup(tagRow,'more',ids))} render={tagLine(false)}/>
+      <p className="sheet-copy">{tags.length?'Тег — короткая пометка поверх категории, например «отпуск». Ряд и его порядок — только ваши, название и цвет — общие.':'Тегов пока нет. Тег — короткая пометка поверх категории, например «отпуск» или «вдвоём».'}</p>
       <button type="button" className="primary sheet-action" disabled={!online} onClick={()=>setAddingTag(true)}>Новый тег</button>
     </ListSheet>}
     {sheet==='appearance'&&<AppearanceSheet appearance={appearance} onChange={onAppearanceChange} onClose={()=>setSheet(null)}/>}
-    {(editing||adding)&&<CategoryEditor category={editing} mainCount={mainCategories.length} onClose={()=>{setEditing(null);setAdding(false)}} onSave={save}/>}
+    {(editing||adding)&&<CategoryEditor category={editing} workspaceName={workspace.name} onClose={()=>{setEditing(null);setAdding(false)}} onSave={save}/>}
     {(editingTag||addingTag)&&<TagEditor tag={editingTag} onClose={()=>{setEditingTag(null);setAddingTag(false)}} onSave={saveTag} onDelete={editingTag?()=>removeTag(editingTag):undefined}/>}
     {notice&&<Toast toast={notice} onDismiss={hideNotice}/>}
   </section>
 }
 
-// Редактор категории: вместо «Размещение: Основные / Дополнительные» — переключатель «Показывать на главном экране».
-export function CategoryEditor({ category, mainCount, onClose, onSave }:{category:Category|null;mainCount:number;onClose:()=>void;onSave:(c:Category)=>Promise<void>}) {
+// Частые значки трат — в одно касание; любой другой эмодзи вводится в поле за ними.
+export const EMOJI_CHOICES = ['🛒', '🍽️', '☕', '🏠', '🚕', '💊', '🎬', '👕', '🎁', '✈️']
+
+// Редактор категории правит то, что общее для всех: название, значок и цвет. Стоит ли она плиткой на «Расходе»,
+// каждый решает сам в списке категорий.
+export function CategoryEditor({ category, workspaceName, onClose, onSave }:{category:Category|null;workspaceName:string;onClose:()=>void;onSave:(c:Category)=>Promise<void>}) {
   const now = new Date().toISOString()
-  const [draft,setDraft]=useState<Category>(category||{id:crypto.randomUUID(),name:'',color:TAG_COLORS[0]!,placement:'additional',sortOrder:999,createdAt:now,updatedAt:now,archivedAt:null,version:1})
+  const [draft,setDraft]=useState<Category>(category?{...category,emoji:category.emoji??null}:{id:crypto.randomUUID(),name:'',color:TAG_COLORS[0]!,emoji:null,placement:'additional',sortOrder:999,createdAt:now,updatedAt:now,archivedAt:null,version:1})
   const [busy,setBusy]=useState(false)
   const [validation,setValidation]=useState('')
   const {confirm,confirmation}=useConfirm()
@@ -531,7 +534,21 @@ export function CategoryEditor({ category, mainCount, onClose, onSave }:{categor
     setValidation('');setBusy(true)
     try{await onSave({...next,name:name||next.name})}finally{setBusy(false)}
   }
-  const onMain=draft.placement==='main'
-  const othersOnMain=mainCount-(category?.placement==='main'?1:0)
-  return <><div className="sheet-backdrop" onMouseDown={()=>{if(!busy)onClose()}}><form ref={dialogRef as React.Ref<HTMLFormElement>} className="bottom-sheet editor" role="dialog" aria-modal="true" aria-labelledby="category-editor-title" noValidate onSubmit={(e)=>{e.preventDefault();void submit(draft)}} onMouseDown={(e)=>e.stopPropagation()}><div className="sheet-handle"/><div className="sheet-title"><h2 id="category-editor-title">{category?'Категория':'Новая категория'}</h2><button type="button" className="icon-button" data-dialog-initial-focus disabled={busy} aria-label="Закрыть" onClick={onClose}>×</button></div><label>Название<input maxLength={40} aria-invalid={Boolean(validation)} value={draft.name} onChange={(e)=>{setValidation('');setDraft({...draft,name:e.target.value})}}/></label>{validation&&<p className="form-error" role="alert">{validation}</p>}<fieldset><legend>Цвет</legend><div className="colors">{TAG_COLORS.map((color,index)=><button aria-label={`Цвет: ${TAG_COLOR_NAMES[index] ?? color}`} aria-pressed={draft.color===color} type="button" key={color} className={draft.color===color?'selected':''} style={{background:color}} onClick={()=>setDraft({...draft,color})}/>)}</div></fieldset><label className="switch-row"><span><b>Показывать на главном экране</b><small>{onMain?`Плиткой рядом с клавиатурой${othersOnMain>=3?' — уже тесно, плиток больше четырёх не помещается':''}`:'Иначе — за плиткой «Ещё»'}</small></span><input type="checkbox" role="switch" checked={onMain} disabled={busy} onChange={(e)=>setDraft({...draft,placement:e.target.checked?'main':'additional'})}/></label><button className="primary" disabled={busy}>{busy?'Сохраняем…':'Сохранить'}</button>{category&&<button type="button" className="danger-link" disabled={busy} onClick={()=>void (async()=>{if(await confirm({title:'Скрыть категорию?',message:'Она пропадёт из выбора, но останется у старых расходов. Вернуть её можно в списке категорий.',confirmLabel:'Скрыть',danger:true}))await submit({...draft,archivedAt:new Date().toISOString()})})()}>Скрыть</button>}</form></div>{confirmation}</>
+  const custom=draft.emoji&&!EMOJI_CHOICES.includes(draft.emoji)?draft.emoji:''
+  // В поле всегда один значок: новый эмодзи заменяет прежний, буквы не проходят, пустое поле снимает значок.
+  const typeEmoji=(value:string)=>{const emoji=lastEmoji(value);if(emoji)setDraft({...draft,emoji});else if(!value)setDraft({...draft,emoji:null})}
+  return <><div className="sheet-backdrop" onMouseDown={()=>{if(!busy)onClose()}}><form ref={dialogRef as React.Ref<HTMLFormElement>} className="bottom-sheet editor" role="dialog" aria-modal="true" aria-labelledby="category-editor-title" noValidate onSubmit={(e)=>{e.preventDefault();void submit(draft)}} onMouseDown={(e)=>e.stopPropagation()}>
+    <div className="sheet-handle"/><div className="sheet-title"><h2 id="category-editor-title">{category?'Категория':'Новая категория'}</h2><button type="button" className="icon-button" data-dialog-initial-focus disabled={busy} aria-label="Закрыть" onClick={onClose}>×</button></div>
+    <label>Название<input maxLength={40} aria-invalid={Boolean(validation)} value={draft.name} onChange={(e)=>{setValidation('');setDraft({...draft,name:e.target.value})}}/></label>
+    {validation&&<p className="form-error" role="alert">{validation}</p>}
+    <fieldset><legend>Значок</legend><div className="emoji-choices">
+      {EMOJI_CHOICES.map((emoji)=><button type="button" key={emoji} aria-label={`Значок ${emoji}`} aria-pressed={draft.emoji===emoji} className={draft.emoji===emoji?'selected':''} onClick={()=>setDraft({...draft,emoji})}>{emoji}</button>)}
+      <input className={`emoji-input${custom?' selected':''}`} aria-label="Свой значок: любой эмодзи" placeholder="🙂" value={custom} onChange={(e)=>typeEmoji(e.target.value)}/>
+      <button type="button" aria-label="Без значка" aria-pressed={!draft.emoji} className={`colors-none${draft.emoji?'':' selected'}`} onClick={()=>setDraft({...draft,emoji:null})}>—</button>
+    </div></fieldset>
+    <fieldset><legend>Цвет</legend><div className="colors">{TAG_COLORS.map((color,index)=><button aria-label={`Цвет: ${TAG_COLOR_NAMES[index] ?? color}`} aria-pressed={draft.color===color} type="button" key={color} className={draft.color===color?'selected':''} style={{background:color}} onClick={()=>setDraft({...draft,color})}/>)}</div></fieldset>
+    <p className="sheet-copy">{`Название, значок и цвет общие для всех в «${workspaceName}». Плитки на «Расходе» каждый выбирает себе сам в списке категорий.`}</p>
+    <button className="primary" disabled={busy}>{busy?'Сохраняем…':'Сохранить'}</button>
+    {category&&<button type="button" className="danger-link" disabled={busy} onClick={()=>void (async()=>{if(await confirm({title:'Скрыть категорию?',message:'Она пропадёт из выбора, но останется у старых расходов. Вернуть её можно в списке категорий.',confirmLabel:'Скрыть',danger:true}))await submit({...draft,archivedAt:new Date().toISOString()})})()}>Скрыть</button>}
+  </form></div>{confirmation}</>
 }

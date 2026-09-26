@@ -134,7 +134,10 @@ every device and through logout. Account settings (`AccountSettings`: `theme` �
 tiles or the tag chips in order (at most 20), then everything behind «Ещё» in order (at most 100). An id may not appear
 in both lists. Ids of removed categories and tags are allowed and skipped by the client; anything in neither list
 (created later, possibly by another member) goes to the end of «Ещё». Without the key the member sees the shared starting
-layout: categories with `placement: 'main'` as tiles in `sortOrder`, and the first five tags in `sortOrder`.
+layout: categories with `placement: 'main'` as tiles in `sortOrder`, and the first five tags in `sortOrder`. The client
+applies the member's layout wherever categories or tags are picked or listed: «Расход», card review, the tag sheet, history
+rows and filters (`screen-order.ts`). It changes in Settings → «Категории» and «Теги» with «−», «+» and ≡, works offline
+like any personal setting and never touches the shared `placement`/`sortOrder` (the client no longer calls the `order` routes).
 
 - `PATCH /api/me/settings` with `{settings: {key: value | null}}` → `{settings: AccountSettings}`.
 - `PATCH /api/workspaces/:workspaceId/me/settings` with the same body → `{settings: MemberSettings}`.

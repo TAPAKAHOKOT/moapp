@@ -201,3 +201,19 @@ export function countCalendarWeekdays(from: string, to: string) {
   }
   return counts
 }
+
+// Картинка-эмодзи: пиктограмма, флаг из двух региональных букв или цифра в рамке (1️⃣). Точную проверку по списку
+// Unicode делает сервер; здесь достаточно отличить эмодзи от букв.
+const EMOJI_GRAPHEME = /\p{Extended_Pictographic}|\p{Regional_Indicator}|⃣/u
+
+/** Последний эмодзи строки. Поле значка держит ровно один: новый заменяет прежний, буквы не проходят. */
+export function lastEmoji(text: string): string | null {
+  const graphemes = typeof Intl.Segmenter === 'function'
+    ? Array.from(new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(text), (part) => part.segment)
+    : Array.from(text)
+  for (let index = graphemes.length - 1; index >= 0; index -= 1) {
+    const grapheme = graphemes[index]!
+    if (EMOJI_GRAPHEME.test(grapheme)) return grapheme
+  }
+  return null
+}

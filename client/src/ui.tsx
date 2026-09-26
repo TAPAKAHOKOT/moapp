@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import { isServerReachable, probeServer, subscribeServerReachability } from './workspace-api'
-import type { Currency } from './types'
+import type { Category, Currency } from './types'
 
 export type Theme = 'light' | 'dark'
 
@@ -339,6 +339,12 @@ export function CurrencySheet({ currencies, used = [], selected, onClose, onSele
       {showAll && !filtered.length && <p className="sheet-empty" role="status">По запросу «{query}» валют не найдено.</p>}
     </section>
   </div>
+}
+
+/** Значок категории: её эмодзи, а если его не выбрали — полоска или квадратик её цвета, как раньше. */
+export function CategoryMark({ category }: { category?: Pick<Category, 'color' | 'emoji'> | null }) {
+  if (category?.emoji) return <b className="category-emoji" aria-hidden="true">{category.emoji}</b>
+  return <i style={{ backgroundColor: category?.color ?? '#a9afa5' }}/>
 }
 
 export const GridIcon = () => <i className="grid-icon" aria-hidden="true"><svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor"><rect x="1.5" y="1.5" width="5" height="5" rx="1.5"/><rect x="9.5" y="1.5" width="5" height="5" rx="1.5"/><rect x="1.5" y="9.5" width="5" height="5" rx="1.5"/><rect x="9.5" y="9.5" width="5" height="5" rx="1.5"/></svg></i>
