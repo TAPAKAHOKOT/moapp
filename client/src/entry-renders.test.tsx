@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { useState } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { EntryView } from './screens/Entry'
 import type { BlockLayout, Expense, WorkspaceBootstrap } from './types'
@@ -9,6 +10,7 @@ afterEach(() => {
   localStorage.clear()
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
+  Object.defineProperty(window.navigator, 'onLine', { configurable: true, value: true })
 })
 
 function bootstrapWith(expenses: Expense[], overrides: Partial<WorkspaceBootstrap> = {}): WorkspaceBootstrap {
@@ -80,5 +82,42 @@ describe('«Сегодня» and «Как обычно» on «Расход»', (
     rerender(entry(bootstrapWith([...expenses]), { shown: ['usual', 'keypad', 'tiles', 'note', 'tags'], hidden: ['today'] }))
     expect(reads.tagIds).toBeGreaterThanOrEqual(40)
     expect(container.querySelector('.entry-usual')?.textContent).toBe('10Продукты')
+  })
+})
+
+describe('«Расход» and redraws of the app', () => {
+  const blocks = { shown: ['keypad', 'tiles', 'note', 'tags'], hidden: ['today', 'usual'] }
+
+  // Приложение перерисовывается по своим поводам (тосты, очередь отправки, связь); «Расход» с теми же данными — нет.
+  it('is not redrawn when the app redraws with the same props', () => {
+    let reads = 0
+    const bootstrap = bootstrapWith([])
+    const [products] = bootstrap.categories
+    const counted = { ...bootstrap, categories: [{ ...products!, get name() { reads += 1; return 'Продукты' } }] }
+    function Host() {
+      const [tick, setTick] = useState(0)
+      return <><button type="button" onClick={() => setTick((value) => value + 1)}>{`tick ${tick}`}</button>{entry(counted, blocks)}</>
+    }
+    render(<Host/>)
+    reads = 0
+    fireEvent.click(screen.getByRole('button', { name: 'tick 0' }))
+    expect(screen.getByRole('button', { name: 'tick 1' })).not.toBeNull()
+    expect(reads).toBe(0)
+    fireEvent.click(screen.getByRole('button', { name: '7' }))
+    expect(reads).toBeGreaterThan(0)
+  })
+
+  it('tells the tag sheet about a lost connection without a redraw from the app', () => {
+    render(entry(bootstrapWith([]), blocks))
+    fireEvent.click(screen.getByRole('button', { name: 'Добавить тег' }))
+    fireEvent.change(screen.getByLabelText('Поиск тега'), { target: { value: 'кофе' } })
+    expect(screen.getByRole('button', { name: 'Создать тег «кофе»' }).hasAttribute('disabled')).toBe(false)
+    Object.defineProperty(window.navigator, 'onLine', { configurable: true, value: false })
+    act(() => { window.dispatchEvent(new Event('offline')) })
+    expect(screen.getByRole('button', { name: 'Создать тег «кофе»' }).hasAttribute('disabled')).toBe(true)
+    expect(screen.getByText('Новые теги создаются только онлайн.')).not.toBeNull()
+    Object.defineProperty(window.navigator, 'onLine', { configurable: true, value: true })
+    act(() => { window.dispatchEvent(new Event('online')) })
+    expect(screen.getByRole('button', { name: 'Создать тег «кофе»' }).hasAttribute('disabled')).toBe(false)
   })
 })

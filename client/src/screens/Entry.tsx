@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { WorkspaceApiError as ApiError, saveMemberSettings, submitExpenseOperation } from '../workspace-api'
 import { getWorkspacePreference, setWorkspacePreference } from '../app-state'
 import { patchSettings } from '../settings'
@@ -238,7 +238,16 @@ export function EntryLowerPreview({ units, main, additional, tags, tagOrder, sta
   </>
 }
 
-export function EntryView({ userId, workspaceId, workspace, bootstrap, setBootstrap, currentId, setCurrentId, refreshPending, onDraftDirtyChange, active, newExpenseRequest = 0, blocks, editing = false, onEditScreen = () => {}, onScreensChange = () => {} }: {
+// Связь браузера: новые теги создаются только онлайн. «Расход» не перерисовывается вместе с приложением, поэтому
+// сам узнаёт, что связь пропала или вернулась.
+const subscribeOnline = (notify: () => void) => {
+  window.addEventListener('online', notify)
+  window.addEventListener('offline', notify)
+  return () => { window.removeEventListener('online', notify); window.removeEventListener('offline', notify) }
+}
+const readOnline = () => navigator.onLine
+
+export const EntryView = memo(function EntryView({ userId, workspaceId, workspace, bootstrap, setBootstrap, currentId, setCurrentId, refreshPending, onDraftDirtyChange, active, newExpenseRequest = 0, blocks, editing = false, onEditScreen = () => {}, onScreensChange = () => {} }: {
   userId: string
   workspaceId: string
   workspace: WorkspaceSummary
@@ -769,6 +778,7 @@ export function EntryView({ userId, workspaceId, workspace, bootstrap, setBootst
     [showsToday, bootstrap.expenses, todayKey, timeZone, bootstrap.currencies, bootstrap.rates, totalsCurrency])
   const showsUsual = isShown(entryBlocks, 'usual')
   const usualItems = useMemo(() => showsUsual ? usualExpenses(bootstrap.expenses, bootstrap.categories, bootstrap.tags ?? []) : NO_USUAL, [showsUsual, bootstrap.expenses, bootstrap.categories, bootstrap.tags])
+  const online = useSyncExternalStore(subscribeOnline, readOnline)
   const pickUsual = (item: UsualExpense) => {
     tap(6)
     const decimals = bootstrap.currencies.find((currency) => currency.code === item.currency)?.decimals ?? 2
@@ -781,7 +791,7 @@ export function EntryView({ userId, workspaceId, workspace, bootstrap, setBootst
   const liveUnit = (unit: EntryUnit) => unit.key === 'keypad' ? <Keypad key="keypad" onKey={key} disabled={saving}/>
     : unit.key === 'today' || unit.key === 'usual' ? <div key={unit.key}>{fixedBlock(unit.key)}</div>
     : unit.key === 'tiles' ? <CategoryTiles key="tiles" main={main} additional={additional} selectedId={selectedCategoryId} disabled={saving} onPick={chooseCategory} onMore={() => setCategorySheet(true)}/>
-    : <ExtrasRow key={unit.key} tags={bootstrap.tags ?? []} order={tagOrder} showNote={unit.ids.includes('note')} showTags={unit.ids.includes('tags')} tagsFirst={unit.ids[0] === 'tags'} selected={form.tagIds} note={form.note} disabled={saving} online={navigator.onLine} onChange={(tagIds) => setForm((value) => ({ ...value, tagIds }))} onNote={() => setNoteSheet(true)} onCreate={(name) => createTagOrReuse(workspaceId, name, TAG_COLORS[(bootstrap.tags ?? []).length % TAG_COLORS.length] ?? null, publishTag)}/>
+    : <ExtrasRow key={unit.key} tags={bootstrap.tags ?? []} order={tagOrder} showNote={unit.ids.includes('note')} showTags={unit.ids.includes('tags')} tagsFirst={unit.ids[0] === 'tags'} selected={form.tagIds} note={form.note} disabled={saving} online={online} onChange={(tagIds) => setForm((value) => ({ ...value, tagIds }))} onNote={() => setNoteSheet(true)} onCreate={(name) => createTagOrReuse(workspaceId, name, TAG_COLORS[(bootstrap.tags ?? []).length % TAG_COLORS.length] ?? null, publishTag)}/>
   return <section ref={sectionRef} className={`entry-view${current ? ' editing' : ''}${saving ? ' saving' : ''}${editing ? ' arranging' : ''}`} aria-label="Ввод суммы" onPointerDown={swipeStart} onPointerMove={swipeMove} onPointerUpCapture={swipeEnd} onPointerCancel={swipeCancel}>
     <div className="swipe-area" inert={editing}>
       <div className="entry-track" ref={trackRef}>
@@ -821,7 +831,7 @@ export function EntryView({ userId, workspaceId, workspace, bootstrap, setBootst
     {toast && <Toast toast={toast} onDismiss={dismiss}/>}
     {confirmation}
   </section>
-}
+})
 
 // Режим «Настройка экрана» на «Расходе»: блоки стоят в рамках по порядку. ≡ в правом углу переставляет блок, «−» в левом
 // убирает его (клавиатура и плитки только переставляются), убранные ждут внизу пунктиром. Клавиатура на время
