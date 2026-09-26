@@ -224,7 +224,7 @@ export const AnalyticsView = memo(function AnalyticsView({ userId, workspaceId, 
     :id==='weekdays'?(period==='month'&&<div key="weekdays" className="chart-card small"><h2>По дням недели</h2>{data.convertedCount?<div className="mini-chart"><Suspense fallback={<ChartSkeleton/>}><AnalyticsChart kind="bar" compact labels={['П','В','С','Ч','П','С','В']} values={weekdays} color={chartColor} target={target} textColor={chartText} gridColor={chartGrid}/></Suspense></div>:<p className="mini-empty">{emptyShort}</p>}</div>)
     :null
   const statusLine=analyticsOffline?<>{analyticsError?'Не удалось обновить. ':''}Показаны сохранённые данные на {new Date(bootstrap.serverTime).toLocaleString('ru-RU')}{online&&<button type="button" onClick={()=>setRetryEpoch((value)=>value+1)}>Повторить</button>}</>:data.missingCurrencies.length?`Нет курса: ${data.missingCurrencies.join(', ')} — эти расходы не посчитаны`:null
-  return <section ref={sectionRef} className={`page analytics${editing?' arranging':''}`}><div className={`analytics-progress${slowLoading?' on':''}`} aria-hidden="true"/><div className="analytics-fixed" inert={editing}><header className="page-header analytics-title"><div><p className="eyebrow">{focusedName??'Все расходы'}</p><h1><TweenedAmount value={total}/>{hasForeign&&<button type="button" className="rate-info" aria-label="Как посчитана сумма" aria-expanded={rateInfo} onClick={()=>setRateInfo((value)=>!value)}>i</button>}</h1><p className="analytics-comparison"><TweenedAmount value={total/elapsedDays} currency={target}/> в день · {data.expenseCount} {pluralRu(data.expenseCount,['операция','операции','операций'])}</p><p className="analytics-comparison">{comparisonLabel(total,previousTotal,partial,period)}</p></div><button className="currency-choice" onClick={()=>setCurrencySheet(true)}>{target}<ChevronIcon/></button></header>
+  return <section ref={sectionRef} className={`page analytics${editing?' arranging':''}`}><AnalyticsProgress on={slowLoading}/><div className="analytics-fixed" inert={editing}><header className="page-header analytics-title"><div><p className="eyebrow">{focusedName??'Все расходы'}</p><h1><TweenedAmount value={total}/>{hasForeign&&<button type="button" className="rate-info" aria-label="Как посчитана сумма" aria-expanded={rateInfo} onClick={()=>setRateInfo((value)=>!value)}>i</button>}</h1><p className="analytics-comparison"><TweenedAmount value={total/elapsedDays} currency={target}/> в день · {data.expenseCount} {pluralRu(data.expenseCount,['операция','операции','операций'])}</p><p className="analytics-comparison">{comparisonLabel(total,previousTotal,partial,period)}</p></div><button className="currency-choice" onClick={()=>setCurrencySheet(true)}>{target}<ChevronIcon/></button></header>
     {rateInfo&&hasForeign&&<p className="rate-caption" role="note">Расходы в других валютах пересчитаны в {target} по курсу на день покупки.</p>}
     <div className="analytics-period" role="group" aria-label="Период аналитики"><button type="button" aria-pressed={period==='week'} className={period==='week'?'selected':''} onClick={()=>setPeriod('week')}>Неделя</button><button type="button" aria-pressed={period==='month'} className={period==='month'?'selected':''} onClick={()=>setPeriod('month')}>Месяц</button></div>
     {period==='week'&&<div className="week-navigator"><button type="button" onClick={()=>setWeekOffset((value)=>value-1)} aria-label="Предыдущая неделя">‹</button><div><b>{weekOffset===0?'Текущая неделя':weekOffset===-1?'Прошлая неделя':'Выбранная неделя'}</b><span>{weekRange}</span></div><button type="button" onClick={()=>setWeekOffset((value)=>Math.min(0,value+1))} disabled={weekOffset===0} aria-label="Следующая неделя">›</button></div>}
@@ -276,6 +276,22 @@ export function AnalyticsEmpty({children}:{children:string}) {
 
 export function ChartSkeleton() {
   return <div className="chart-skeleton" role="status" aria-label="Загружаем график"><i/><i/><i/><i/><i/></div>
+}
+
+// Полоска загрузки бежит, только пока её видно: пока её показывают (`on`) и пока она гаснет. Бег (`running`) снимается
+// по концу угасания, так что в покое у прозрачной полоски анимации нет вовсе — WebKit иначе перерисовывал бы её каждый
+// кадр, — а каждый показ начинается с левого края. Показанная снова до конца угасания едет дальше, без скачка.
+export function AnalyticsProgress({on}:{on:boolean}) {
+  const [running,setRunning]=useState(on)
+  useEffect(()=>{
+    if(on&&!running)setRunning(true)
+    if(on||!running)return
+    // Показ и снятие в одном кадре прозрачность не меняют, и transitionend не придёт: тогда бег снимается сам, когда
+    // полоска давно погасла.
+    const timer=setTimeout(()=>setRunning(false),1000)
+    return()=>clearTimeout(timer)
+  },[on,running])
+  return <div className={`analytics-progress${on?' on':''}${on||running?' running':''}`} aria-hidden="true" onTransitionEnd={(event)=>{if(!on&&event.propertyName==='opacity')setRunning(false)}}/>
 }
 
 // Число в шапке аналитики доезжает до нового значения за четверть секунды, а не прыгает. Первое значение — сразу.

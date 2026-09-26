@@ -2200,7 +2200,6 @@ button.tag-chip:disabled {
   pointer-events: none;
 }
 
-/* Прозрачная полоска не бежит: анимация стоит на паузе и идёт, только пока полоску показывают. */
 .analytics-progress::before {
   content: "";
   position: absolute;
@@ -2208,15 +2207,16 @@ button.tag-chip:disabled {
   width: 40%;
   border-radius: 2px;
   background: var(--sage);
-  animation: progress-slide 1.1s ease-in-out infinite paused;
 }
 
 .analytics-progress.on {
   opacity: 1;
 }
 
-.analytics-progress.on::before {
-  animation-play-state: running;
+/* Полоска бежит, только пока её показывают и пока она гаснет: `running` ставит и снимает AnalyticsProgress. В покое у
+   прозрачной полоски анимации нет вовсе, и каждый показ начинается с левого края. */
+.analytics-progress.running::before {
+  animation: progress-slide 1.1s ease-in-out infinite;
 }
 
 .entry-view.saving .amount-value {
