@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen } from '@testing-library/react'
+import { act, cleanup, render, screen } from '@testing-library/react'
 import type { CanvasHTMLAttributes, ReactNode } from 'react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import AnalyticsChart from './AnalyticsCharts'
+import { formatAnalyticsAmount } from './format'
 import { AnalyticsView } from './screens/Analytics'
 import type { Expense, WorkspaceBootstrap } from './types'
 
@@ -76,6 +77,14 @@ function watched(data: WorkspaceBootstrap) {
 // Кадры анимации идут только по команде теста: так видно, что рисуется на каждом из них.
 const frames = new Map<number, FrameRequestCallback>()
 let lastFrame = 0
+let elapsed = 0
+
+function nextFrame() {
+  elapsed += 16
+  const due = [...frames.values()]
+  frames.clear()
+  act(() => { for (const callback of due) callback(performance.now() + elapsed) })
+}
 
 beforeAll(async () => {
   // Графики грузятся отдельным куском: один раз дождавшись его, дальше экран рисует их сразу.
@@ -87,6 +96,7 @@ beforeAll(async () => {
 beforeEach(() => {
   forget()
   frames.clear()
+  elapsed = 0
   vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { frames.set(++lastFrame, callback); return lastFrame })
   vi.stubGlobal('cancelAnimationFrame', (id: number) => { frames.delete(id) })
 })
@@ -171,5 +181,51 @@ describe('analytics screen redraws', () => {
     expect(reads.count).toBe(0)
     rerender(<AnalyticsView {...props} bootstrap={bootstrap} theme="dark"/>)
     expect(reads.count).toBeGreaterThan(0)
+  })
+})
+
+describe('analytics total animation', () => {
+  const header = (container: HTMLElement) => ({
+    total: () => container.querySelector('.analytics-title h1')!.textContent!.replace(/\s/g, ' '),
+    perDay: () => container.querySelector('.analytics-comparison')!.textContent!.replace(/\s/g, ' '),
+  })
+
+  it('moves only the numbers on each frame, while the screen and its charts draw once', () => {
+    const first = workspace([spent('a', 100_000)])
+    const { container, rerender } = render(<AnalyticsView {...props} bootstrap={first}/>)
+    const { total, perDay } = header(container)
+    // Первое значение — сразу, без анимации.
+    expect(total()).toBe('1 000')
+    const { bootstrap, reads } = watched({ ...first, expenses: [spent('b', 100_000), ...first.expenses] })
+    forget()
+    rerender(<AnalyticsView {...props} bootstrap={bootstrap}/>)
+    const charts = drawn.renders
+    expect(charts).toBeGreaterThan(0)
+    reads.count = 0
+    const totals = new Set<string>()
+    const perDays = new Set<string>()
+    for (let frame = 0; frame < 40 && frames.size; frame += 1) {
+      nextFrame()
+      totals.add(total())
+      perDays.add(perDay())
+    }
+    // Сумма и строка «в день» доезжали кадр за кадром, а не прыгнули.
+    expect(totals.size).toBeGreaterThan(5)
+    expect(perDays.size).toBeGreaterThan(5)
+    const days = (new Date().getDay() + 6) % 7 + 1
+    expect(total()).toBe('2 000')
+    expect(perDay()).toBe(`${formatAnalyticsAmount(2_000 / days, 'RSD')} в день · 2 операции`.replace(/\s/g, ' '))
+    // На кадрах не рисовались ни экран, ни графики.
+    expect(reads.count).toBe(0)
+    expect(drawn.renders).toBe(charts)
+  })
+
+  it('shows the new total at once when the phone asks for less motion', () => {
+    vi.stubGlobal('matchMedia', (query: string) => ({ matches: query.includes('reduce'), media: query, addEventListener: () => {}, removeEventListener: () => {} }))
+    const first = workspace([spent('a', 100_000)])
+    const { container, rerender } = render(<AnalyticsView {...props} bootstrap={first}/>)
+    rerender(<AnalyticsView {...props} bootstrap={{ ...first, expenses: [spent('b', 100_000), ...first.expenses] }}/>)
+    expect(header(container).total()).toBe('2 000')
+    expect(frames.size).toBe(0)
   })
 })
