@@ -59,6 +59,19 @@ test("a new profile has no settings, and the theme it picks follows it to anothe
   assert.deepEqual((await session(person("Боря"))).json().settings, {}, "another person keeps the defaults");
 });
 
+test("the appearance of a profile is its theme, its own colour and its text size", async () => {
+  const phone = person("Аня");
+  const saved = await saveAccount(phone, { theme: "dark", accent: "terracotta", textSize: "large" });
+  assert.equal(saved.statusCode, 200, saved.body);
+  assert.deepEqual(saved.json(), { settings: { theme: "dark", accent: "terracotta", textSize: "large" } });
+  for (const settings of [{ accent: "red" }, { accent: "#ff0000" }, { textSize: "huge" }, { textSize: 1.2 }]) {
+    const refused = await saveAccount(phone, settings);
+    assert.equal(refused.statusCode, 400, JSON.stringify(settings));
+    assert.equal(refused.json().error.details.key, Object.keys(settings)[0]);
+  }
+  assert.deepEqual((await session(device(phone.userId))).json().settings, { theme: "dark", accent: "terracotta", textSize: "large" });
+});
+
 test("unknown keys and impossible values are refused, and null returns a setting to its default", async () => {
   const phone = person("Аня");
   for (const settings of [{ theme: "purple" }, { fontSize: 18 }, { theme: ["dark"] }]) {

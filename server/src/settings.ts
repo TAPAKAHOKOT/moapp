@@ -18,8 +18,13 @@ const MAX_VALUE_LENGTH = 8192;
 const MAX_KEYS_PER_CHANGE = 20;
 const HISTORY_PERIODS = ["all", "today", "this-week", "this-month", "range"];
 
+const oneOf = (...allowed: string[]): Normalize => (value) => typeof value === "string" && allowed.includes(value) ? value : undefined;
+
+/* Внешний вид: тема, свой цвет интерфейса и размер текста. Палитры цветов живут в клиенте (appearance.ts). */
 const ACCOUNT_SETTINGS: Readonly<Record<string, Normalize>> = {
-  theme: (value) => value === "system" || value === "light" || value === "dark" ? value : undefined
+  theme: oneOf("system", "light", "dark"),
+  accent: oneOf("sage", "terracotta", "sand", "blue", "lilac", "graphite"),
+  textSize: oneOf("normal", "large")
 };
 
 function idList(value: unknown, valid: (item: string) => boolean): string[] | undefined {
