@@ -4,8 +4,9 @@ import type { CanvasHTMLAttributes, ReactNode } from 'react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import AnalyticsChart from './AnalyticsCharts'
 import { formatAnalyticsAmount } from './format'
-import { AnalyticsView } from './screens/Analytics'
-import type { Expense, WorkspaceBootstrap } from './types'
+import { AnalyticsView, fallbackAnalytics } from './screens/Analytics'
+import * as workspaceApi from './workspace-api'
+import type { BlockLayout, Expense, WorkspaceBootstrap } from './types'
 
 type ChartMockProps = CanvasHTMLAttributes<HTMLCanvasElement> & { data: { labels?: unknown; datasets?: unknown }; options?: unknown; fallbackContent?: ReactNode }
 
@@ -72,6 +73,13 @@ function watched(data: WorkspaceBootstrap) {
   const { expenses, ...rest } = data
   const bootstrap = Object.defineProperty(rest, 'expenses', { enumerable: true, get() { reads.count += 1; return expenses } }) as WorkspaceBootstrap
   return { bootstrap, reads }
+}
+
+// Каждый проход по расходам читает дату каждой записи: по числу чтений видно, сколько проходов было.
+function dated(list: Expense[]) {
+  const reads = { count: 0 }
+  const expenses = list.map(({ occurredAt, ...rest }) => Object.defineProperty(rest, 'occurredAt', { enumerable: true, get() { reads.count += 1; return occurredAt } }) as Expense)
+  return { expenses, reads }
 }
 
 // Кадры анимации идут только по команде теста: так видно, что рисуется на каждом из них.
@@ -227,5 +235,52 @@ describe('analytics total animation', () => {
     rerender(<AnalyticsView {...props} bootstrap={{ ...first, expenses: [spent('b', 100_000), ...first.expenses] }}/>)
     expect(header(container).total()).toBe('2 000')
     expect(frames.size).toBe(0)
+  })
+})
+
+describe('analytics recalculation', () => {
+  it('does not go over the expenses again when only personal settings change', () => {
+    const { expenses, reads } = dated([spent('a', 100_000), spent('b', 50_000, 'home', ['tag-coffee']), { ...spent('c', 1_000), currency: 'EUR' }])
+    const bootstrap = workspace(expenses)
+    const { rerender } = render(<AnalyticsView {...props} bootstrap={bootstrap}/>)
+    reads.count = 0
+    rerender(<AnalyticsView {...props} bootstrap={{ ...bootstrap, settings: { historyFilters } }}/>)
+    rerender(<AnalyticsView {...props} bootstrap={{ ...bootstrap, settings: { historyFilters, lastCurrency: 'EUR' } }}/>)
+    expect(reads.count).toBe(0)
+  })
+
+  it('goes over the expenses for «Темп» and «Крупные траты» only while they stand on the screen', () => {
+    // Траты давние, вне всех периодов: каждый проход читает дату каждой записи ровно раз.
+    const old = Array.from({ length: 20 }, (_, index) => spent(`old-${index}`, 1_000 + index, 'products', [], `2020-01-${10 + (index % 9)}T12:00:00.000Z`))
+    const reads = (blocks?: BlockLayout) => {
+      const { expenses, reads: counted } = dated(old)
+      render(<AnalyticsView {...props} bootstrap={workspace(expenses)} blocks={blocks}/>)
+      cleanup()
+      return counted.count
+    }
+    const usual = reads()
+    expect(reads({ shown: ['trend', 'pace', 'categories', 'tags'], hidden: ['top', 'calendar'] })).toBe(usual + old.length)
+    expect(reads({ shown: ['trend', 'categories', 'top', 'tags'], hidden: ['pace', 'calendar'] })).toBe(usual + old.length)
+    // Маленькому «Темпу» прошлый период целиком не нужен.
+    expect(reads({ shown: ['trend', 'pace', 'categories', 'tags'], hidden: ['top', 'calendar'], small: ['pace'] })).toBe(usual)
+  })
+
+  it('asks the server again only when the expenses really change, not for the same list in a new array', async () => {
+    const bootstrap = workspace([spent('a', 100_000)])
+    const getAnalytics = vi.spyOn(workspaceApi, 'getAnalytics').mockImplementation(async (_workspace, from, to, currency) => fallbackAnalytics(bootstrap, currency, from, to, null))
+    const { rerender } = render(<AnalyticsView {...props} online bootstrap={bootstrap}/>)
+    await act(async () => {})
+    expect(getAnalytics).toHaveBeenCalledTimes(2)
+    // Тот же список в новом массиве — так данные приходят после синхронизации — ответ берётся из кэша.
+    rerender(<AnalyticsView {...props} online bootstrap={{ ...bootstrap, expenses: bootstrap.expenses.map((expense) => ({ ...expense })) }}/>)
+    await act(async () => {})
+    expect(getAnalytics).toHaveBeenCalledTimes(2)
+    rerender(<AnalyticsView {...props} online bootstrap={{ ...bootstrap, expenses: [{ ...bootstrap.expenses[0]!, amountMinor: 150_000, version: 2 }] }}/>)
+    await act(async () => {})
+    expect(getAnalytics).toHaveBeenCalledTimes(4)
+    // Вернулись к прежнему списку — снова из кэша.
+    rerender(<AnalyticsView {...props} online bootstrap={bootstrap}/>)
+    await act(async () => {})
+    expect(getAnalytics).toHaveBeenCalledTimes(4)
   })
 })

@@ -79,10 +79,13 @@ export const AnalyticsView = memo(function AnalyticsView({ userId, workspaceId, 
   const previousRange=period==='week'?weekDateRange(today,weekOffset-1):monthDateRange(today,monthOffset-1)
   const previousSameDays=shiftDateKey(previousRange.from,periodDays-1)
   const previousTo=partial&&previousSameDays<previousRange.to?previousSameDays:previousRange.to
-  const expenseRevision=bootstrap.expenses.map((expense)=>`${expense.id}:${expense.version}:${expense.updatedAt}:${expense.deletedAt||''}:${expense.voidedAt||''}:${expense.amountMinor}:${expense.currency}:${expense.categoryId}:${expense.occurredAt}`).join('|')
+  // Расчёт опирается только на расходы, курсы и справочники пространства. Рядом в тех же данных лежат личные
+  // настройки — фильтры «Истории», последняя валюта, — и их смена не должна заново проходить по всем расходам.
+  const source=useMemo<AnalyticsSource>(()=>({expenses:bootstrap.expenses,categories:bootstrap.categories,tags:bootstrap.tags,currencies:bootstrap.currencies,rates:bootstrap.rates}),[bootstrap.expenses,bootstrap.categories,bootstrap.tags,bootstrap.currencies,bootstrap.rates])
+  const expenseRevision=useMemo(()=>expensesRevision(bootstrap.expenses),[bootstrap.expenses])
   const requestKey=`${expenseRevision}:${from}:${analyticsTo}:${target}:${period}:${categoryId??'all'}:${tagId??'all'}:${timeZone}`
-  const fallback=useMemo(()=>fallbackAnalytics(bootstrap,target,from,analyticsTo,categoryId,tagId),[bootstrap,target,from,analyticsTo,categoryId,tagId])
-  const previousFallback=useMemo(()=>fallbackAnalytics(bootstrap,target,previousRange.from,previousTo,categoryId,tagId),[bootstrap,target,previousRange.from,previousTo,categoryId,tagId])
+  const fallback=useMemo(()=>fallbackAnalytics(source,target,from,analyticsTo,categoryId,tagId),[source,target,from,analyticsTo,categoryId,tagId])
+  const previousFallback=useMemo(()=>fallbackAnalytics(source,target,previousRange.from,previousTo,categoryId,tagId),[source,target,previousRange.from,previousTo,categoryId,tagId])
   // Ответы сервера запоминаются по ключу периода: возврат к уже виденной неделе не ждёт сети. Пока ответа нет,
   // показан локальный расчёт по тем же курсам дня, так что число не меняется дважды.
   const cache=useRef(new Map<string,{data:AnalyticsData;previousTotalMinor:number|null}>())
@@ -110,13 +113,15 @@ export const AnalyticsView = memo(function AnalyticsView({ userId, workspaceId, 
   const previousTotalMinor=remote?.key===requestKey?remote.previousTotalMinor:previousFallback.totalMinor
   const decimals=bootstrap.currencies.find((currency)=>currency.code===target)?.decimals??2
   const divisor=10**decimals
-  const days=Array.from({length:periodDays},(_,index)=>shiftDateKey(from,index))
+  const days=useMemo(()=>Array.from({length:periodDays},(_,index)=>shiftDateKey(from,index)),[from,periodDays])
   const dailyMap=new Map(data.daily.map((point)=>[point.date,point.amountMinor/divisor]))
   const byDay=days.map((date)=>dailyMap.get(date)||0)
   const byCategory=data.categories.filter((item)=>item.amountMinor>0).map((item)=>({...item,value:item.amountMinor/divisor}))
   useEffect(()=>{setAllDetails(false);setAllTagDetails(false);setGroupKey(null)},[period,from,categoryId,tagId])
-  // Записи периода под обоими фокусами — из них раскрываются и категория, и тег.
-  const focusedDetails=useMemo(()=>bootstrap.expenses.filter((expense)=>!expense.deletedAt&&!expense.voidedAt&&(!categoryId||expense.categoryId===categoryId)&&hasTag(expense,tagId,bootstrap.tags??[])).map((expense)=>({expense,date:localDateKey(expense.occurredAt)})).filter((item)=>item.date>=from&&item.date<=analyticsTo).sort((left,right)=>right.expense.occurredAt.localeCompare(left.expense.occurredAt)),[bootstrap.expenses,bootstrap.tags,categoryId,tagId,from,analyticsTo])
+  // Записи периода под обоими фокусами — из них раскрываются и категория, и тег, и из них же «Крупные траты».
+  // Без фокуса и без этой карточки они не нужны, и лишнего прохода по всем расходам нет.
+  const topShown=isShown(analyticsBlocks,'top')
+  const focusedDetails=useMemo(()=>!categoryId&&!tagId&&!topShown?[]:bootstrap.expenses.filter((expense)=>!expense.deletedAt&&!expense.voidedAt&&(!categoryId||expense.categoryId===categoryId)&&hasTag(expense,tagId,bootstrap.tags??[])).map((expense)=>({expense,date:localDateKey(expense.occurredAt)})).filter((item)=>item.date>=from&&item.date<=analyticsTo).sort((left,right)=>right.expense.occurredAt.localeCompare(left.expense.occurredAt)),[bootstrap.expenses,bootstrap.tags,categoryId,tagId,from,analyticsTo,topShown])
   const categoryDetails=categoryId?focusedDetails:[]
   const tagDetails=tagId?focusedDetails:[]
   const byTag=(data.tags??[]).filter((item)=>item.amountMinor>0).map((item)=>({...item,id:item.tagId??UNTAGGED,label:item.tagId?`#${item.name}`:'Без тега',value:item.amountMinor/divisor})).sort((left,right)=>Number(!left.tagId)-Number(!right.tagId))
@@ -153,7 +158,7 @@ export const AnalyticsView = memo(function AnalyticsView({ userId, workspaceId, 
   const focusedName=[categoryId?bootstrap.categories.find((category)=>category.id===categoryId)?.name:null,focusedTagLabel].filter(Boolean).join(' · ')||null
   const categoryName=(id:string)=>bootstrap.categories.find((category)=>category.id===id)?.name??''
   // О пересчёте валют говорим только когда он есть: в периоде встретились расходы не в валюте аналитики.
-  const hasForeign=bootstrap.expenses.some((expense)=>{if(expense.deletedAt||expense.voidedAt||expense.currency===target)return false;const date=localDateKey(expense.occurredAt);return date>=from&&date<=analyticsTo})
+  const hasForeign=useMemo(()=>bootstrap.expenses.some((expense)=>{if(expense.deletedAt||expense.voidedAt||expense.currency===target)return false;const date=localDateKey(expense.occurredAt);return date>=from&&date<=analyticsTo}),[bootstrap.expenses,target,from,analyticsTo,timeZone])
   const focus=(id:string)=>{tap(4);setAllDetails(false);setRateInfo(false);setFocusedCategoryId((current)=>current===id?null:id)}
   const focusTag=(id:string)=>{tap(4);setAllTagDetails(false);setRateInfo(false);setFocusedTagId((current)=>current===id?null:id)}
   const detailRow=({expense,date}:{expense:Expense;date:string},caption:string)=><div key={expense.id} className="legend-detail"><span><b>{detailDate(date)}</b>{caption}</span><span className="legend-value"><b>{money(expense.amountMinor,expense.currency,bootstrap.currencies)}</b>{expense.currency!==target&&<small>≈ {formatAnalyticsAmount(convertExpense(expense,target,bootstrap.currencies,bootstrap.rates),target)}</small>}</span></div>
@@ -169,7 +174,7 @@ export const AnalyticsView = memo(function AnalyticsView({ userId, workspaceId, 
   const chartText=theme==='dark'?'#b3b3ae':'#73776f'
   const chartGrid=theme==='dark'?'rgba(255,255,255,.06)':'rgba(32,37,31,.06)'
   // «Крупные траты»: записи периода под тем же фокусом, что и сумма в шапке, от самой большой в валюте аналитики.
-  const topExpenses=useMemo(()=>focusedDetails.filter(({expense,date})=>hasRate(bootstrap.rates,expense.currency,target,date)).map((item)=>({...item,value:convertExpense(item.expense,target,bootstrap.currencies,bootstrap.rates)})).sort((left,right)=>right.value-left.value).slice(0,5),[focusedDetails,bootstrap.rates,bootstrap.currencies,target])
+  const topExpenses=useMemo(()=>!topShown?[]:focusedDetails.filter(({expense,date})=>hasRate(bootstrap.rates,expense.currency,target,date)).map((item)=>({...item,value:convertExpense(item.expense,target,bootstrap.currencies,bootstrap.rates)})).sort((left,right)=>right.value-left.value).slice(0,5),[topShown,focusedDetails,bootstrap.rates,bootstrap.currencies,target])
   const categoryOf=(id:string)=>bootstrap.categories.find((category)=>category.id===id)
   // Телефон хранит записи за последний год; более ранние лежат только на сервере, пока их не подгрузили в «Истории».
   const onPhoneFrom=bootstrap.olderExpenses&&bootstrap.expensesSince?bootstrap.expensesSince:null
@@ -179,7 +184,9 @@ export const AnalyticsView = memo(function AnalyticsView({ userId, workspaceId, 
   // «Темп»: сколько выйдет к концу периода, если тратить как до сих пор, и сколько было за прошлый период целиком.
   const periodLength=Math.round((new Date(`${selectedRange.to}T12:00:00Z`).getTime()-new Date(`${from}T12:00:00Z`).getTime())/86400000)+1
   const forecast=partial?total/Math.max(1,periodDays)*periodLength:total
-  const previousFullMinor=useMemo(()=>fallbackAnalytics(bootstrap,target,previousRange.from,previousRange.to,categoryId,tagId).totalMinor,[bootstrap,target,previousRange.from,previousRange.to,categoryId,tagId])
+  // Прошлый период целиком показывает только большая карточка «Темп»; без неё третий проход по расходам не нужен.
+  const paceShown=isShown(analyticsBlocks,'pace')&&!isSmall(analyticsBlocks,'pace')
+  const previousFullMinor=useMemo(()=>paceShown?fallbackAnalytics(source,target,previousRange.from,previousRange.to,categoryId,tagId).totalMinor:0,[paceShown,source,target,previousRange.from,previousRange.to,categoryId,tagId])
   const previousFull=previousFullMinor/divisor
   const periodEnd=period==='week'?'недели':'месяца'
   // «Календарь»: дни периода по неделям — чем темнее день, тем больше потрачено.
@@ -200,7 +207,8 @@ export const AnalyticsView = memo(function AnalyticsView({ userId, workspaceId, 
   </div>
   // Маленькая карточка — в полширины, две в ряд: только главное, без легенды и фокуса.
   const emptyShort=anyExpenses?'Нет трат за период':'Пока пусто'
-  const dayLabels=days.map((d)=>new Date(`${d}T12:00`).toLocaleDateString('ru-RU',period==='week'?{weekday:'short'}:{day:'numeric',month:'short'}))
+  // Подписи дней одни на большую и маленькую «Динамику»; даты форматируются дорого, поэтому только при смене периода.
+  const dayLabels=useMemo(()=>days.map((d)=>new Date(`${d}T12:00`).toLocaleDateString('ru-RU',period==='week'?{weekday:'short'}:{day:'numeric',month:'short'})),[days,period])
   const topShares=(items:{key:string;label:string;color:string;value:number}[])=>{
     const sorted=[...items].sort((left,right)=>right.value-left.value)
     return <div className="mini-list">{sorted.slice(0,3).map((item)=><div key={item.key}><i style={{background:item.color}}/><span>{item.label}</span><b>{Math.round(item.value/(total||1)*100)}%</b></div>)}{sorted.length>3&&<small>и ещё {sorted.length-3}</small>}</div>
@@ -220,7 +228,7 @@ export const AnalyticsView = memo(function AnalyticsView({ userId, workspaceId, 
     {period==='week'&&<div className="week-navigator"><button type="button" onClick={()=>setWeekOffset((value)=>value-1)} aria-label="Предыдущая неделя">‹</button><div><b>{weekOffset===0?'Текущая неделя':weekOffset===-1?'Прошлая неделя':'Выбранная неделя'}</b><span>{weekRange}</span></div><button type="button" onClick={()=>setWeekOffset((value)=>Math.min(0,value+1))} disabled={weekOffset===0} aria-label="Следующая неделя">›</button></div>}
     {period==='month'&&<div className="week-navigator"><button type="button" onClick={()=>setMonthOffset((value)=>value-1)} aria-label="Предыдущий месяц">‹</button><div><b>{monthOffset===0?'Текущий месяц':monthOffset===-1?'Прошлый месяц':'Выбранный месяц'}</b><span>{monthLabel}</span></div><button type="button" onClick={()=>setMonthOffset((value)=>Math.min(0,value+1))} disabled={monthOffset===0} aria-label="Следующий месяц">›</button></div>}
     {statusLine&&<div className={`rate-caption${analyticsOffline?' cached':''}`} role="status">{statusLine}</div>}</div>
-    {editing?<AnalyticsBlocksEditor blocks={analyticsBlocks} onChange={(next)=>onScreensChange({analyticsBlocks:toBlockLayout(next)})}/>:<div className="analytics-cards">{analyticsBlocks.shown.map((block)=>isSmall(analyticsBlocks,block.id)?smallCard(block.id):block.id==='trend'?<div key="trend" className="chart-card"><div><h2>Динамика</h2><p>{period==='week'?'Понедельник — воскресенье':'По дням выбранного месяца'}</p></div>{data.convertedCount?<div className="line-chart"><Suspense fallback={<ChartSkeleton/>}><AnalyticsChart kind="line" labels={days.map((d)=>new Date(`${d}T12:00`).toLocaleDateString('ru-RU',period==='week'?{weekday:'short'}:{day:'numeric',month:'short'}))} values={byDay} color={chartColor} fillColor={chart.fill} pointRadius={period==='week'?3:0} target={target} textColor={chartText} gridColor={chartGrid} maxTicksLimit={period==='week'?7:6}/></Suspense></div>:<AnalyticsEmpty>{data.expenseCount?'Нет курса для выбранной валюты':emptyPeriod}</AnalyticsEmpty>}</div>
+    {editing?<AnalyticsBlocksEditor blocks={analyticsBlocks} onChange={(next)=>onScreensChange({analyticsBlocks:toBlockLayout(next)})}/>:<div className="analytics-cards">{analyticsBlocks.shown.map((block)=>isSmall(analyticsBlocks,block.id)?smallCard(block.id):block.id==='trend'?<div key="trend" className="chart-card"><div><h2>Динамика</h2><p>{period==='week'?'Понедельник — воскресенье':'По дням выбранного месяца'}</p></div>{data.convertedCount?<div className="line-chart"><Suspense fallback={<ChartSkeleton/>}><AnalyticsChart kind="line" labels={dayLabels} values={byDay} color={chartColor} fillColor={chart.fill} pointRadius={period==='week'?3:0} target={target} textColor={chartText} gridColor={chartGrid} maxTicksLimit={period==='week'?7:6}/></Suspense></div>:<AnalyticsEmpty>{data.expenseCount?'Нет курса для выбранной валюты':emptyPeriod}</AnalyticsEmpty>}</div>
       :block.id==='categories'?<div key="categories" className={`chart-card${byCategory.length?' split':''}`}><div><h2>Категории</h2><p>{categoryId?'Только эта категория':tagId?`Только ${focusedTagLabel}`:period==='week'?'За неделю':'За месяц'}</p></div>{byCategory.length?<><div className="donut-wrap"><Suspense fallback={<ChartSkeleton/>}><AnalyticsChart kind="doughnut" labels={donut.map((x)=>x.name)} values={donut.map((x)=>x.value)} colors={donut.map((x)=>x.color)} target={target}/></Suspense><span>{formatCompactNumber(total)}</span></div><div className="legend">{byCategory.map((x)=>{const focused=categoryId===x.categoryId;const rows=focused?categoryDetails.filter(({expense})=>inGroup(expense)):[];const shown=allDetails?rows:rows.slice(0,LEGEND_DETAIL_LIMIT);return <div key={x.categoryId} className={`legend-item${focused?' open':''}`}><button type="button" className="legend-row" aria-expanded={focused} onClick={()=>focus(x.categoryId)}><i style={{background:x.color||'#a9afa5'}}/><span>{x.name}</span><span className="legend-value"><b>{formatAnalyticsAmount(x.value,target)}</b><small className={focused?'ghost':undefined} aria-hidden={focused||undefined}>{Math.round(x.value/total*100)||0}%</small></span>{focused?<span className="legend-close" aria-hidden="true">×</span>:<ChevronIcon/>}</button>{focused&&<div className="legend-details">{groups.length>0&&<div className="legend-groups" role="group" aria-label="Из чего сложилась категория">{groups.map((group,index)=><button key={group.key} type="button" className={`legend-group${activeGroup===group.key?' selected':''}${activeGroup&&activeGroup!==group.key?' dim':''}`} aria-pressed={activeGroup===group.key} onClick={()=>pickGroup(group.key)}><i style={{background:groupColors[index]}}/><span>{group.label}{group.count>1&&<small> · {group.count}</small>}</span><span className="legend-value"><b>{formatAnalyticsAmount(group.value,target)}</b><small>{Math.round(group.value/(groupTotal||1)*100)}%</small></span></button>)}</div>}{rows.length?<>{shown.map((item)=>detailRow(item,detailCaption(item.expense)))}{rows.length>shown.length&&<button type="button" className="legend-more" onClick={()=>setAllDetails(true)}>Показать все · {rows.length}</button>}</>:<p className="legend-empty">На этом устройстве нет записей этой категории за период.</p>}</div>}</div>})}{categoryId&&<button type="button" className="legend-all" onClick={()=>focus(categoryId)}>Все категории</button>}</div></>:<AnalyticsEmpty>{emptyPeriod}</AnalyticsEmpty>}</div>
       :block.id==='tags'?(showTags&&<div key="tags" className={`chart-card${byTag.length?' split':''}`}><div><h2>Теги</h2><p>{tagId?'Только этот тег':categoryId?'В этой категории':period==='week'?'За неделю':'За месяц'}</p></div>{byTag.length?<><div className="donut-wrap"><Suspense fallback={<ChartSkeleton/>}><AnalyticsChart kind="doughnut" labels={byTag.map((x)=>x.label)} values={byTag.map((x)=>x.value)} colors={tagColors} target={target}/></Suspense><span>{formatCompactNumber(total)}</span></div><div className="legend tag-legend">{byTag.map((x,index)=>{const focused=tagId===x.id;const shown=allTagDetails?tagDetails:tagDetails.slice(0,LEGEND_DETAIL_LIMIT);return <div key={x.id} className={`legend-item${focused?' open':''}`}><button type="button" className="legend-row" aria-expanded={focused} onClick={()=>focusTag(x.id)}><i style={{background:tagColors[index]}}/><span>{x.label}</span><span className="legend-value"><b>{formatAnalyticsAmount(x.value,target)}</b><small className={focused?'ghost':undefined} aria-hidden={focused||undefined}>{Math.round(x.value/total*100)||0}%</small></span>{focused?<span className="legend-close" aria-hidden="true">×</span>:<ChevronIcon/>}</button>{focused&&<div className="legend-details">{tagDetails.length?<>{shown.map((item)=>detailRow(item,tagCaption(item.expense)))}{tagDetails.length>shown.length&&<button type="button" className="legend-more" onClick={()=>setAllTagDetails(true)}>Показать все · {tagDetails.length}</button>}</>:<p className="legend-empty">На этом устройстве нет записей с этим тегом за период.</p>}</div>}</div>})}{tagId&&<button type="button" className="legend-all" onClick={()=>focusTag(tagId)}>Все теги</button>}</div></>:<AnalyticsEmpty>{emptyPeriod}</AnalyticsEmpty>}</div>)
       :block.id==='weekdays'?(period==='month'&&<div key="weekdays" className="chart-card"><div><h2>По дням недели</h2><p>Средние траты за календарный день</p></div>{data.convertedCount?<div className="bar-chart"><Suspense fallback={<ChartSkeleton/>}><AnalyticsChart kind="bar" labels={['Пн','Вт','Ср','Чт','Пт','Сб','Вс']} values={weekdays} color={chartColor} target={target} textColor={chartText} gridColor={chartGrid}/></Suspense></div>:<AnalyticsEmpty>Недостаточно данных для сравнения</AnalyticsEmpty>}</div>)
@@ -323,7 +331,23 @@ export function hasTag(expense:Pick<Expense,'tagIds'>,tagId:string|null,tags:Tag
   return tagId===UNTAGGED?ids.length===0:ids.includes(tagId)
 }
 
-export function fallbackAnalytics(bootstrap:Bootstrap,target:string,from:string,to:string,categoryId:string|null,tagId:string|null=null):AnalyticsData {
+// Для расчёта нужны только расходы, курсы и справочники — не весь bootstrap с личными настройками.
+export type AnalyticsSource=Pick<Bootstrap,'expenses'|'categories'|'tags'|'currencies'|'rates'>
+
+// Отпечаток списка расходов для ключа кэша ответов: те же поля, что раньше склеивались в строку на сотни килобайт,
+// сведены в 64-битный хэш по схеме cyrb53. Одинаковые списки, в том числе в новом массиве, дают один ключ.
+function expensesRevision(expenses:Expense[]) {
+  let first=0xdeadbeef^expenses.length,second=0x41c6ce57^expenses.length
+  for(const expense of expenses){
+    const text=`${expense.id}:${expense.version}:${expense.updatedAt}:${expense.deletedAt||''}:${expense.voidedAt||''}:${expense.amountMinor}:${expense.currency}:${expense.categoryId}:${expense.occurredAt}|`
+    for(let index=0;index<text.length;index++){const code=text.charCodeAt(index);first=Math.imul(first^code,2654435761);second=Math.imul(second^code,1597334677)}
+  }
+  first=Math.imul(first^(first>>>16),2246822507)^Math.imul(second^(second>>>13),3266489909)
+  second=Math.imul(second^(second>>>16),2246822507)^Math.imul(first^(first>>>13),3266489909)
+  return `${expenses.length}:${(first>>>0).toString(36)}:${(second>>>0).toString(36)}`
+}
+
+export function fallbackAnalytics(bootstrap:AnalyticsSource,target:string,from:string,to:string,categoryId:string|null,tagId:string|null=null):AnalyticsData {
   const decimals=bootstrap.currencies.find((currency)=>currency.code===target)?.decimals??2
   const categories=new Map(bootstrap.categories.map((category)=>[category.id,category]))
   const tags=bootstrap.tags??[]
