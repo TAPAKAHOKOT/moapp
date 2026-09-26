@@ -278,9 +278,10 @@ export const HistoryView = memo(function HistoryView({ userId, workspaceId, boot
   // Всё производное от данных и фильтров считается один раз на их изменение: вкладка остаётся смонтированной,
   // пока открыто пространство, и без мемоизации каждый рендер приложения (например свайп по расходам на экране
   // ввода) заново фильтровал, группировал и форматировал всю историю.
+  // Теги считаются отдельно: они уходят в каждую строку, и новый массив на каждое сохранение перерисовывал бы весь год.
+  const tags = useMemo(() => sortTags(bootstrap.tags ?? [], bootstrap.settings?.tagOrder), [bootstrap.tags, bootstrap.settings?.tagOrder])
   const derived = useMemo(() => {
     const categoryMap = new Map(bootstrap.categories.map((category) => [category.id, category]))
-    const tags = sortTags(bootstrap.tags ?? [], bootstrap.settings?.tagOrder)
     const activeExpenses = bootstrap.expenses.filter((item) => !item.deletedAt)
     // Варианты фильтров идут в том же порядке, что у этого человека на «Расходе», а не по алфавиту; скрытые — в конце.
     const tagOptions = tags.filter((tag) => activeFilters.tagIds.includes(tag.id) || activeExpenses.some((expense) => expense.tagIds?.includes(tag.id)))
@@ -323,9 +324,9 @@ export const HistoryView = memo(function HistoryView({ userId, workspaceId, boot
     // Заголовок дня показывает сумму дня, а не число записей: по ней читается ритм трат.
     const groups = Object.entries(grouped).map(([date, items]) => ({ date, items, total: sumLabel(items).label }))
     const { label: totalLabel, parts: totalParts, totals } = sumLabel(expenses)
-    return { categoryMap, tags, activeExpenses, tagOptions, categoryOptions, currencyOptions, normalizedQuery, expenses, groups, totals, totalLabel, totalParts }
-  }, [bootstrap, activeFilters, timeZone])
-  const { categoryMap, tags, activeExpenses, tagOptions, categoryOptions, currencyOptions, normalizedQuery, expenses, groups, totals, totalLabel, totalParts } = derived
+    return { categoryMap, activeExpenses, tagOptions, categoryOptions, currencyOptions, normalizedQuery, expenses, groups, totals, totalLabel, totalParts }
+  }, [bootstrap, activeFilters, timeZone, tags])
+  const { categoryMap, activeExpenses, tagOptions, categoryOptions, currencyOptions, normalizedQuery, expenses, groups, totals, totalLabel, totalParts } = derived
   // Удержание блоков над списком и даты дня открывает настройку; у самих записей удержание — выбор нескольких.
   const holdRef = useHold(!editing && activeExpenses.length > 0 ? () => onEditScreen('history', 'hold') : undefined, (target) => Boolean(target.closest('.history-toolbar, .history-date')))
   const sectionRef = useCallback((node: HTMLElement | null) => { pageRef.current = node; holdRef(node) }, [holdRef])

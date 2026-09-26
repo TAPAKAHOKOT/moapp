@@ -484,6 +484,27 @@ describe('history totals', () => {
   })
 })
 
+describe('history redraws', () => {
+  // Имя категории читает каждая нарисованная строка: по числу чтений видно, сколько строк перерисовалось.
+  it('redraws only the new row when a save lands, not the whole list', () => {
+    let reads = 0
+    const [products] = expenseBootstrap().categories
+    const category = { ...products!, get name() { reads += 1; return 'Продукты' } }
+    const expense = (index: number) => {
+      const at = `2026-08-${String(1 + (index % 9)).padStart(2, '0')}T13:00:00.000Z`
+      return { id: `e${index}`, amountMinor: 1_000 + index, currency: 'RSD', categoryId: 'products', note: null, occurredAt: at, createdAt: at, updatedAt: at, version: 1, deletedAt: null }
+    }
+    const expenses = Array.from({ length: 40 }, (_, index) => expense(index))
+    const bootstrap = expenseBootstrap({ categories: [category], expenses })
+    const props = { userId: 'user-a', workspaceId: 'workspace-a', setBootstrap: vi.fn(), edit: vi.fn(), createNew: vi.fn(), refreshPending: vi.fn() }
+    const { container, rerender } = render(<HistoryView {...props} bootstrap={bootstrap}/>)
+    reads = 0
+    rerender(<HistoryView {...props} bootstrap={{ ...bootstrap, expenses: [expense(40), ...expenses] }}/>)
+    expect(container.querySelectorAll('.history-expense')).toHaveLength(41)
+    expect(reads).toBeLessThan(5)
+  })
+})
+
 describe('analytics legend', () => {
   it('lists every category and unfolds the expenses behind a row', () => {
     const now = new Date().toISOString()
