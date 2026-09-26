@@ -13,6 +13,7 @@ import {
 import type { ChartData, ChartOptions } from 'chart.js'
 import { memo, useId, useMemo } from 'react'
 import { Bar, Doughnut, Line } from 'react-chartjs-2'
+import { prefersReducedMotion } from './ui'
 import { cachedNumberFormat } from './utils'
 
 ChartJS.register(ArcElement, BarElement, CategoryScale, Filler, Legend, LinearScale, LineElement, PointElement, Tooltip)
@@ -65,10 +66,6 @@ type ChartCanvas = { role: 'img'; 'aria-label': string; 'aria-describedby': stri
 
 /** `reduced` — телефон просит обходиться без анимации. */
 type ChartSetup = { canvas: ChartCanvas; reduced: boolean }
-
-function prefersReducedMotion() {
-  return typeof window !== 'undefined' && Boolean(window.matchMedia?.('(prefers-reduced-motion: reduce)').matches)
-}
 
 // Переходы между наборами данных анимируются коротко; при prefers-reduced-motion графики меняются мгновенно.
 function chartAnimation(reduced: boolean) {
