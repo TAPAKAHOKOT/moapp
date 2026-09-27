@@ -504,8 +504,30 @@ export type DragAxis = 'x' | 'y' | 'grid'
 
 type Slot = { id: string; rect: DOMRect }
 
+type Spacing = { after: number[]; row: number; column: number }
+
+// Расстояния между соседями — по их рамкам на момент подъёма, а не по gap списка: у карточек «Аналитики» его задаёт
+// margin, gap там нулевой, и соседи на время жеста съезжались вплотную. Рамки годятся для gap, margin и разных отступов
+// сразу. В столбике и ряду зазор принадлежит месту: после n-го элемента — тот, что стоял после n-го. В сетке — один
+// зазор между соседями в строке и один между строками; чего не измерить (строка одна), то в перестановке и не нужно.
+function spacingOf(slots: Slot[], axis: DragAxis): Spacing {
+  const after: number[] = []
+  let row: number | null = null
+  let column: number | null = null
+  let rowBottom = slots[0]?.rect.bottom ?? 0
+  for (let index = 1; index < slots.length; index++) {
+    const previous = slots[index - 1]!.rect
+    const next = slots[index]!.rect
+    if (axis === 'y') after.push(next.top - previous.bottom)
+    else if (axis === 'x') after.push(next.left - previous.right)
+    else if (next.top < rowBottom - 1) { column ??= next.left - previous.right; rowBottom = Math.max(rowBottom, next.bottom) }
+    else { row ??= next.top - rowBottom; rowBottom = next.bottom }
+  }
+  return { after, row: row ?? 0, column: column ?? 0 }
+}
+
 // Где встанут элементы в новом порядке: столбик, ряд или строки с переносом — по их настоящим размерам и отступам.
-function flowPositions(order: string[], slots: Slot[], axis: DragAxis, gap: { row: number; column: number }) {
+function flowPositions(order: string[], slots: Slot[], axis: DragAxis, spacing: Spacing) {
   const rectOf = new Map(slots.map((slot) => [slot.id, slot.rect]))
   const first = slots[0]!.rect
   const left = Math.min(...slots.map((slot) => slot.rect.left))
@@ -514,14 +536,14 @@ function flowPositions(order: string[], slots: Slot[], axis: DragAxis, gap: { ro
   let x = axis === 'y' ? first.left : left
   let y = first.top
   let rowHeight = 0
-  for (const id of order) {
+  order.forEach((id, index) => {
     const rect = rectOf.get(id)!
-    if (axis === 'y') { positions.set(id, { x: rect.left, y }); y += rect.height + gap.row; continue }
-    if (axis === 'grid' && x > left && x + rect.width > right + 1) { x = left; y += rowHeight + gap.row; rowHeight = 0 }
+    if (axis === 'y') { positions.set(id, { x: rect.left, y }); y += rect.height + (spacing.after[index] ?? 0); return }
+    if (axis === 'grid' && x > left && x + rect.width > right + 1) { x = left; y += rowHeight + spacing.row; rowHeight = 0 }
     positions.set(id, { x, y: axis === 'x' ? rect.top : y })
-    x += rect.width + gap.column
+    x += rect.width + (axis === 'x' ? spacing.after[index] ?? 0 : spacing.column)
     rowHeight = Math.max(rowHeight, rect.height)
-  }
+  })
   return positions
 }
 
@@ -539,7 +561,7 @@ export function useDragOrder<T extends { id: string }>({ items, axis = 'y', disa
   const lifting = useRef(false)
   const target = useRef<number | null>(null)
   const slots = useRef<Slot[]>([])
-  const gap = useRef({ row: 0, column: 0 })
+  const spacing = useRef<Spacing>({ after: [], row: 0, column: 0 })
   // Только свои элементы: в блоке «Плитки» внутри списка блоков есть свои перетаскиваемые плитки.
   const nodes = () => Array.from(listRef.current?.querySelectorAll<HTMLElement>(':scope > [data-drag-id]') ?? [])
   const nodeOf = (id: string) => nodes().find((node) => node.dataset.dragId === id) ?? null
@@ -558,7 +580,7 @@ export function useDragOrder<T extends { id: string }>({ items, axis = 'y', disa
   useLayoutEffect(() => {
     const grab = pressed.current
     if (!drag || !grab || !slots.current.length) return
-    const positions = flowPositions(orderAt(drag.id, drag.index), slots.current, axis, gap.current)
+    const positions = flowPositions(orderAt(drag.id, drag.index), slots.current, axis, spacing.current)
     for (const slot of slots.current) {
       const node = nodeOf(slot.id)
       if (!node) continue
@@ -605,8 +627,7 @@ export function useDragOrder<T extends { id: string }>({ items, axis = 'y', disa
       if (Math.hypot(event.clientX - grab.x, event.clientY - grab.y) < 4) return
       lifting.current = true
       slots.current = nodes().map((node) => ({ id: node.dataset.dragId!, rect: node.getBoundingClientRect() }))
-      const style = listRef.current ? getComputedStyle(listRef.current) : null
-      gap.current = { row: parseFloat(style?.rowGap ?? '') || 0, column: parseFloat(style?.columnGap ?? '') || 0 }
+      spacing.current = spacingOf(slots.current, axis)
     }
     const index = indexAt(grab.id, event.clientX, event.clientY)
     target.current = index

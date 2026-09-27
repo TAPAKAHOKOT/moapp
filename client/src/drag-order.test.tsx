@@ -59,6 +59,54 @@ describe('dragging to reorder', () => {
   })
 })
 
+// Раскладка задана рамками: [left, top, width, height]. Зазоры между элементами — отступы, а gap у списка нулевой, как
+// у карточек «Аналитики» (margin-bottom: 16px) — jsdom и не считает gap.
+function Spaced({ ids, axis, onReorder }: { ids: string[]; axis?: 'y' | 'grid'; onReorder: (ids: string[]) => void }) {
+  const drag = useDragOrder({ items: ids.map((id) => ({ id })), axis, onReorder })
+  return <div ref={drag.listRef}>{drag.shown.map((item) => <div key={item.id} data-drag-id={item.id} data-testid={`slot-${item.id}`}>
+    <span role="button" aria-label={`Перетащить ${item.id}`} {...drag.handle(item.id)}/>
+  </div>)}</div>
+}
+
+describe('dragging keeps the real spacing between neighbours', () => {
+  afterEach(() => { cleanup(); vi.restoreAllMocks() })
+
+  const layout = (boxes: Record<string, [number, number, number, number]>) => vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+    const [left, top, width, height] = boxes[(this as HTMLElement).dataset?.dragId ?? ''] ?? [0, 0, 0, 0]
+    return { left, top, width, height, right: left + width, bottom: top + height, x: left, y: top, toJSON: () => ({}) } as DOMRect
+  })
+  const handle = (id: string) => screen.getByRole('button', { name: `Перетащить ${id}` })
+  const shift = (id: string) => screen.getByTestId(`slot-${id}`).style.transform
+
+  it('moves a card in a column by its height plus the margin under it, and leaves the rest where they stood', () => {
+    // Карточки по 64 px, между ними 16 px отступа.
+    layout({ a: [0, 0, 300, 64], b: [0, 80, 300, 64], c: [0, 160, 300, 64], d: [0, 240, 300, 64] })
+    const reorder = vi.fn()
+    render(<Spaced ids={['a', 'b', 'c', 'd']} onReorder={reorder}/>)
+    fireEvent.pointerDown(handle('a'), { button: 0, clientX: 280, clientY: 32, pointerId: 1 })
+    // Поднятая карточка ещё на своём месте: соседи не трогаются, промежутки те же 16 px.
+    fireEvent.pointerMove(handle('a'), { clientX: 280, clientY: 37, pointerId: 1 })
+    expect(['b', 'c', 'd'].map(shift)).toEqual(['translate(0px, 0px)', 'translate(0px, 0px)', 'translate(0px, 0px)'])
+    // Протащили за середину второй карточки: она встаёт на место первой — на 64 + 16 px выше, остальные не двигаются.
+    fireEvent.pointerMove(handle('a'), { clientX: 280, clientY: 130, pointerId: 1 })
+    expect(['b', 'c', 'd'].map(shift)).toEqual(['translate(0px, -80px)', 'translate(0px, 0px)', 'translate(0px, 0px)'])
+    fireEvent.pointerMove(handle('a'), { clientX: 280, clientY: 210, pointerId: 1 })
+    expect(['b', 'c', 'd'].map(shift)).toEqual(['translate(0px, -80px)', 'translate(0px, -80px)', 'translate(0px, 0px)'])
+    fireEvent.pointerUp(handle('a'), { clientX: 280, clientY: 210, pointerId: 1 })
+    expect(reorder).toHaveBeenCalledWith(['b', 'c', 'a', 'd'])
+  })
+
+  it('keeps the gap within a row and between rows of a grid', () => {
+    // Три плитки по 50 px через 10 px, вторая строка — на 12 px ниже первой.
+    layout({ a: [0, 0, 50, 30], b: [60, 0, 50, 30], c: [120, 0, 50, 30], d: [0, 42, 50, 30] })
+    render(<Spaced ids={['a', 'b', 'c', 'd']} axis="grid" onReorder={vi.fn()}/>)
+    fireEvent.pointerDown(handle('d'), { button: 0, clientX: 25, clientY: 57, pointerId: 1 })
+    fireEvent.pointerMove(handle('d'), { clientX: 10, clientY: 15, pointerId: 1 })
+    // Последняя плитка поставлена первой: две сдвигаются вправо на 50 + 10 px, третья уходит в начало второй строки.
+    expect(['a', 'b', 'c'].map(shift)).toEqual(['translate(60px, 0px)', 'translate(60px, 0px)', 'translate(-120px, 42px)'])
+  })
+})
+
 // Блоки стоят столбиком по 50 px: место элемента — его номер среди соседей.
 function Column({ order }: { order: string[] }) {
   const root = useRef<HTMLDivElement>(null)
