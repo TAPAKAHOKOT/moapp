@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from 'react'
 import { WorkspaceApiError as ApiError, saveMemberSettings, submitExpenseOperation } from '../workspace-api'
 import { getWorkspacePreference, setWorkspacePreference } from '../app-state'
 import { patchSettings } from '../settings'
@@ -29,19 +29,20 @@ export const CARD_GAP = 18
 // рисуется теми же правилами, что и живая, и в момент подмены ничего не меняет цвет и не сдвигается.
 export type CardFace = { kind: 'new' | 'edit'; title: string; date: React.ReactNode; amount: string; currency: string }
 
-// Время пустой карточки — «сейчас». «Расход» не перерисовывается вместе с приложением, поэтому подпись сама берёт
-// новое время, когда к приложению возвращаются (страница снова видна); поминутно она не тикает, как и раньше.
-// Перерисовывается только она и только если минута сменилась. Время сохранения берётся в момент сохранения.
+// Время пустой карточки — «сейчас». Подпись читает часы при каждой своей перерисовке, а «Расход» не перерисовывается
+// вместе с приложением, поэтому она ещё и сама перерисовывается, когда к приложению возвращаются (страница снова видна);
+// поминутно она не тикает, как и раньше. Перерисовывается только она. Время сохранения берётся в момент сохранения.
 const subscribeReturn = (notify: () => void) => {
   const visible = () => { if (document.visibilityState === 'visible') notify() }
   document.addEventListener('visibilitychange', visible)
   window.addEventListener('pageshow', notify)
   return () => { document.removeEventListener('visibilitychange', visible); window.removeEventListener('pageshow', notify) }
 }
-const readNowLabel = () => formatEntryDate(isoToLocalInput(new Date().toISOString()))
 
 function NowLabel() {
-  return useSyncExternalStore(subscribeReturn, readNowLabel)
+  const [, refresh] = useReducer((count: number) => count + 1, 0)
+  useEffect(() => subscribeReturn(refresh), [])
+  return formatEntryDate(isoToLocalInput(new Date().toISOString()))
 }
 
 export function EntryCard({ face, onDate, onCurrency, disabled = false, limitHit = 0 }: { face: CardFace; onDate?: () => void; onCurrency?: () => void; disabled?: boolean; limitHit?: number }) {
@@ -247,15 +248,17 @@ const subscribeOnline = (notify: () => void) => {
 }
 const readOnline = () => navigator.onLine
 
-export const EntryView = memo(function EntryView({ userId, workspaceId, workspace, bootstrap, today = localDateKey(new Date(), appTimeZone()), setBootstrap, currentId, setCurrentId, refreshPending, onDraftDirtyChange, active, newExpenseRequest = 0, blocks, editing = false, onEditScreen = () => {}, onScreensChange = () => {} }: {
+export const EntryView = memo(function EntryView({ userId, workspaceId, workspace, bootstrap, timeZone = appTimeZone(), today = localDateKey(new Date(), timeZone), setBootstrap, currentId, setCurrentId, refreshPending, onDraftDirtyChange, active, newExpenseRequest = 0, blocks, editing = false, onEditScreen = () => {}, onScreensChange = () => {} }: {
   userId: string
   workspaceId: string
   workspace: WorkspaceSummary
   bootstrap: Bootstrap; setBootstrap: React.Dispatch<React.SetStateAction<Bootstrap>>; currentId: string | null; setCurrentId: (id: string | null) => void; refreshPending: () => void; onDraftDirtyChange: (dirty: boolean) => void; active: boolean
   /** Счётчик просьб «к новому расходу» извне (повторный тап по вкладке «Расход»): каждое увеличение — один переезд к пустой карточке. */
   newExpenseRequest?: number
-  /** Сегодняшний день по календарю телефона для «Сегодня». Его ведёт приложение: мемоизированный экран сам после
-   *  полуночи не перерисуется, и «Сегодня» показывало бы вчерашние траты. */
+  /** Пояс и сегодняшний день по календарю телефона для «Сегодня». Их ведёт приложение, вместе: мемоизированный экран
+   *  сам после полуночи не перерисуется, и «Сегодня» показывало бы вчерашние траты, а день и пояс из разных мест
+   *  после смены пояса до минуты расходились бы. */
+  timeZone?: string
   today?: string
   /** Какие блоки «Расхода» человек оставил на экране. Меняет их он сам в режиме «Настройка экрана» (`editing`): его
    *  открывают значок в шапке, удержание плиток или ряда тегов и «Мои экраны» в настройках. */
@@ -775,7 +778,6 @@ export const EntryView = memo(function EntryView({ userId, workspaceId, workspac
   const saveRow = <div className="entry-save" inert={editing} data-flip-id="save"><button type="button" className="primary" disabled={!save.canSave || saving} onClick={() => void submitExpense()}>{saving ? 'Сохраняем…' : save.label}</button>{current && <button type="button" className={`sheet-cancel${dirty && !saving ? '' : ' ghost'}`} disabled={!dirty || saving} aria-hidden={!dirty || saving} tabIndex={dirty && !saving ? undefined : -1} onClick={cancelEdit}>Отменить</button>}</div>
   // «Сегодня» и «Как обычно» считаются при изменении данных, а не на каждую цифру и шаг свайпа, и только пока блок
   // стоит на экране. «Сегодня» следует за ключом дня и поясом: новый день приходит от приложения и перерисовывает экран.
-  const timeZone = appTimeZone()
   const totalsCurrency = bootstrap.settings?.analyticsCurrency || usual
   const showsToday = isShown(entryBlocks, 'today')
   const todaySpent = useMemo(() => showsToday ? todayTotal(bootstrap.expenses, today, timeZone, bootstrap.currencies, bootstrap.rates, totalsCurrency) : null,
