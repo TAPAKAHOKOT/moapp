@@ -412,7 +412,7 @@ function firstRows(days: HistoryDay[], total: number, limit: number) {
 
 // Вкладка не размонтируется, пока открыто пространство, поэтому она не должна перерисовываться от чужих
 // изменений состояния приложения — только от своих данных и колбэков (все они стабильны у родителя).
-export const HistoryView = memo(function HistoryView({ userId, workspaceId, bootstrap, setBootstrap, edit, createNew, refreshPending, inbox = null, reminder = null, timeZone = appTimeZone(), older = null, blocks, editing = false, onEditScreen = () => {}, onScreensChange = () => {} }: {
+export const HistoryView = memo(function HistoryView({ userId, workspaceId, bootstrap, setBootstrap, edit, createNew, refreshPending, inbox = null, reminder = null, timeZone = appTimeZone(), today = localDateKey(new Date(), timeZone), older = null, blocks, editing = false, onEditScreen = () => {}, onScreensChange = () => {} }: {
   userId: string
   workspaceId: string
   bootstrap: Bootstrap
@@ -424,6 +424,9 @@ export const HistoryView = memo(function HistoryView({ userId, workspaceId, boot
   reminder?: HistoryReminder | null
   /** Календарь телефона: дни истории и итоги пересчитываются, когда пояс меняется. */
   timeZone?: string
+  /** Сегодняшний день по календарю телефона. Его ведёт приложение: мемоизированный экран сам после полуночи не
+   *  перерисуется, и «Сегодня», «Эта неделя» и «Этот месяц» в фильтре остались бы вчерашними. */
+  today?: string
   older?: HistoryOlder | null
   /** Какие блоки «Истории» человек оставил на экране. Меняет их он сам в режиме «Настройка экрана» (`editing`): его
    *  открывают значок в шапке и удержание блока над списком или даты дня. */
@@ -433,7 +436,7 @@ export const HistoryView = memo(function HistoryView({ userId, workspaceId, boot
   onScreensChange?: (patch: SettingsPatch<AccountSettings>) => void
 }) {
   // Фильтры помнит аккаунт, строка поиска живёт, только пока приложение открыто.
-  const [filters, setFilters] = useState<HistoryPreferences>(() => parseHistoryPreferences(bootstrap.settings?.historyFilters, localDateKey(new Date())))
+  const [filters, setFilters] = useState<HistoryPreferences>(() => parseHistoryPreferences(bootstrap.settings?.historyFilters, today))
   const [selected, setSelected] = useState<Set<string>>(() => new Set())
   const [deleting, setDeleting] = useState(false)
   const [openRow, setOpenRow] = useState<string | null>(null)
@@ -457,7 +460,7 @@ export const HistoryView = memo(function HistoryView({ userId, workspaceId, boot
   // Фильтры и «Итог» стоят над списком в порядке человека; суммы по дням живут у дат.
   const toolbarBlocks = historyBlocks.shown.filter((block) => !block.pinned)
   const toolbarDrag = useDragOrder({ items: toolbarBlocks, onReorder: (ids) => onScreensChange({ historyBlocks: toBlockLayout(reorderBlocks(historyBlocks, ids)) }) })
-  const activeFilters = useMemo(() => showFilters ? filters : defaultHistoryPreferences(localDateKey(new Date())), [showFilters, filters])
+  const activeFilters = useMemo(() => showFilters ? filters : defaultHistoryPreferences(today), [showFilters, filters, today])
   // Настройка экрана начинается сверху, где стоят блоки; выбор записей, открытый свайп и дальние строки ей не нужны.
   useEffect(() => {
     if (!editing) return
@@ -495,7 +498,7 @@ export const HistoryView = memo(function HistoryView({ userId, workspaceId, boot
       .filter((currency) => activeFilters.currencies.includes(currency.code) || activeExpenses.some((expense) => expense.currency === currency.code))
       .sort((left, right) => left.code.localeCompare(right.code))
     const normalizedQuery = activeFilters.query.trim().toLocaleLowerCase('ru-RU')
-    const expenses = filterHistoryExpenses(activeExpenses, activeFilters).filter((item) => {
+    const expenses = filterHistoryExpenses(activeExpenses, activeFilters, today).filter((item) => {
       // Текст для поиска собирается только при непустом запросе: он дорогой, а без запроса не нужен.
       if (!normalizedQuery) return true
       const dateKey = localDateKey(item.occurredAt, timeZone)
@@ -527,7 +530,7 @@ export const HistoryView = memo(function HistoryView({ userId, workspaceId, boot
     const groups = Object.entries(grouped).map(([date, items]) => ({ date, items, total: sumLabel(items).label }))
     const { label: totalLabel, parts: totalParts, totals } = sumLabel(expenses)
     return { categoryMap, activeExpenses, tagOptions, categoryOptions, currencyOptions, normalizedQuery, expenses, groups, totals, totalLabel, totalParts }
-  }, [allExpenses, categories, currencies, rates, categoryOrder, reportCurrency, tags, activeFilters, filters.currencies, timeZone])
+  }, [allExpenses, categories, currencies, rates, categoryOrder, reportCurrency, tags, activeFilters, filters.currencies, timeZone, today])
   const { categoryMap, activeExpenses, tagOptions, categoryOptions, currencyOptions, normalizedQuery, expenses, groups, totals, totalLabel, totalParts } = derived
   // Без IntersectionObserver (старые браузеры, тесты) рисуется весь список, как раньше.
   const windowed = typeof IntersectionObserver === 'function'
@@ -633,7 +636,7 @@ export const HistoryView = memo(function HistoryView({ userId, workspaceId, boot
   // и после настройки экрана, и autoFocus тогда сам открывал бы клавиатуру.
   const focusSearch = useRef(false)
   const resetFilters = () => {
-    setFilters(defaultHistoryPreferences(localDateKey(new Date())))
+    setFilters(defaultHistoryPreferences(today))
     setSelected(new Set())
     setSearchOpen(false)
     setRowLimit(HISTORY_FIRST_ROWS)

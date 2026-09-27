@@ -44,12 +44,12 @@ afterEach(() => {
 })
 
 // Целое приложение в jsdom с настоящими экранами: сеть и офлайн-хранилище подменены, сервер аналитики не отвечает.
-async function renderApp() {
+async function renderApp(data: WorkspaceBootstrap = bootstrap) {
   vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { status: 204 })))
   vi.stubGlobal('matchMedia', (query: string) => ({ matches: query.includes('reduced-motion'), media: query, addEventListener() {}, removeEventListener() {} }))
   await workspaceApi.probeServer()
   vi.spyOn(workspaceApi, 'getSession').mockResolvedValue(session)
-  vi.spyOn(workspaceApi, 'getBootstrap').mockResolvedValue({ data: bootstrap, offline: false })
+  vi.spyOn(workspaceApi, 'getBootstrap').mockResolvedValue({ data, offline: false })
   vi.spyOn(workspaceApi, 'getAnalytics').mockRejectedValue(new Error('offline'))
   vi.spyOn(workspaceApi, 'syncAllWorkspaces').mockResolvedValue(undefined)
   vi.spyOn(workspaceApi, 'listMods').mockResolvedValue([])
@@ -98,5 +98,18 @@ describe('the day turning over midnight', () => {
 
     await tap('Аналитика')
     expect(week()).toBe('Текущая неделя17–23 августа')
+  })
+
+  it('moves the «Сегодня» filter of «История» to the new day as well', async () => {
+    vi.setSystemTime(SUNDAY_NIGHT)
+    // Фильтр «Сегодня» сохранён в настройках человека в пространстве.
+    await renderApp({ ...bootstrap, settings: { historyFilters: { period: 'today', categoryIds: [], tagIds: [], currencies: [], from: '2026-08-01', to: '2026-08-16' } } })
+    await tap('История')
+    expect(document.querySelectorAll('.history-expense')).toHaveLength(1)
+
+    vi.setSystemTime(MONDAY_MORNING)
+    act(() => { document.dispatchEvent(new Event('visibilitychange')) })
+    expect(document.querySelectorAll('.history-expense')).toHaveLength(0)
+    expect(screen.getByText('Ничего не найдено')).toBeTruthy()
   })
 })
