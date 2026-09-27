@@ -1,5 +1,6 @@
 // Проверка бюджетов из budgets.json по результатам одной метки и сравнение двух меток.
-//   node client/e2e/perf/budgets.mjs <label>             — нужны <label>-webkit-x1, -chromium-x1-count, -chromium-x4, -swipe-webkit-x1
+//   node client/e2e/perf/budgets.mjs <label>             — нужны <label>-webkit-x1, -chromium-x1-count, -chromium-x4, -swipe-webkit-x1,
+//                                                          -scroll-webkit-x1 (history-scroll.mjs)
 //   node client/e2e/perf/budgets.mjs <before> <after>    — сравнение WebKit по сценариям (кадр и застывание)
 import { existsSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
@@ -19,11 +20,13 @@ if (second) {
     if (!other) continue
     console.log(item.name.slice(0, 50).padEnd(52), `${item.maxFrame} → ${other.maxFrame} ms`.padEnd(26), `${item.jankMs} → ${other.jankMs} ms`)
   }
+  const scrollBefore = read(`${first}-scroll-webkit-x1`), scrollAfter = read(`${second}-scroll-webkit-x1`)
+  if (scrollBefore && scrollAfter) console.log('Первая прокрутка «Истории» (history-scroll)'.padEnd(52), `${scrollBefore.maxFrame} → ${scrollAfter.maxFrame} ms`.padEnd(26), `${scrollBefore.jankMs} → ${scrollAfter.jankMs} ms`)
   process.exit(0)
 }
 
 const budgets = JSON.parse(readFileSync(resolve(HERE, 'budgets.json'), 'utf8'))
-const webkit = read(`${first}-webkit-x1`), counts = read(`${first}-chromium-x1-count`), weak = read(`${first}-chromium-x4`), swipe = read(`${first}-swipe-webkit-x1`)
+const webkit = read(`${first}-webkit-x1`), counts = read(`${first}-chromium-x1-count`), weak = read(`${first}-chromium-x4`), swipe = read(`${first}-swipe-webkit-x1`), scroll = read(`${first}-scroll-webkit-x1`)
 const checks = []
 const check = (title, value, limit, ok = value <= limit) => checks.push({ title, value, limit, ok })
 
@@ -37,6 +40,8 @@ if (webkit) {
 } else checks.push({ title: `нет ${first}-webkit-x1`, ok: false })
 if (swipe) check('WebKit: четыре свайпа карточки, застывание', swipe.jankMs, budgets.swipeStallMs)
 else checks.push({ title: `нет ${first}-swipe-webkit-x1`, ok: false })
+if (scroll) check(`WebKit: первая прокрутка «Истории», самый долгий кадр (строк ${scroll.rows})`, scroll.maxFrame, budgets.historyScrollWorstFrameMs)
+else checks.push({ title: `нет ${first}-scroll-webkit-x1 (history-scroll.mjs)`, ok: false })
 if (counts) {
   const tab = find(counts, '6.')
   check('Переключение вкладки: коммитов', tab.commits, budgets.tabSwitch.commits)
