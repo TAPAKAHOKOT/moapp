@@ -37,5 +37,6 @@ app.db.transaction(() => {
   }
 })()
 
-await app.listen({ host: '127.0.0.1', port })
-console.log(`stand server on http://localhost:${port}`)
+// STAND_HOST=0.0.0.0 (stand.mjs up --lan) открывает стенд телефону в той же сети; по умолчанию — только этот Mac.
+await app.listen({ host: process.env.STAND_HOST ?? '127.0.0.1', port })
+console.log(`stand server on ${process.env.APP_ORIGIN}`)

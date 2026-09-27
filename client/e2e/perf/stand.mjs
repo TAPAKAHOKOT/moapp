@@ -4,16 +4,29 @@
 //     сервер; --reuse берёт готовую сборку той же ревизии, не трогая каталог, который раздаёт стенд соседа
 //   node client/e2e/perf/stand.mjs down [--port=N]      — остановить
 //   node client/e2e/perf/stand.mjs link [--port=N]      — ссылка входа для другого браузера (regress.mjs)
+//   … up/link --lan[=IP]                                — стенд для телефона в той же сети: слушает все адреса,
+//     ссылка входа ведёт на адрес Mac в сети
 // Все стенды получают копию одной базы, поэтому снимки и замеры разных ревизий сравнимы попиксельно.
 import { execFileSync, spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { copyFileSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { networkInterfaces } from 'node:os'
 import { basename, resolve } from 'node:path'
 import { chromium, webkit } from 'playwright'
 import { DEFAULT_PORT, HERE, PHONE, REPO, WORK, api, parseArgs, profilePath, sleep, storagePath } from './common.mjs'
 
 const { positional: [command, revArg], flags } = parseArgs(process.argv.slice(2))
 const port = Number(flags.port ?? DEFAULT_PORT)
+// --lan (для up и link): стенд слушает все адреса, а его адрес — адрес Mac в локальной сети, чтобы открыть его с телефона.
+// Без https сервис-воркера на телефоне не будет — для проверки плавности он не нужен.
+if (flags.lan) {
+  // Адрес можно задать (--lan=192.168.1.10); иначе — Wi-Fi Mac (en0), затем любой внешний IPv4.
+  const ipv4 = (list = []) => list.find((item) => item.family === 'IPv4' && !item.internal)?.address
+  const lanIp = typeof flags.lan === 'string' ? flags.lan : ipv4(networkInterfaces().en0) ?? ipv4(Object.values(networkInterfaces()).flat())
+  if (!lanIp) throw new Error('не нашёлся адрес в локальной сети')
+  process.env.STAND_HOST = '0.0.0.0'
+  process.env.APP_ORIGIN = `http://${lanIp}:${port}`
+}
 const seedDb = resolve(WORK, 'seed.sqlite')
 
 function startServer({ src, dist, db, port: serverPort }) {
@@ -161,11 +174,11 @@ if (command === 'seed') {
   dbFiles(seedDb).forEach((file, index) => { if (existsSync(file)) copyFileSync(file, dbFiles(db)[index]); else rmSync(dbFiles(db)[index], { force: true }) })
   startServer({ src: source.src, dist, db, port })
   await waitHealthy(port)
-  console.log(`${source.label} на http://localhost:${port}`)
+  console.log(`${source.label} на ${process.env.APP_ORIGIN ?? `http://localhost:${port}`}`)
 } else if (command === 'down') {
   console.log(stopServer(port) ? `стенд на ${port} остановлен` : `на ${port} стенда нет`)
 } else if (command === 'link') {
   console.log((await api(port, 'POST', '/api/me/device-links', {})).url)
 } else {
-  console.log('команды: seed | up <rev|.> [--port=N] | down [--port=N] | link [--port=N]')
+  console.log('команды: seed | up <rev|.> [--port=N] [--reuse] [--lan] | down [--port=N] | link [--port=N] [--lan]')
 }

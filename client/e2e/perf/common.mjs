@@ -37,7 +37,8 @@ export function parseArgs(argv) {
 }
 
 export async function api(port, method, path, body, profile = readProfile()) {
-  const headers = { origin: `http://localhost:${port}`, cookie: profile.cookie, 'x-moapp-expected-user-id': profile.userId, 'x-moapp-expected-session-id': profile.sessionId }
+  // Сервер принимает изменения только со своего адреса (APP_ORIGIN): у стенда для телефона это адрес Mac в сети.
+  const headers = { origin: process.env.APP_ORIGIN ?? `http://localhost:${port}`, cookie: profile.cookie, 'x-moapp-expected-user-id': profile.userId, 'x-moapp-expected-session-id': profile.sessionId }
   if (body !== undefined) headers['content-type'] = 'application/json'
   const response = await fetch(`http://localhost:${port}${path}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) })
   const text = await response.text()
