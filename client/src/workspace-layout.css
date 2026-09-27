@@ -2,7 +2,14 @@
   height: calc(100dvh - 116px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
 }
 
+/* Шапка — sticky у верхнего края. В установленном приложении на iOS 26+ (в iOS 27 сильнее) система кладёт под
+   статус-бар мягкое размытие Liquid Glass (scroll edge effect), и верх шапки — название пространства, ≡, «Настройка
+   экрана», «Готово» — выходил размытым. Выключателя в CSS и meta нет, но у верхнего края, где стоит fixed или sticky
+   бокс с фоном, WebKit не размывает, а продолжает его цвет. `.app-shell` не прокручивается, поэтому шапка остаётся
+   на своём месте, а шиты и оверлеи (fixed, с z-index) по-прежнему поверх неё. */
 .workspace-header {
+  position: sticky;
+  top: 0;
   height: calc(48px + env(safe-area-inset-top));
   padding-top: env(safe-area-inset-top);
 }
