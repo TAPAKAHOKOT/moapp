@@ -1,5 +1,6 @@
 // Первая прокрутка «Истории»: свежая загрузка, вкладка открыта впервые, и список сразу листают вниз ровно, как пальцем,
-// через несколько порций строк. Пишет ленту кадров с числом строк, коммиты React и где кадр потерял время.
+// через несколько порций строк. Пишет ленту кадров с числом строк, коммиты React, где кадр потерял время и не видна ли
+// на экране пустота под нарисованными строками (порция не успела за лентой).
 //   node client/e2e/perf/history-scroll.mjs <webkit|chromium> [--port=4411] [--throttle=1] [--label=имя]
 //     [--speed=7000]      px/с, с которой лента уходит вверх (флик на iPhone — 5–10 тысяч)
 //     [--distance=24000]  сколько пролистать, px: при порциях по 200 строк — две их границы, по 30 — десяток
@@ -83,7 +84,10 @@ const run = await page.evaluate(async ({ speed, distance, hold }) => {
   await new Promise((done) => {
     const tick = () => {
       const now = performance.now()
-      frames.push({ at: now, top: Math.round(slot.scrollTop), rows: rows(), height: slot.scrollHeight })
+      // Пустота на экране: сколько пикселей отступа под нарисованными строками видно — порция не успела.
+      const rest = slot.querySelector('.history-rest')
+      const blank = rest ? Math.max(0, Math.round(slot.getBoundingClientRect().bottom - rest.getBoundingClientRect().top)) : 0
+      frames.push({ at: now, top: Math.round(slot.scrollTop), rows: rows(), height: slot.scrollHeight, blank })
       if (now < moveAt) { requestAnimationFrame(tick); return }
       const target = start + (now - moveAt) / 1000 * speed
       if (target - start >= distance || slot.scrollTop + slot.clientHeight >= slot.scrollHeight - 1) { if (finger?.down) fire('touchend', finger.y); done(); return }
@@ -126,10 +130,12 @@ const summary = {
   scrolled: run.frames.at(-1).top - run.frames[0].top,
   rows: `${run.frames[0].rows}→${run.finalRows}`,
   commits: run.commits.length,
+  blankFrames: run.frames.filter((frame) => frame.blank > 0).length,
+  blankMaxPx: Math.max(0, ...run.frames.map((frame) => frame.blank)),
   scrollHeight: run.scrollHeight,
   fingerOnRow: run.finger,
 }
-console.log(`${kind} ${label} ×${throttle}: ${speed} px/с, ${summary.scrolled} px — max ${summary.maxFrame} ms, >20 ms ${summary.over20}, >33 ms ${summary.over33}, застывание ${summary.jankMs} ms, строк ${summary.rows}, коммитов ${summary.commits}`)
+console.log(`${kind} ${label} ×${throttle}: ${speed} px/с, ${summary.scrolled} px — max ${summary.maxFrame} ms, >20 ms ${summary.over20}, >33 ms ${summary.over33}, застывание ${summary.jankMs} ms, строк ${summary.rows}, коммитов ${summary.commits}, пустота на экране ${summary.blankFrames ? `${summary.blankFrames} кадров, до ${summary.blankMaxPx} px` : '0'}`)
 for (const item of long) console.log(`  +${item.at} ms  кадр ${item.ms} ms  top ${item.top}  строк ${item.rows}  коммитов ${item.commits}${item.tasks ? `  задачи React ${item.tasks}` : ''}`)
 // Все заметные задачи React: у порции — рендер и коммит с раскладкой, следом — задача эффектов (слушатели строк).
 const heavy = run.tasks.filter((task) => task.end - task.start > 2).map((task) => ({ at: Math.round(task.start - run.t0), ms: Math.round(task.end - task.start), layout: Math.round(task.layout) }))
