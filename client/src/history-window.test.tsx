@@ -3,6 +3,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import { HISTORY_FIRST_ROWS, HISTORY_MORE_ROWS, HistoryView, LONG_PRESS_MS, ROW_PRESS_DELAY_MS, ROW_SETTLE_LIMIT_MS } from './screens/History'
 import * as workspaceApi from './workspace-api'
+import * as format from './format'
 import type { Expense, WorkspaceBootstrap } from './types'
 
 afterEach(() => {
@@ -92,9 +93,24 @@ describe('history window', () => {
 
     reachRest()
     expect(rows(container)).toBe(HISTORY_FIRST_ROWS + HISTORY_MORE_ROWS)
-    reachRest()
+    // Порции идут, пока отступ снова и снова подходит к экрану; последняя — остаток, и отступ уходит.
+    let portions = 1
+    while (container.querySelector('.history-rest') && portions < 100) { reachRest(); portions++ }
     expect(rows(container)).toBe(400)
-    expect(container.querySelector('.history-rest')).toBeNull()
+    expect(portions).toBe(Math.ceil((400 - HISTORY_FIRST_ROWS) / HISTORY_MORE_ROWS))
+  })
+
+  // Порция приходит посреди флика и должна уложиться в кадр: она дорисовывает только свои строки, а уже нарисованные
+  // React не трогает (мемо-строки со стабильными колбэками). Каждая строка при отрисовке один раз форматирует сумму.
+  it('draws a portion of a few screens and only its own rows, not the rows already on screen', () => {
+    stubObserver()
+    const { container } = render(<HistoryView {...props} bootstrap={bootstrapWith(400)}/>)
+    const drawn = vi.spyOn(format, 'money')
+    reachRest()
+    expect(rows(container)).toBe(HISTORY_FIRST_ROWS + HISTORY_MORE_ROWS)
+    expect(drawn).toHaveBeenCalledTimes(HISTORY_MORE_ROWS)
+    // Порция — несколько экранов, а не год: 200 строк за раз были рывком посреди флика на iPhone.
+    expect(HISTORY_MORE_ROWS).toBeLessThanOrEqual(40)
   })
 
   it('watches for the rest from the page it scrolls in, two screens ahead', () => {
