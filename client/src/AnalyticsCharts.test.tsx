@@ -174,6 +174,14 @@ describe('line chart padding', () => {
     expect(area(chart)).toEqual(settledArea(3, true))
   })
 
+  it('stays quiet when Chart.js does not expose the laid-out margin', () => {
+    // Другая версия Chart.js без _minPadding: плагин не должен раскладывать график второй раз на каждое обновление.
+    const update = vi.fn()
+    const chart = { _minPadding: undefined, options: { layout: { autoPadding: true } }, data: { datasets: [{}] }, getDatasetMeta: () => ({ controller: { getMaxOverflow: () => 1 } }), update }
+    settledLinePadding.afterUpdate?.(chart as never, { mode: 'default' } as never, {} as never)
+    expect(update).not.toHaveBeenCalled()
+  })
+
   it('hands the margin plugin to both analytics lines', () => {
     for (const compact of [false, true]) {
       render(<AnalyticsChart kind="line" compact={compact} labels={['пн']} values={[1]} color="#758d69" fillColor="#e9ede4" pointRadius={0} target="RSD" textColor="#73776f" gridColor="#e3dfd5" maxTicksLimit={6}/>)

@@ -97,12 +97,14 @@ const settling = new WeakSet<object>()
 export const settledLinePadding: Plugin<'line'> = {
   id: 'settledLinePadding',
   afterUpdate(chart, { mode }) {
-    if (settling.has(chart) || !chart.options.layout?.autoPadding) return
+    // Без этих внутренностей (другая версия Chart.js) плагин молчит, а не раскладывает график дважды на каждое обновление.
+    const laidOut = (chart as unknown as { _minPadding?: unknown })._minPadding
+    if (settling.has(chart) || !chart.options.layout?.autoPadding || typeof laidOut !== 'number') return
     let overflow = 0
     for (let index = 0; index < chart.data.datasets.length; index++) {
       overflow = Math.max(overflow, +(chart.getDatasetMeta(index).controller as unknown as OverflowController).getMaxOverflow())
     }
-    if (overflow === (chart as unknown as { _minPadding: number })._minPadding) return
+    if (overflow === laidOut) return
     settling.add(chart)
     try { chart.update(mode) } finally { settling.delete(chart) }
   },
