@@ -1338,7 +1338,7 @@ body {
 
 .analytics-period {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 3px;
   margin: 3px 16px 12px;
   padding: 3px;
@@ -1427,6 +1427,32 @@ body {
 .week-navigator span {
   font-size: calc(11px * var(--text-scale));
   color: var(--muted);
+}
+
+/* Свои даты: середина плашки — кнопка, она снова открывает календарь. */
+.week-navigator .range-dates {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  height: auto;
+  min-width: 0;
+  padding: 6px 0;
+  font-size: inherit;
+  color: var(--ink);
+}
+
+.week-navigator .range-dates span {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--sage);
+  font-weight: 650;
+}
+
+.week-navigator .range-dates svg {
+  width: 11px;
+  height: 11px;
 }
 
 .analytics .rate-caption {
@@ -2543,7 +2569,7 @@ body:has(.app-shell) {
     color: var(--ink);
   }
 
-  .week-navigator button:hover:not(:disabled) {
+  .week-navigator button:not(.range-dates):hover:not(:disabled) {
     transform: scale(1.15);
   }
 

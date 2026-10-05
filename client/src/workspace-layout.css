@@ -2998,6 +2998,39 @@ button.settings-row:disabled .settings-row-value {
   border-radius: 4px;
 }
 
+/* Свои даты длиннее двух месяцев: месяцы маленькими календарями по три в ряд, как год в календаре телефона. */
+.calendar-year {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px 10px;
+  margin-top: 12px;
+}
+
+.calendar-year.small {
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.calendar-month > small {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--text-tertiary);
+  font-size: calc(10px * var(--text-scale));
+}
+
+.calendar-month .calendar-heat {
+  gap: 2px;
+  margin-top: 0;
+}
+
+.calendar-month .calendar-heat > span {
+  border-radius: 2px;
+}
+
+.calendar-year.small .calendar-heat {
+  gap: 1px;
+}
+
 /* Кнопка размера на плашке: сейчас большая или маленькая. */
 .size-toggle {
   min-height: 30px;

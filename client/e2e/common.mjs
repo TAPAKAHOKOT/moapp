@@ -102,7 +102,7 @@ export async function pinLocalState(context) {
 }
 
 // Настройки аккаунта (null — значение по умолчанию) и свои настройки человека в каждом его пространстве.
-export const DEFAULT_ACCOUNT = { theme: null, accent: null, textSize: null, analyticsPeriod: 'week', entryBlocks: null, historyBlocks: null, analyticsBlocks: null }
+export const DEFAULT_ACCOUNT = { theme: null, accent: null, textSize: null, analyticsPeriod: 'week', analyticsRange: null, entryBlocks: null, historyBlocks: null, analyticsBlocks: null }
 export const DEFAULT_MEMBER = { historyFilters: null, analyticsCurrency: null, lastCurrency: null, categoryOrder: null, tagOrder: null }
 export const ALL_BLOCKS = {
   entryBlocks: { shown: ['today', 'usual', 'keypad', 'tiles', 'note', 'tags'], hidden: [] },

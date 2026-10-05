@@ -186,7 +186,11 @@ export type ThemePreference = 'system' | 'light' | 'dark'
 export type Accent = 'sage' | 'terracotta' | 'sand' | 'blue' | 'lilac' | 'graphite'
 export type TextSize = 'normal' | 'large'
 
-export type AnalyticsPeriod = 'week' | 'month'
+/** `range` — свои даты человека, они лежат в `analyticsRange`. */
+export type AnalyticsPeriod = 'week' | 'month' | 'range'
+
+/** Свои даты аналитики: с какого и по какой день включительно. */
+export type AnalyticsRange = { from: string; to: string }
 
 /**
  * Блоки экрана: `shown` — что стоит на экране, по порядку, `hidden` — что человек убрал, `small` — какие карточки он
@@ -200,8 +204,10 @@ export type AccountSettings = {
   theme?: ThemePreference
   accent?: Accent
   textSize?: TextSize
-  /** Неделя или месяц в аналитике — что человек смотрел последним. */
+  /** Неделя, месяц или свои даты в аналитике — что человек смотрел последним. */
   analyticsPeriod?: AnalyticsPeriod
+  /** Свои даты помнятся и после возврата к неделе: «Даты» открывают их снова. */
+  analyticsRange?: AnalyticsRange
   entryBlocks?: BlockLayout
   historyBlocks?: BlockLayout
   analyticsBlocks?: BlockLayout

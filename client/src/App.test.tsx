@@ -7,6 +7,7 @@ import App, { AnalyticsView, CardReviewView, CapabilityScreen, CreateWorkspaceSh
 import { splitDraft, SplitSheet } from './screens/Split'
 import { entryUnits, usualExpenses } from './screens/Entry'
 import { ModsView, readStatementFile, statementFeedback } from './screens/Mods'
+import { comparisonLabel } from './screens/Analytics'
 import * as workspaceApi from './workspace-api'
 import * as workspaceOffline from './workspace-offline'
 import { queuedMemberSettings } from './settings'
@@ -1553,6 +1554,93 @@ describe('screens made of blocks', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Неделя' }))
     expect(change).toHaveBeenCalledWith({ analyticsPeriod: 'week' })
     expect(titles(container)).toEqual(['Категории', 'Теги'])
+  })
+
+  it('shows analytics for dates the person picks in the calendar, and the arrows step by as many days', () => {
+    const change = vi.fn()
+    const bootstrap = expenseBootstrap({ categories: personalCategories, expenses: [spent('a', 'products', '2026-09-05T10:00:00.000Z'), spent('b', 'home', '2026-09-16T10:00:00.000Z'), spent('c', 'products', '2026-08-25T10:00:00.000Z')] })
+    const { container } = render(<AnalyticsView userId="user-a" workspaceId="workspace-a" bootstrap={bootstrap} theme="light" online={false} today="2026-09-20" onScreensChange={change}/>)
+
+    // Своих дат ещё нет — «Даты» сразу открывают календарь; закрытый без выбора, он оставляет неделю.
+    fireEvent.click(screen.getByRole('button', { name: 'Даты' }))
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Закрыть' }))
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(screen.getByRole('button', { name: 'Неделя' }).getAttribute('aria-pressed')).toBe('true')
+    expect(change).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Даты' }))
+    expect(within(screen.getByRole('dialog')).getByRole('heading').textContent).toBe('С какого дня')
+    pickDay('', '2026-09-17')
+    // Шторка не меняет высоту между касаниями: быстрые даты остаются, и второе касание приходится туда, куда целились.
+    expect(within(screen.getByRole('dialog')).getByRole('heading').textContent).toBe('По какой день')
+    expect(within(screen.getByRole('dialog')).getByRole('button', { name: 'Вчера' })).not.toBeNull()
+    pickDay('', '2026-09-03')
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(change).toHaveBeenLastCalledWith({ analyticsPeriod: 'range', analyticsRange: { from: '2026-09-03', to: '2026-09-17' } })
+    expect(screen.getByRole('button', { name: 'Даты' }).getAttribute('aria-pressed')).toBe('true')
+    expect(container.querySelector('.range-dates')?.textContent).toBe('15 дней3–17 сент.')
+    // Две траты против одной за 15 дней перед датами — 19 августа – 2 сентября.
+    expect(container.querySelectorAll('.analytics-comparison')[1]?.textContent).toBe('+100% к предыдущим 15 дням')
+    expect(titles(container)).toContain('По дням недели')
+    expect(container.querySelector('.chart-card p')?.textContent).toBe('По дням')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Предыдущие 15 дней' }))
+    expect(change).toHaveBeenLastCalledWith({ analyticsRange: { from: '2026-08-19', to: '2026-09-02' } })
+    expect(container.querySelector('.range-dates')?.textContent).toBe('15 дней19 авг. – 2 сент.')
+    fireEvent.click(screen.getByRole('button', { name: 'Следующие 15 дней' }))
+    expect((screen.getByRole('button', { name: 'Следующие 15 дней' }) as HTMLButtonElement).disabled).toBe(false)
+    fireEvent.click(screen.getByRole('button', { name: 'Следующие 15 дней' }))
+    expect(container.querySelector('.range-dates')?.textContent).toBe('15 дней18 сент. – 2 окт.')
+    expect((screen.getByRole('button', { name: 'Следующие 15 дней' }) as HTMLButtonElement).disabled).toBe(true)
+
+    // Нажатие на сами даты открывает календарь снова.
+    fireEvent.click(screen.getByRole('button', { name: /^Даты: 18 сент\. – 2 окт\./ }))
+    expect(screen.getByRole('dialog')).not.toBeNull()
+  })
+
+  it('says nothing about days before the dates that only the server keeps until it answers', () => {
+    const bootstrap = expenseBootstrap({ categories: personalCategories, expenses: [spent('a', 'products', '2026-09-05T10:00:00.000Z')], olderExpenses: 3, expensesSince: '2025-10-01' })
+    const { container } = render(<AnalyticsView userId="user-a" workspaceId="workspace-a" bootstrap={bootstrap} theme="light" online={false} today="2026-09-20" period="range" range={{ from: '2026-01-01', to: '2026-09-20' }}/>)
+    expect(container.querySelectorAll('.analytics-comparison')[1]?.textContent).toBe('\u00a0')
+  })
+
+  it('compares own dates with as many days right before them, in words that agree with the number', () => {
+    expect(comparisonLabel(20, 10, false, 'range', 15)).toBe('+100% к предыдущим 15 дням')
+    expect(comparisonLabel(5, 10, true, 'range', 21)).toBe('−50% к предыдущим 21 дню')
+    expect(comparisonLabel(5, 10, false, 'range', 1)).toBe('−50% к предыдущему дню')
+    expect(comparisonLabel(10, 10, false, 'range', 1)).toBe('Как за предыдущий день')
+    expect(comparisonLabel(10, 0, false, 'range', 3)).toBe('За предыдущие 3 дня — 0')
+    expect(comparisonLabel(0, 0, false, 'range', 11)).toBe('Как и за предыдущие 11 дней')
+  })
+
+  it('opens on the dates left last time, keeps them behind «Даты» and lays long dates out by weeks and months', () => {
+    const change = vi.fn()
+    const bootstrap = expenseBootstrap({ categories: personalCategories, expenses: [spent('a', 'products', '2026-09-05T10:00:00.000Z'), spent('b', 'home', '2026-08-31T10:00:00.000Z')] })
+    const view = (range: { from: string; to: string }) => <AnalyticsView userId="user-a" workspaceId="workspace-a" bootstrap={bootstrap} theme="light" online={false} today="2026-09-20" blocks={{ shown: ['trend', 'calendar'], hidden: [] }} period="range" range={range} onScreensChange={change}/>
+    const { container, rerender } = render(view({ from: '2025-10-01', to: '2026-09-20' }))
+
+    expect(screen.getByRole('button', { name: 'Даты' }).getAttribute('aria-pressed')).toBe('true')
+    expect(container.querySelector('.range-dates')?.textContent).toBe('355 дней1 окт. 2025 – 20 сент. 2026')
+    expect(container.querySelector('.chart-card p')?.textContent).toBe('По неделям')
+    // Год в календаре — двенадцать месяцев маленькими сетками, у первого и у января — год.
+    const months = [...container.querySelectorAll('.calendar-year .calendar-month > small')].map((node) => node.textContent)
+    expect(months).toHaveLength(12)
+    expect([months[0], months[3], months[11]]).toEqual(['окт. 2025', 'янв. 2026', 'сент.'])
+    // Сентябрь начинается во вторник: понедельник перед ним — пустая клетка, хотя 31 августа в даты попало.
+    const september = container.querySelectorAll('.calendar-year .calendar-month .calendar-heat')[11]!.children
+    expect([...september].slice(0, 2).map((cell) => [cell.className, (cell as HTMLElement).style.getPropertyValue('--heat')])).toEqual([['outside', '0'], [expect.not.stringContaining('outside'), expect.any(String)]])
+
+    rerender(view({ from: '2024-09-01', to: '2026-09-20' }))
+    expect(container.querySelector('.chart-card p')?.textContent).toBe('По месяцам')
+    expect(container.querySelectorAll('.analytics-comparison')[1]?.textContent).toBe('За предыдущие 750 дней — 0')
+
+    // Неделя не стирает даты: «Даты» возвращают их без календаря.
+    fireEvent.click(screen.getByRole('button', { name: 'Неделя' }))
+    expect(change).toHaveBeenLastCalledWith({ analyticsPeriod: 'week' })
+    expect(container.querySelector('.calendar-year')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Даты' }))
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(container.querySelector('.calendar-year')).not.toBeNull()
   })
 
   it('drops the note, the tags or the whole row under the tiles on «Расход»', () => {
