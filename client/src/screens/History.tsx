@@ -48,7 +48,9 @@ export function CalendarSheet({ from, to, onClose, onPick }: { from: string; to:
           return <button type="button" key={key} className={classes || undefined} aria-pressed={edge} aria-label={formatHistoryDate(key)} onClick={() => pick(key)}>{Number(key.slice(8))}</button>
         })}
       </div>
-      {!start && <div className="date-presets"><button type="button" onClick={() => { tap(4); onPick(yesterday, yesterday) }}>Вчера</button><button type="button" onClick={() => { tap(4); onPick(lastMonth.from, lastMonth.to) }}>Прошлый месяц</button></div>}
+      {/* Быстрые даты видны и после первого касания: исчезни они, шторка стала бы ниже, сетка съехала бы вниз и второе
+          касание пришлось бы на соседний день. Нажатая посреди выбора, быстрая дата просто выбирается целиком. */}
+      <div className="date-presets"><button type="button" onClick={() => { tap(4); onPick(yesterday, yesterday) }}>Вчера</button><button type="button" onClick={() => { tap(4); onPick(lastMonth.from, lastMonth.to) }}>Прошлый месяц</button></div>
     </section>
   </div>
 }
