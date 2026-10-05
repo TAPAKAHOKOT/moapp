@@ -128,7 +128,8 @@ Legacy v2 cache/outbox data remains quarantined until a completed legacy claim s
 Settings are personal and live in the account: only their owner reads or changes them, and they follow the profile to
 every device and through logout. Account settings (`AccountSettings`: `theme` — `'system' | 'light' | 'dark'`, `accent` —
 `'sage' | 'terracotta' | 'sand' | 'blue' | 'lilac' | 'graphite'`, `textSize` — `'normal' | 'large'`, `analyticsPeriod` —
-`'week' | 'month'`, and `entryBlocks`, `historyBlocks`, `analyticsBlocks`) arrive with `GET /api/session`; settings in one workspace (`MemberSettings`: `lastCurrency`, `analyticsCurrency`,
+`'week' | 'month' | 'range'`, `analyticsRange` — the person's own dates `{from, to}` (calendar dates, `from <= to`, kept
+after a return to the week or month), and `entryBlocks`, `historyBlocks`, `analyticsBlocks`) arrive with `GET /api/session`; settings in one workspace (`MemberSettings`: `lastCurrency`, `analyticsCurrency`,
 `historyFilters` without the search text, `categoryOrder`, `tagOrder`) arrive with that workspace's bootstrap and never include another member's.
 
 `categoryOrder` and `tagOrder` are what the member sees on «Расход»: `{shown: string[], more: string[]}` — the category

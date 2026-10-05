@@ -44,6 +44,15 @@ function historyFilters(value: unknown) {
   return { period: input.period, from: input.from, to: input.to, categoryIds, tagIds, currencies };
 }
 
+/* Свои даты аналитики: с какого и по какой день включительно. */
+function dateRange(value: unknown) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const input = value as Record<string, unknown>;
+  if (Object.keys(input).some((key) => key !== "from" && key !== "to")) return undefined;
+  if (!isCalendarDate(input.from) || !isCalendarDate(input.to) || input.from > input.to) return undefined;
+  return { from: input.from, to: input.to };
+}
+
 /*
  * Что человек видит на экране «Расход»: `shown` — плитки категорий или теги в ряду, по порядку, `more` — остальное
  * за «Ещё», тоже по порядку. Категории и теги общие, поэтому ссылка на удалённую не ошибка: клиент её пропускает,
@@ -81,13 +90,15 @@ function blockLayout(value: unknown) {
 
 /*
  * Внешний вид (тема, свой цвет, размер текста; палитры — в клиенте, appearance.ts) и устройство экранов: блоки
- * «Расхода», «Истории» и «Аналитики» и неделя или месяц в аналитике. Всё это одинаково во всех пространствах человека.
+ * «Расхода», «Истории» и «Аналитики» и период аналитики: неделя, месяц или свои даты (`analyticsRange` помнит их и тогда,
+ * когда человек вернулся к неделе). Всё это одинаково во всех пространствах человека.
  */
 const ACCOUNT_SETTINGS: Readonly<Record<string, Normalize>> = {
   theme: oneOf("system", "light", "dark"),
   accent: oneOf("sage", "terracotta", "sand", "blue", "lilac", "graphite"),
   textSize: oneOf("normal", "large"),
-  analyticsPeriod: oneOf("week", "month"),
+  analyticsPeriod: oneOf("week", "month", "range"),
+  analyticsRange: dateRange,
   entryBlocks: blockLayout,
   historyBlocks: blockLayout,
   analyticsBlocks: blockLayout

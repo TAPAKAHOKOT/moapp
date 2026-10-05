@@ -75,7 +75,8 @@ test("the appearance of a profile is its theme, its own colour and its text size
 test("the screens of a profile keep their blocks and the analytics period, the same in every workspace", async () => {
   const phone = person("Аня");
   const screens = {
-    analyticsPeriod: "month",
+    analyticsPeriod: "range",
+    analyticsRange: { from: "2026-09-03", to: "2026-09-17" },
     entryBlocks: { shown: ["tags"], hidden: ["note"] },
     historyBlocks: { shown: ["filters", "filters", "day-totals"], hidden: ["total"] },
     analyticsBlocks: { shown: ["categories", "trend", "weekdays", "future-block"], hidden: ["tags"], small: ["trend", "tags"] }
@@ -86,9 +87,15 @@ test("the screens of a profile keep their blocks and the analytics period, the s
   assert.deepEqual(saved.json().settings.analyticsBlocks.shown, ["categories", "trend", "weekdays", "future-block"], "a block from a newer app is kept");
   assert.deepEqual(saved.json().settings.analyticsBlocks.small, ["trend", "tags"], "a removed card keeps its size");
   assert.deepEqual((await session(device(phone.userId))).json().settings.entryBlocks, { shown: ["tags"], hidden: ["note"] });
+  assert.deepEqual((await session(device(phone.userId))).json().settings.analyticsRange, { from: "2026-09-03", to: "2026-09-17" });
 
   for (const settings of [
     { analyticsPeriod: "year" },
+    { analyticsRange: { from: "2026-09-17", to: "2026-09-03" } },
+    { analyticsRange: { from: "2026-09-03" } },
+    { analyticsRange: { from: "2026-09-03", to: "2026-09-31" } },
+    { analyticsRange: { from: "2026-09-03", to: "2026-09-17", days: 15 } },
+    { analyticsRange: "2026-09-03..2026-09-17" },
     { entryBlocks: { shown: ["note"], hidden: ["note"] } },
     { entryBlocks: { shown: ["note"] } },
     { historyBlocks: { shown: ["Filters"], hidden: [] } },
