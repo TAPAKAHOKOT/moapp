@@ -99,6 +99,32 @@ jobs:
         shell: bash
         run: |
           ssh -p "$SSH_PORT" "$SSH_USER@$SSH_HOST" "cd '$DEPLOY_PATH' && APP_IMAGE='$IMAGE' docker compose --env-file .env pull app restore litestream && APP_IMAGE='$IMAGE' docker compose --env-file .env up -d --remove-orphans && for attempt in \$(seq 1 24); do curl --fail --silent http://127.0.0.1:8892/api/health >/dev/null && exit 0; sleep 5; done; docker compose logs --tail=100 app; exit 1"
+      # Litestream reads infra/litestream.yml only when it starts, and Compose does not
+      # notice a changed bind-mounted file, so restart it here when the file changed.
+      - name: Restart backups when their settings changed
+        shell: bash
+        run: |
+          ssh -p "$SSH_PORT" "$SSH_USER@$SSH_HOST" sh -s -- "$DEPLOY_PATH" "$IMAGE" <<'REMOTE'
+          set -eu
+          cd "$1"
+          export APP_IMAGE="$2"
+          if cmp -s infra/litestream.yml infra/.litestream.applied.yml; then
+            echo "Litestream settings unchanged"
+            exit 0
+          fi
+          docker compose --env-file .env restart litestream
+          container="$(docker compose --env-file .env ps -q litestream)"
+          for attempt in $(seq 1 18); do
+            if [ "$(docker inspect --format '{{.State.Health.Status}}' "$container")" = healthy ]; then
+              cp infra/litestream.yml infra/.litestream.applied.yml
+              echo "Litestream restarted with the new settings"
+              exit 0
+            fi
+            sleep 5
+          done
+          docker compose --env-file .env logs --tail=100 litestream
+          exit 1
+          REMOTE
       - name: Remove temporary GHCR credentials
         if: always()
         shell: bash

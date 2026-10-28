@@ -2,6 +2,14 @@ logging:
   level: info
   type: text
 
+# Cloudflare R2 bills every upload and every listing of the bucket as a Class A
+# operation; the free tier is 1 million of them a month (about 33 000 a day).
+# Litestream's defaults list the bucket every 15 seconds even when nothing has
+# changed, and each listing grows with the 90 days of files kept below. That
+# alone came to about 60 000 operations a day, so the intervals below are tuned
+# for a small household app: idle hours cost almost nothing, and changes still
+# leave the server within seconds.
+
 # Create a full snapshot daily and keep point-in-time recovery data for 90 days.
 # Litestream durations are expressed in hours (days are not accepted).
 snapshot:
@@ -10,6 +18,18 @@ snapshot:
 
 validation:
   interval: 24h
+
+# Merge small change files into bigger ones every 5 minutes, every hour and
+# every day (defaults: 30s, 5m, 1h). Fewer files means cheaper listings and a
+# faster restore.
+levels:
+  - interval: 5m
+  - interval: 1h
+  - interval: 24h
+
+# Clean up already-merged change files hourly instead of every 15 seconds.
+# Litestream also does this right after each 5-minute merge, so nothing piles up.
+l0-retention-check-interval: 1h
 
 dbs:
   - path: /data/moapp.sqlite
@@ -23,4 +43,6 @@ dbs:
       region: auto
       access-key-id: ${R2_ACCESS_KEY_ID}
       secret-access-key: ${R2_SECRET_ACCESS_KEY}
+      # Uploads happen only when the database has changed, so this costs nothing
+      # while nobody is using the app.
       sync-interval: 10s

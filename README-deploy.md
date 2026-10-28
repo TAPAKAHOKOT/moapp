@@ -166,7 +166,18 @@ if the restored backup or its credentials may have been exposed.
 
 Litestream continuously copies committed SQLite changes to R2, creates a full
 snapshot every 24 hours, validates the replica daily, and keeps 2160 hours (90
-days) of point-in-time recovery data. On a new/empty volume, the one-shot
+days) of point-in-time recovery data.
+
+The intervals in `infra/litestream.yml` keep R2 inside its free tier (1 million
+Class A operations a month; every upload and every bucket listing is one).
+Changes still leave the server about 10 seconds after a write, but small change
+files are merged every 5 minutes, hourly and daily, and merged files are cleaned
+up hourly. Litestream's defaults listed the bucket every 15 seconds even with no
+changes, about 60 000 operations a day. Litestream reads this file only at
+start, so the deploy restarts the `litestream` service when the file changes and
+fails if it does not come back healthy.
+
+On a new/empty volume, the one-shot
 `volume-init` service grants the unprivileged app/Litestream user access and the
 one-shot `restore` service restores the latest R2 state (with an integrity check)
 before the app starts. It never overwrites an existing database.
