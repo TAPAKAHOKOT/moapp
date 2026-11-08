@@ -409,6 +409,9 @@ export const SettingsView = memo(function SettingsView({ user, workspace, worksp
       })()}}/>
       <SettingsRow label="Выйти" tone="danger" disabled={accessBusy} onClick={onLogout}/>
     </div></div>
+    <div className="settings-list" role="group" aria-labelledby="settings-contact"><h2 id="settings-contact">Связь с разработчиком</h2><div className="settings-rows">
+      <a className="settings-row" href="https://t.me/tapakahokot" target="_blank" rel="noopener noreferrer" onClick={()=>tap(4)}><span>Telegram</span><span className="settings-row-value"><span>@tapakahokot</span><ChevronIcon/></span></a>
+    </div><p className="settings-caption">Если что-то не работает или есть идея — напишите, прочитаю.</p></div>
     {sheet==='categories'&&<ListSheet title="Категории" onClose={()=>setSheet(null)}>
       {activeCount>0?<div className="drag-list">{activeCategories.map((category)=><div className="drag-row" key={category.id}>
         <CategoryMark category={category}/>

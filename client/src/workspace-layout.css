@@ -1804,8 +1804,21 @@ textarea,
   color: var(--danger);
 }
 
-button.settings-row:active:not(:disabled) {
+a.settings-row {
+  text-decoration: none;
+}
+
+button.settings-row:active:not(:disabled),
+a.settings-row:active {
   background: var(--soft);
+}
+
+.settings-caption {
+  margin: 7px 0 0;
+  padding: 0 6px;
+  color: var(--muted);
+  font-size: calc(12px * var(--text-scale));
+  line-height: 1.4;
 }
 
 button.settings-row:disabled {
@@ -1818,7 +1831,8 @@ button.settings-row:disabled .settings-row-value {
 }
 
 @media (hover: hover) {
-  button.settings-row:hover:not(:disabled) {
+  button.settings-row:hover:not(:disabled),
+  a.settings-row:hover {
     background: color-mix(in srgb, var(--soft) 55%, transparent);
   }
 
